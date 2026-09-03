@@ -30,6 +30,7 @@ browser somewhere — on this machine, or on another one with --paste-url.
     google-ads-auth.py --paste-url        no browser here: paste the URL back
     google-ads-auth.py --show             print the current configuration
     google-ads-auth.py --allow-write      switch writing on (asks first)
+    google-ads-auth.py --env              print it as a .env block for a cloud session
 
 Exit code 0 on success, 1 on a failed or abandoned connection.
 """
@@ -323,6 +324,56 @@ def show() -> int:
     return 0
 
 
+def show_env() -> int:
+    """Prints the configuration as a .env block, secrets included.
+
+    This is the bridge to a machine that has no browser and keeps no
+    files: a cloud session, a CI runner, a container. The browser step
+    happens once on a desktop, and the result travels as four variables.
+
+    It prints real secrets on purpose, so it asks first and says where
+    they are going. Anyone who can read the block can spend money on the
+    connected accounts.
+    """
+    try:
+        config = load_config()
+    except GoogleAdsError as exc:
+        print(exc.message, file=sys.stderr)
+        return 1
+
+    print("\nThis prints the refresh token, the client secret and the developer")
+    print("token in clear text. Paste them only into a place that keeps secrets:")
+    print("the environment variables of a Claude Code cloud environment, a CI")
+    print("secret store. Never into a repository, a chat, or a ticket.\n")
+    if not ask_yes("Print them now?", default=False):
+        print("Nothing printed.")
+        return 0
+
+    lines = [
+        f"GOOGLE_ADS_CLIENT_ID={config['client_id']}",
+        f"GOOGLE_ADS_CLIENT_SECRET={config['client_secret']}",
+        f"GOOGLE_ADS_REFRESH_TOKEN={config['refresh_token']}",
+        f"GOOGLE_ADS_DEVELOPER_TOKEN={config['developer_token']}",
+    ]
+    if config.get("login_customer_id"):
+        lines.append(f"GOOGLE_ADS_LOGIN_CUSTOMER_ID={config['login_customer_id']}")
+    lines.append(f"GOOGLE_ADS_API_VERSION={config['api_version']}")
+    if config["guardrails"].get("write_enabled"):
+        lines.append("GOOGLE_ADS_ALLOW_WRITE=1")
+
+    print("-" * 68)
+    print("\n".join(lines))
+    print("-" * 68)
+    print("\nThe guardrails other than the write switch live in the configuration")
+    print("file, not in these variables. A machine that only has the variables")
+    print("runs with the defaults: no account list, no budget ceiling. Set them")
+    print("there deliberately if that machine may write.")
+    print("\nThe session also needs to reach these hosts:")
+    print("  googleads.googleapis.com    the API itself")
+    print("  oauth2.googleapis.com       refreshing the access token")
+    return 0
+
+
 def allow_write() -> int:
     """Switches writing on after saying plainly what that means."""
     config = existing_config()
@@ -443,10 +494,14 @@ def main() -> int:
                         help="print the current configuration without the secrets")
     parser.add_argument("--allow-write", action="store_true",
                         help="switch writing on and set the guardrails")
+    parser.add_argument("--env", action="store_true",
+                        help="print the credentials as a .env block, for a cloud session or CI")
     options = parser.parse_args()
 
     if options.show:
         return show()
+    if options.env:
+        return show_env()
     if options.allow_write:
         return allow_write()
     try:

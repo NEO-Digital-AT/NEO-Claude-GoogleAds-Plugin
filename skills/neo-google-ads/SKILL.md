@@ -197,13 +197,17 @@ lesen, sechs schreiben, eines zeigt, was geschrieben wurde.
 | `google_ads_change_log` | Was dieser Server geschrieben hat |
 
 Sind die Werkzeuge nicht verfügbar, ist der Zugang nicht eingerichtet:
-`references/einrichtung.md`, dann `scripts/google-ads-check.py`.
+`references/einrichtung.md`, dann `scripts/google-ads-check.py`. Unter
+Windows heißt Python meist `python` und nicht `python3` — dann bleibt die
+Werkzeugliste leer, ohne dass ein Fehler erscheint. In einer Cloud-Sitzung
+gibt es weder Browser noch bleibende Dateien; dort kommen die Zugangsdaten
+aus Umgebungsvariablen. Beides steht in `references/einrichtung.md`.
 
 Dazu vier Skripte, die von Hand laufen:
 
 | Skript | Zweck |
 | --- | --- |
-| `google-ads-auth.py` | Verbinden, Schutzgrenzen setzen (`--allow-write`), Stand zeigen (`--show`) |
+| `google-ads-auth.py` | Verbinden, Schutzgrenzen setzen (`--allow-write`), Stand zeigen (`--show`), Zugangsdaten für eine Cloud-Sitzung ausgeben (`--env`) |
 | `google-ads-check.py` | Misst die Verbindung in sieben Prüfungen, mit `--customer-id` auch den Schreibweg |
 | `google-ads-selftest.py` | Weist ohne Netz nach, dass die Schutzgrenzen greifen — 34 Fälle |
 | `google-ads-mcp.py` | Der Server selbst; `--list-tools` und `--check-config` zur Diagnose |
