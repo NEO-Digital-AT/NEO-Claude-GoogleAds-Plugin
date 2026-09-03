@@ -107,6 +107,11 @@ Weitere Regionen: `2276` Deutschland, `2756` Schweiz.
 `google_ads_keyword_metrics` misst eine **vorhandene** Liste, ohne neue
 zu erfinden — für die Frage „lohnt sich das, was wir schon haben".
 
+**Beide brauchen mindestens Basic-Zugriff.** Ein Developer Token der Stufe
+Explorer hat die Planungswerkzeuge gesperrt; die zwei Werkzeuge antworten
+dann mit einem Fehler, während alles Übrige läuft. Das ist kein Fehler der
+Werkzeuge — die Stufe steht im API Center.
+
 **Zahlen richtig lesen:**
 
 - `avg_monthly_searches` ist über zwölf Monate gemittelt und gerundet.

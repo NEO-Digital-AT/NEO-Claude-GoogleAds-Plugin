@@ -36,18 +36,30 @@ aus, die kann kein Skript erzeugen:
 2. <https://ads.google.com/aw/apicenter>
 3. Token beantragen. Der Antrag fragt nach Zweck und Firma.
 
-**Wichtig — die drei Zugriffsstufen:**
+**Wichtig — die vier Zugriffsstufen:**
 
-| Stufe | Wirkt auf | Grenze |
-| --- | --- | --- |
-| Test | nur Testkonten | Echte Konten antworten mit einem Fehler |
-| Basic | echte Konten | 15.000 Operationen am Tag |
-| Standard | echte Konten | praktisch unbegrenzt |
+| Stufe | Wirkt auf | Grenze am Tag | Freigabe |
+| --- | --- | --- | --- |
+| Test | nur Testkonten | 15.000 | sofort |
+| Explorer | echte Konten | 2.880 | oft sofort |
+| Basic | echte Konten | 15.000 | etwa 5 Werktage |
+| Standard | echte Konten | unbegrenzt | etwa 10 Werktage, für große Anbieter |
 
 Ein frisch beantragter Token hat **Testzugriff**. Damit funktioniert
-nichts an einem echten Konto — das ist kein Fehler der Werkzeuge. Der
-Antrag auf Basic-Zugriff läuft über dieselbe Seite und wird in der Regel
-innerhalb weniger Werktage beantwortet.
+nichts an einem echten Konto — das ist kein Fehler der Werkzeuge.
+
+**Explorer ist der schnelle Weg an ein echtes Konto**: Google vergibt die
+Stufe in vielen Fällen ohne Wartezeit. Zwei Einschränkungen dabei:
+
+- 2.880 Operationen am Tag. Für Analyse und gezielte Änderungen reicht
+  das; eine Massenänderung über tausende Keywords nicht.
+- **Die Planungswerkzeuge sind gesperrt.** `google_ads_keyword_ideas` und
+  `google_ads_keyword_metrics` — also der Keyword-Planer — antworten mit
+  einem Fehler. Ebenso Kontoanlage, Nutzerverwaltung und Abrechnung.
+  Alles Übrige funktioniert.
+
+Wer den Keyword-Planer braucht oder mehr Operationen, beantragt auf
+derselben Seite **Basic**.
 
 ## Schritt 3: Verbinden
 
@@ -110,27 +122,30 @@ python --version
 py --version
 ```
 
-Antwortet keines davon mit einer 3er-Fassung, fehlt Python. Aus dem
-Microsoft Store oder von <https://www.python.org/downloads/> — beim
-Installer **„Add python.exe to PATH" ankreuzen**, sonst findet der Server
-ihn nicht.
+Antwortet keines davon mit einer 3er-Fassung, fehlt Python.
 
-Meldet Windows beim Aufruf von `python3` den Store statt einer Fassung,
-ist das der App-Ausführungsalias. Er ist kein Python. Abschalten unter
-Einstellungen → Apps → Erweiterte App-Einstellungen → App-Ausführungsaliase.
+**Der einfachste Weg: Python aus dem Microsoft Store.** Diese Fassung
+legt `python3` mit an, damit läuft der Server ohne weitere Einstellung —
+genau wie unter Linux und macOS. Store öffnen, „Python 3.13" (oder neuer)
+installieren, fertig.
 
-Danach in den Benutzervariablen setzen (Einstellungen → System → Info →
-Erweiterte Systemeinstellungen → Umgebungsvariablen), damit die
-`.mcp.json` den richtigen Aufruf verwendet:
+Der Installer von <https://www.python.org/downloads/> geht auch, legt aber
+nur `python` und `py` an, kein `python3`. Dann ist **eine** Einstellung
+nötig, in den Benutzervariablen (Einstellungen → System → Info →
+Erweiterte Systemeinstellungen → Umgebungsvariablen):
 
 ```
 GOOGLE_ADS_PYTHON=python
 ```
 
 Der Schalter steht in der `.mcp.json` als `${GOOGLE_ADS_PYTHON:-python3}`:
-gesetzt gewinnt der eigene Wert, sonst bleibt `python3` für Linux und
-macOS. Claude Code danach neu starten — Umgebungsvariablen werden beim
-Start gelesen.
+gesetzt gewinnt der eigene Wert, sonst bleibt `python3`. Claude Code danach
+neu starten — Umgebungsvariablen werden beim Start gelesen.
+
+Meldet Windows beim Aufruf von `python3` den Store, **obwohl** Python
+installiert ist, ist das der App-Ausführungsalias, der sich vordrängt. Er
+ist kein Python. Abschalten unter Einstellungen → Apps → Erweiterte
+App-Einstellungen → App-Ausführungsaliase.
 
 **Die Skripte werden anders aufgerufen.** Kein `python3`, kein
 Schrägstrich nach vorn:
@@ -221,6 +236,7 @@ sie und braucht dann keine Datei.
 | `Configuration incomplete, missing: ...` | Kein Durchlauf von `google-ads-auth.py` | Skript ausführen |
 | `Could not refresh the access token` | Zugriff widerrufen, oder OAuth-Client gelöscht | `google-ads-auth.py` erneut |
 | `DEVELOPER_TOKEN_NOT_APPROVED` | Testzugriff gegen ein echtes Konto | Basic-Zugriff beantragen |
+| Keyword-Planer antwortet mit einem Fehler, sonst läuft alles | Token hat Explorer-Zugriff, Planungswerkzeuge gesperrt | Basic beantragen |
 | `USER_PERMISSION_DENIED` | Kein Zugriff auf dieses Konto, oder `login_customer_id` fehlt | Manager-ID setzen |
 | `CUSTOMER_NOT_ENABLED` | Konto stillgelegt oder ohne Zahlungsmittel | Im Ads-Konto klären |
 | `no refresh token` beim Verbinden | Konto hatte diesem Client schon zugestimmt | Eintrag unter <https://myaccount.google.com/permissions> entfernen |
