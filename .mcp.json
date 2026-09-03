@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "neo-google-ads": {
+      "command": "python3",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/google-ads-mcp.py"],
+      "env": {
+        "PYTHONUNBUFFERED": "1",
+        "PYTHONDONTWRITEBYTECODE": "1"
+      }
+    }
+  }
+}
