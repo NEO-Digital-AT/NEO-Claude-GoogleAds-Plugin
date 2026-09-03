@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import getpass
 import hashlib
 import http.server
 import json
@@ -223,11 +224,20 @@ def authorize(client_id: str, client_secret: str, *, paste_url: bool) -> str:
 # --------------------------------------------------------------------------
 
 def ask(prompt: str, current: str = "", *, secret: bool = False) -> str:
-    """One question, with the current value as the default."""
-    shown = ""
-    if current:
-        shown = f" [{'*' * 8 if secret else current}]"
-    answer = input(f"{prompt}{shown}: ").strip()
+    """One question, with the current value as the default.
+
+    A secret is read without echo, so it does not end up on screen, in a
+    scrollback buffer, or in a screen share. Nothing visible appears while
+    typing or pasting, which looks like a hung prompt — so the length of
+    what arrived is confirmed afterwards.
+    """
+    shown = f" [{'*' * 8 if secret else current}]" if current else ""
+    if secret:
+        answer = getpass.getpass(f"{prompt}{shown} (input stays hidden): ").strip()
+        if answer:
+            print(f"  {len(answer)} characters received.")
+    else:
+        answer = input(f"{prompt}{shown}: ").strip()
     return answer or current
 
 
