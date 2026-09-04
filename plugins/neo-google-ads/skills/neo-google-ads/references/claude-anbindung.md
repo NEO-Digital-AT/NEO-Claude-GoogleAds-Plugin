@@ -19,92 +19,89 @@ Hier läuft nichts auf deinem Rechner. Der Server muss stehen, erreichbar
 sein und sich selbst schützen. Dafür ist `google-ads-http.py` da: dieselben
 Werkzeuge, dieselben Schutzgrenzen, andere Tür.
 
-### Was du brauchst
+Der fertige Aufbau liegt unter `deploy/` — ein Container mit dem Server,
+einer mit Caddy davor für HTTPS.
 
-- Einen Rechner, der läuft, wenn du Claude benutzt — ein kleiner Server, ein
-  VPS, ein Raspberry Pi im Büro. Kein Webhosting-Paket: es muss ein
-  Python-Prozess dauerhaft laufen dürfen.
-- Eine **HTTPS**-Adresse. Claude verbindet sich nicht über http.
-- Einen Reverse Proxy, der das Zertifikat verwaltet (Caddy, nginx,
-  Traefik). Das ist der übliche Weg; `--tls-cert` gibt es, ist aber die
-  zweite Wahl.
+### Der Weg, von null
 
-### Einrichten
+**Voraussetzung:** ein VPS mit Docker, und ein DNS-Eintrag, der auf ihn
+zeigt. Caddy holt das Zertifikat erst, wenn die Adresse aufgelöst wird.
 
 ```bash
-# 1. Ein Zugangswort erzeugen (einmal)
-python3 google-ads-http.py --new-token
+# 1. Auf dem VPS
+git clone https://github.com/NEO-Digital-AT/NEO-Claude-GoogleAds-Plugin
+cd NEO-Claude-GoogleAds-Plugin/deploy
 
-# 2. Server starten, nur auf localhost, der Proxy macht den Rest
-python3 google-ads-http.py --port 8788 --anthropic-only
+# 2. Zugangsdaten und Grenzen eintragen
+cp .env.example .env
+nano .env                 # der Block aus: google-ads-auth.py --env
+chmod 600 .env
+
+# 3. Datenverzeichnis anlegen. Der Container läuft als UID 10001 und
+#    braucht Schreibrecht darauf — sonst startet er und kann nichts ablegen.
+mkdir -p data && sudo chown 10001:10001 data
+
+# 4. Adresse eintragen
+nano Caddyfile            # erste Zeile: die eigene Adresse
+
+# 5. Starten
+docker compose up -d --build
+docker compose logs -f google-ads-mcp
 ```
 
-`--anthropic-only` lässt nur Aufrufe aus dem von Anthropic veröffentlichten
-Adressbereich durch. Damit ist ein erratenes Zugangswort wertlos, solange
-der Angreifer nicht auch aus diesem Bereich kommt. **Einschalten, außer der
-Proxy verschluckt die Absenderadresse** — dann muss er sie als
-`X-Forwarded-For` weitergeben.
+Beim ersten Start erzeugt der Server ein Zugangswort in `data/http-token`,
+falls keines da ist. Sichtbar machen:
 
-Caddy als Proxy, zwei Zeilen:
-
-```
-ads-mcp.deine-domain.at {
-    reverse_proxy 127.0.0.1:8788
-}
+```bash
+docker compose exec google-ads-mcp cat /data/http-token
 ```
 
-Caddy holt das Zertifikat selbst. Bei nginx entsprechend `proxy_pass` plus
-`proxy_set_header X-Forwarded-For $remote_addr;`.
+Prüfen, ob die Strecke steht — von einem beliebigen Rechner:
 
-Als Dienst, damit er einen Neustart übersteht (systemd):
-
-```ini
-[Unit]
-Description=NEO Google Ads MCP
-After=network.target
-
-[Service]
-User=neo
-ExecStart=/usr/bin/python3 /opt/neo-google-ads/scripts/google-ads-http.py \
-          --port 8788 --anthropic-only
-Restart=on-failure
-
-[Install]
-WantedBy=multi-user.target
+```bash
+curl https://ads.mcp.neo-digital.at/health
 ```
+
+Antwortet `{"status": "ok", ...}`, ist alles bereit. Der Pfad verrät nichts
+über die Konten, nur dass ein Server da ist.
 
 ### In claude.ai eintragen
 
 1. **Einstellungen → Connectors → Benutzerdefinierten Connector hinzufügen**
-2. Adresse: `https://ads-mcp.deine-domain.at/mcp`
-3. Beim Zugangswort den Header eintragen:
-   `Authorization: Bearer <das erzeugte Wort>`
+2. Adresse: `https://ads.mcp.neo-digital.at/mcp`
+3. Als Kopfzeile: `Authorization: Bearer <das Zugangswort>`
 
-Prüfen, ob der Server überhaupt antwortet — von außen, ohne Zugangswort:
+### Wie der Aufbau sich schützt
+
+| Riegel | Wirkung |
+| --- | --- |
+| Zugangswort | 64 Zeichen, in konstanter Zeit verglichen. Ohne es: 401 und sonst nichts |
+| `--anthropic-only` | Nur Aufrufe aus Anthropics veröffentlichtem Ausgangsbereich. Ein erratenes Wort nützt von woanders nichts |
+| Vertrauensgrenze für Proxys | `X-Forwarded-For` wird **nur** geglaubt, wenn die Verbindung selbst von einer privaten Adresse kommt. Sonst könnte jeder sich per Kopfzeile als Anthropic ausgeben |
+| Kein Port nach außen | Der Server hat in `docker-compose.yml` kein `ports:` — nur Caddy erreicht ihn |
+| Nicht als root | Der Container läuft als UID 10001 |
+| Rumpfgrenze | Ein Aufruf über einer Million Zeichen wird ungelesen abgewiesen |
+
+Steht ein anderer Proxy davor als der aus dem Compose-Aufbau, muss er die
+echte Absenderadresse als `X-Forwarded-For` weitergeben, und seine eigene
+Adresse muss privat sein oder über `--trusted-proxy` genannt werden.
+
+### Sichern
+
+Zwei Dinge im `data/`-Verzeichnis sind es wert:
+
+- `config.json` bzw. die `.env` — sonst ist die Einrichtung erneut fällig.
+- `changes.jsonl` — das Änderungsprotokoll. Es ist die Antwort auf „wer
+  hat das geändert und warum", und ein Container ist schnell neu gebaut.
+
+### Aktualisieren
 
 ```bash
-curl https://ads-mcp.deine-domain.at/health
+git pull && docker compose up -d --build
 ```
 
-Antwortet `{"status": "ok", ...}`, steht die Strecke. Der `/health`-Pfad
-verrät nichts über die Konten, nur dass ein Server da ist.
-
-### Was dabei zu bedenken ist
-
-- **Das Zugangswort ist der Schlüssel zu deinen Werbekonten.** Wer es hat,
-  kann lesen und — falls das Schreiben eingeschaltet ist — Geld ausgeben.
-  Es gehört in einen Passwortspeicher, nicht in eine Nachricht.
-- **Schreiben in einer Weboberfläche ist eine eigene Entscheidung.** Der
-  Schreibschalter und die Kontoliste stehen in der Konfigurationsdatei auf
-  dem Server, nicht in claude.ai. Ein Server, der nur lesen soll, bleibt
-  auf `write_enabled: false` — dann sind Trockenläufe möglich und mehr
-  nicht.
-- **Die Antwortgröße ist begrenzt**, in claude.ai auf etwa 150.000 Zeichen.
-  Die Berichte kürzen ohnehin auf `limit` Zeilen und sagen, wenn sie
-  gekürzt haben.
-- **Zeitgrenze fünf Minuten.** Reicht für jede Abfrage dieses Servers.
-- Wer den Server abschaltet, verliert den Connector nicht — er antwortet
-  nur nicht mehr. Beim nächsten Start ist er wieder da.
+Die Zugangsdaten liegen im gemounteten `data/` und in der `.env`, nicht im
+Image — ein Neubau verliert nichts.
 
 ## Claude Desktop
 
@@ -157,6 +154,41 @@ sich so:
 | Auswertung mit einer Website zusammen, Berichte schreiben | Claude Code |
 | Änderungen umsetzen | dort, wo die Schutzgrenzen gesetzt sind — in der Regel lokal |
 
-Ein Server, der nur liest, darf ruhig im Browser hängen. Der schreibende
-Zugang gehört auf den Rechner, auf dem auch die Kontoliste und der
-Budgetdeckel stehen.
+## Schreiben aus dem Browser: zwei Ebenen, nicht eine
+
+Der häufigste Denkfehler ist, den Schreibschalter für die Freigabe zu
+halten. Er ist es nicht. Es sind zwei Ebenen, und beide müssen zutreffen.
+
+**Ebene 1, einmal, in der `.env`: was überhaupt möglich ist.**
+`GOOGLE_ADS_ALLOW_WRITE=true` öffnet den Weg. Die Kontoliste sagt, in
+welche Konten geschrieben werden darf, der Budgetdeckel, wie hoch ein
+Tagesbudget höchstens gesetzt werden kann, der Steigerungsfaktor, wie weit
+es in einem Schritt springen darf. Das ist der Rahmen, und er wird nicht
+im Gespräch verschoben — passt eine Maßnahme nicht hindurch, wird die
+Maßnahme vorgelegt, nicht die Grenze.
+
+**Ebene 2, jedes Mal, im Gespräch: ob genau diese Änderung jetzt passiert.**
+Jeder Schreibaufruf ist zuerst ein Trockenlauf. Der Agent misst, legt einen
+Plan vor und wartet. Erst wenn du zustimmst, läuft derselbe Aufruf scharf.
+Ohne deine Zustimmung passiert nichts — auch bei eingeschaltetem Schalter,
+auch wenn der Vorschlag offensichtlich richtig ist.
+
+So sieht das aus:
+
+```
+Du     Die Anzeigen in der Kampagne X laufen schlecht, schau dir das an
+Claude [misst] Drei Befunde. Vorschlag: zwei Überschriften ergänzen,
+       ein Keyword pausieren, sechs Suchbegriffe ausschließen.
+       [Trockenlauf] Google nimmt alle drei an. Nichts wurde geändert.
+Du     Mach 1 und 3, 2 lass noch
+Claude [setzt 1 und 3 scharf um, liest nach, zeigt den neuen Zustand]
+```
+
+Der Trockenlauf ist dabei mehr als eine Höflichkeit: er schickt die
+Operation durch Googles vollständige Regelprüfung. Ein Anzeigentext, der
+zu lang ist, ein Keyword mit falschem Übereinstimmungstyp, ein Budget über
+dem Deckel — all das fällt auf, bevor du zustimmst.
+
+Ein Server, der nur liest, ist trotzdem eine überlegenswerte Wahl für den
+Browser: Analysieren geht damit vollständig, und der schreibende Zugang
+bleibt dort, wo du am Rechner sitzt.

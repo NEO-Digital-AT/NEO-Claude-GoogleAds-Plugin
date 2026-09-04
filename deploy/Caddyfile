@@ -1,0 +1,23 @@
+# Caddy holt und erneuert das Zertifikat selbst. Die Adresse muss per DNS
+# auf diesen Server zeigen, bevor der erste Start gelingt.
+ads.mcp.neo-digital.at {
+	# Die echte Absenderadresse durchreichen. Ohne sie kann der Server
+	# --anthropic-only nicht anwenden und sieht nur Caddy.
+	reverse_proxy google-ads-mcp:8788 {
+		header_up X-Forwarded-For {remote_host}
+	}
+
+	# Ein Zugriffsprotokoll, das ohne Zugangswörter auskommt.
+	log {
+		output file /data/access.log {
+			roll_size 10MiB
+			roll_keep 5
+		}
+	}
+
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options "nosniff"
+		-Server
+	}
+}

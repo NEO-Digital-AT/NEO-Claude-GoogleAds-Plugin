@@ -26,6 +26,13 @@ Configuration is read in this order, first hit wins:
     3. ~/.config/neo-google-ads/config.json
 
 Written by google-ads-auth.py, never by hand if it can be helped.
+
+The guardrails follow the same rule: GOOGLE_ADS_ALLOW_WRITE,
+GOOGLE_ADS_ALLOWED_CUSTOMER_IDS, GOOGLE_ADS_MAX_DAILY_BUDGET (in the
+account currency, not micros), GOOGLE_ADS_MAX_BUDGET_INCREASE_FACTOR and
+GOOGLE_ADS_MAX_OPERATIONS_PER_CALL override what the file says. A
+container has no file to edit, and a writing server without an account
+list and a budget ceiling is the thing these limits exist to prevent.
 """
 from __future__ import annotations
 
@@ -69,7 +76,7 @@ ENV_FIELDS = {
 
 # Defaults for the guardrails. Deliberately restrictive: a fresh install
 # reads but does not write, and switching writing on is a decision the
-# account owner makes once, in writing, in the configuration file.
+# account owner makes once, in writing.
 DEFAULT_GUARDRAILS = {
     "write_enabled": False,
     "allowed_customer_ids": [],       # empty means: every accessible account
@@ -78,6 +85,68 @@ DEFAULT_GUARDRAILS = {
     "max_operations_per_call": 200,
     "log_changes": True,
 }
+
+# Every guardrail can also come from the environment, because a container
+# has no configuration file to edit. Without these a server in Docker that
+# is allowed to write would run with no account list and no budget ceiling
+# — the two limits that matter most when it may spend money.
+GUARDRAIL_ENV = {
+    "write_enabled": "GOOGLE_ADS_ALLOW_WRITE",
+    "allowed_customer_ids": "GOOGLE_ADS_ALLOWED_CUSTOMER_IDS",
+    "max_daily_budget_micros": "GOOGLE_ADS_MAX_DAILY_BUDGET",
+    "max_budget_increase_factor": "GOOGLE_ADS_MAX_BUDGET_INCREASE_FACTOR",
+    "max_operations_per_call": "GOOGLE_ADS_MAX_OPERATIONS_PER_CALL",
+    "log_changes": "GOOGLE_ADS_LOG_CHANGES",
+}
+
+
+def _guardrails_from_env(guardrails: dict) -> dict:
+    """Reads the guardrails from the environment, where they are set.
+
+    GOOGLE_ADS_MAX_DAILY_BUDGET is given in the account currency, not in
+    micros: nobody types 50000000 for fifty euros without eventually
+    typing it wrong, and getting that wrong is the expensive mistake this
+    limit exists to catch.
+    """
+    def flag(name: str, current: bool) -> bool:
+        value = os.environ.get(name)
+        if value is None:
+            return current
+        return value.strip().lower() in ("1", "true", "yes", "on", "ja")
+
+    guardrails["write_enabled"] = flag(GUARDRAIL_ENV["write_enabled"],
+                                       guardrails["write_enabled"])
+    guardrails["log_changes"] = flag(GUARDRAIL_ENV["log_changes"],
+                                     guardrails["log_changes"])
+
+    accounts = os.environ.get(GUARDRAIL_ENV["allowed_customer_ids"])
+    if accounts is not None:
+        guardrails["allowed_customer_ids"] = [
+            "".join(c for c in part if c.isdigit())
+            for part in accounts.split(",") if part.strip()
+        ]
+
+    budget = os.environ.get(GUARDRAIL_ENV["max_daily_budget_micros"])
+    if budget is not None:
+        try:
+            guardrails["max_daily_budget_micros"] = int(round(float(budget) * 1_000_000))
+        except ValueError:
+            raise GoogleAdsError(
+                f"{GUARDRAIL_ENV['max_daily_budget_micros']}='{budget}' is not a number. "
+                "Give the ceiling in your account currency, for example 50 for fifty."
+            ) from None
+
+    for field, caster in (("max_budget_increase_factor", float),
+                          ("max_operations_per_call", int)):
+        raw = os.environ.get(GUARDRAIL_ENV[field])
+        if raw is not None:
+            try:
+                guardrails[field] = caster(raw)
+            except ValueError:
+                raise GoogleAdsError(
+                    f"{GUARDRAIL_ENV[field]}='{raw}' is not a number."
+                ) from None
+    return guardrails
 
 
 class GoogleAdsError(Exception):
@@ -111,9 +180,7 @@ def load_config(path: pathlib.Path | None = None) -> dict:
 
     guardrails = dict(DEFAULT_GUARDRAILS)
     guardrails.update(data.get("guardrails") or {})
-    if os.environ.get("GOOGLE_ADS_ALLOW_WRITE") == "1":
-        guardrails["write_enabled"] = True
-    data["guardrails"] = guardrails
+    data["guardrails"] = _guardrails_from_env(guardrails)
     data.setdefault("api_version", DEFAULT_API_VERSION)
 
     missing = [f for f in ("client_id", "client_secret", "refresh_token", "developer_token")

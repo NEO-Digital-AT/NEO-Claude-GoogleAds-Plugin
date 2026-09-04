@@ -17,6 +17,10 @@ THE DOOR IS ON THE INTERNET, so it is locked three ways:
     Address filter  optionally only Anthropic's published egress range
     Body limit      a request larger than the limit is refused unread
 
+The address filter reads X-Forwarded-For only when the connection itself
+comes from a trusted proxy address — otherwise anyone could claim to be
+Anthropic in a header and walk past the filter.
+
 A missing or wrong token gets a 401 and nothing else — no tool list, no
 hint about what is behind it.
 
@@ -104,17 +108,44 @@ class Handler(http.server.BaseHTTPRequestHandler):
     token = ""
     anthropic_only = False
     path_prefix = "/mcp"
+    # A reverse proxy sits on a private address: the loopback interface, or
+    # a container network. Nothing on the public internet is trusted to
+    # describe who it is forwarding for.
+    trusted_proxies = (
+        ipaddress.ip_network("127.0.0.0/8"),
+        ipaddress.ip_network("::1/128"),
+        ipaddress.ip_network("10.0.0.0/8"),
+        ipaddress.ip_network("172.16.0.0/12"),
+        ipaddress.ip_network("192.168.0.0/16"),
+        ipaddress.ip_network("fd00::/8"),
+    )
 
     # -- helpers -----------------------------------------------------------
 
     def _client_ip(self):
-        """The caller's address, honouring one proxy hop if it named it."""
-        forwarded = self.headers.get("X-Forwarded-For", "")
-        candidate = forwarded.split(",")[0].strip() if forwarded else self.client_address[0]
+        """The caller's address — trusting X-Forwarded-For only from a proxy.
+
+        A header can say anything. If the address filter believed every
+        X-Forwarded-For it saw, an attacker would simply claim to be
+        Anthropic and the filter would be decoration. So the header counts
+        only when the connection itself comes from an address in
+        trusted_proxies; from anywhere else the socket address wins.
+        """
         try:
-            return ipaddress.ip_address(candidate)
+            direct = ipaddress.ip_address(self.client_address[0])
         except ValueError:
             return None
+
+        forwarded = self.headers.get("X-Forwarded-For", "")
+        if not forwarded:
+            return direct
+        if not any(direct in network for network in self.trusted_proxies):
+            self.log_line(f"ignoring X-Forwarded-For from untrusted {direct}")
+            return direct
+        try:
+            return ipaddress.ip_address(forwarded.split(",")[0].strip())
+        except ValueError:
+            return direct
 
     def _send(self, status: int, payload: dict | None = None, *, headers: dict | None = None):
         body = json.dumps(payload, ensure_ascii=False, default=str).encode("utf-8") \
@@ -257,6 +288,10 @@ def main() -> int:
                         help="write a fresh token to --token-file and exit")
     parser.add_argument("--anthropic-only", action="store_true",
                         help="refuse callers outside Anthropic's published egress range")
+    parser.add_argument("--trusted-proxy", action="append", default=[], metavar="CIDR",
+                        help=("address or network whose X-Forwarded-For header is believed. "
+                              "Repeatable. Defaults to the loopback and private ranges, "
+                              "which is where a reverse proxy sits."))
     parser.add_argument("--tls-cert", help="certificate file, if no reverse proxy terminates TLS")
     parser.add_argument("--tls-key", help="private key file, with --tls-cert")
     options = parser.parse_args()
@@ -280,6 +315,13 @@ def main() -> int:
     Handler.token = load_token(token_path)
     Handler.anthropic_only = options.anthropic_only
     Handler.path_prefix = options.path
+    if options.trusted_proxy:
+        try:
+            Handler.trusted_proxies = tuple(
+                ipaddress.ip_network(entry, strict=False) for entry in options.trusted_proxy)
+        except ValueError as exc:
+            print(f"--trusted-proxy: {exc}", file=sys.stderr)
+            return 1
 
     server = ThreadingServer((options.host, options.port), Handler)
     scheme = "http"
@@ -296,6 +338,8 @@ def main() -> int:
           file=sys.stderr)
     print(f"  token:      {token_path}", file=sys.stderr)
     print(f"  callers:    {'Anthropic egress range only' if options.anthropic_only else 'any'}",
+          file=sys.stderr)
+    print(f"  proxies:    {', '.join(str(n) for n in Handler.trusted_proxies)}",
           file=sys.stderr)
     print(f"  TLS:        {'this process' if options.tls_cert else 'expected from a proxy'}",
           file=sys.stderr)

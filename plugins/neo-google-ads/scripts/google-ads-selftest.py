@@ -187,6 +187,83 @@ def test_guardrails() -> None:
     )
 
 
+def test_guardrails_from_env() -> None:
+    """The container case: no configuration file, everything from the environment."""
+    import contextlib
+    import os
+
+    @contextlib.contextmanager
+    def environment(**values):
+        vorher = {k: os.environ.get(k) for k in values}
+        os.environ.update({k: str(v) for k, v in values.items()})
+        try:
+            yield
+        finally:
+            for key, old in vorher.items():
+                if old is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = old
+
+    base = {"client_id": "x", "client_secret": "x", "refresh_token": "x",
+            "developer_token": "x"}
+
+    with environment(GOOGLE_ADS_CONFIG="/does/not/exist.json",
+                     GOOGLE_ADS_CLIENT_ID="x", GOOGLE_ADS_CLIENT_SECRET="x",
+                     GOOGLE_ADS_REFRESH_TOKEN="x", GOOGLE_ADS_DEVELOPER_TOKEN="x",
+                     GOOGLE_ADS_ALLOW_WRITE="true",
+                     GOOGLE_ADS_ALLOWED_CUSTOMER_IDS="123-456-7890, 9876543210",
+                     GOOGLE_ADS_MAX_DAILY_BUDGET="50",
+                     GOOGLE_ADS_MAX_BUDGET_INCREASE_FACTOR="1.5",
+                     GOOGLE_ADS_MAX_OPERATIONS_PER_CALL="25"):
+        config = gac.load_config()
+        rails = config["guardrails"]
+        case("the write switch comes from the environment", rails["write_enabled"] is True)
+        case("the account list is parsed and the hyphens stripped",
+             rails["allowed_customer_ids"] == ["1234567890", "9876543210"],
+             str(rails["allowed_customer_ids"]))
+        case("the budget ceiling is given in currency and stored in micros",
+             rails["max_daily_budget_micros"] == 50_000_000,
+             str(rails["max_daily_budget_micros"]))
+        case("factor and operation limit come through",
+             rails["max_budget_increase_factor"] == 1.5
+             and rails["max_operations_per_call"] == 25)
+
+        # And they must actually bite, not merely be present.
+        client = gac.Client(config)
+        client._token = "fake"                 # noqa: SLF001
+        client._token_expires = 2 ** 31        # noqa: SLF001
+        expect_refused(
+            "an account outside the environment list is refused",
+            lambda: client.check_write_allowed("5555555555", [], dry_run=False),
+            "not in guardrails.allowed_customer_ids",
+        )
+        expect_refused(
+            "a budget above the environment ceiling is refused",
+            lambda: client.check_write_allowed(
+                "1234567890", budget_operation(60_000_000), dry_run=False),
+            "above the agreed ceiling",
+        )
+
+    with environment(GOOGLE_ADS_CONFIG="/does/not/exist.json",
+                     GOOGLE_ADS_CLIENT_ID="x", GOOGLE_ADS_CLIENT_SECRET="x",
+                     GOOGLE_ADS_REFRESH_TOKEN="x", GOOGLE_ADS_DEVELOPER_TOKEN="x",
+                     GOOGLE_ADS_MAX_DAILY_BUDGET="fuenfzig"):
+        expect_refused(
+            "a budget ceiling that is not a number is refused at startup",
+            gac.load_config,
+            "is not a number",
+        )
+
+    with environment(GOOGLE_ADS_CONFIG="/does/not/exist.json",
+                     GOOGLE_ADS_CLIENT_ID="x", GOOGLE_ADS_CLIENT_SECRET="x",
+                     GOOGLE_ADS_REFRESH_TOKEN="x", GOOGLE_ADS_DEVELOPER_TOKEN="x"):
+        rails = gac.load_config()["guardrails"]
+        case("without the variables the restrictive defaults stand",
+             rails["write_enabled"] is False and rails["allowed_customer_ids"] == []
+             and rails["max_daily_budget_micros"] == 0)
+
+
 # --------------------------------------------------------------------------
 # 2. Error translation
 # --------------------------------------------------------------------------
@@ -425,7 +502,41 @@ def test_http() -> None:
         status, _ = post({"jsonrpc": "2.0", "id": 5, "method": "tools/list"})
         case("with --anthropic-only a local caller is refused despite the right token",
              status == 401, f"got {status}")
+
+        # And it must not be walked past by claiming to be Anthropic in a
+        # header. This is the whole point of trusted_proxies: a header is
+        # only as trustworthy as the connection that carried it.
+        def post_forwarded(claimed, trusted):
+            http_mod.Handler.trusted_proxies = trusted
+            request = urllib.request.Request(base + "/mcp", method="POST",
+                                             data=_json.dumps(
+                                                 {"jsonrpc": "2.0", "id": 6,
+                                                  "method": "tools/list"}).encode())
+            request.add_header("Content-Type", "application/json")
+            request.add_header("Authorization", f"Bearer {token}")
+            request.add_header("X-Forwarded-For", claimed)
+            try:
+                with urllib.request.urlopen(request, timeout=10) as response:
+                    return response.status
+            except urllib.error.HTTPError as exc:
+                return exc.code
+
+        import ipaddress as _ip
+        status = post_forwarded("160.79.104.5", trusted=())
+        case("a forged X-Forwarded-For does NOT get past the address filter",
+             status == 401, f"got {status} — the header was believed")
+
+        status = post_forwarded("160.79.104.5",
+                                trusted=(_ip.ip_network("127.0.0.0/8"),))
+        case("behind a trusted proxy the forwarded address is used",
+             status == 200, f"got {status}")
+
+        status = post_forwarded("8.8.8.8", trusted=(_ip.ip_network("127.0.0.0/8"),))
+        case("a trusted proxy forwarding a foreign address is still refused",
+             status == 401, f"got {status}")
+
         http_mod.Handler.anthropic_only = False
+        http_mod.Handler.trusted_proxies = ()
     finally:
         server.shutdown()
         server.server_close()
@@ -464,7 +575,9 @@ def main() -> int:
     options = parser.parse_args()
 
     print("\nGoogle Ads tools — self test (no network, no credentials)\n")
-    for group, run in (("guardrails", test_guardrails), ("errors", test_errors),
+    for group, run in (("guardrails", test_guardrails),
+                       ("guardrails from env", test_guardrails_from_env),
+                       ("errors", test_errors),
                        ("shaping", test_shaping), ("reports", test_reports),
                        ("protocol", test_protocol), ("http door", test_http),
                        ("change log", test_change_log)):

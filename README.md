@@ -36,12 +36,16 @@ Angabe.
 
 Darunter sitzen vier Schutzgrenzen im Werkzeug, nicht in der Absicht:
 
-| Grenze | Ab Werk | Wirkung |
-| --- | --- | --- |
-| `write_enabled` | **aus** | Ohne diesen Schalter geht kein scharfer Schreibvorgang durch |
-| `allowed_customer_ids` | leer | Begrenzt, in welche Konten geschrieben werden darf |
-| `max_daily_budget_micros` | 0 | Obergrenze je Tagesbudget |
-| `max_budget_increase_factor` | 3.0 | Größter Sprung in einem Schritt |
+| Grenze | Ab Werk | Wirkung | Umgebungsvariable |
+| --- | --- | --- | --- |
+| `write_enabled` | **aus** | Ohne diesen Schalter geht kein scharfer Schreibvorgang durch | `GOOGLE_ADS_ALLOW_WRITE` |
+| `allowed_customer_ids` | leer | Begrenzt, in welche Konten geschrieben werden darf | `GOOGLE_ADS_ALLOWED_CUSTOMER_IDS` |
+| `max_daily_budget_micros` | 0 | Obergrenze je Tagesbudget | `GOOGLE_ADS_MAX_DAILY_BUDGET` (in Währung) |
+| `max_budget_increase_factor` | 3.0 | Größter Sprung in einem Schritt | `GOOGLE_ADS_MAX_BUDGET_INCREASE_FACTOR` |
+
+Sie stehen in der Konfigurationsdatei oder in der Umgebung — ein Container
+hat keine Datei zum Bearbeiten, und ein schreibender Server ohne Kontoliste
+und Budgetdeckel ist genau das, was diese Grenzen verhindern sollen.
 
 Jeder Versuch — Trockenlauf eingeschlossen — steht mit Zeitstempel,
 Konto, Begründung und Ergebnis im Änderungsprotokoll.
@@ -54,7 +58,7 @@ Die Werkzeuge sind überall dieselben, nur die Tür ist eine andere.
 | --- | --- |
 | **Claude Code** | Plugin installieren, Server läuft als lokaler Prozess |
 | **Claude Desktop** | derselbe Prozess, fünf Zeilen in `claude_desktop_config.json` |
-| **claude.ai im Browser und am Handy** | `google-ads-http.py` auf einem eigenen Server, als Connector eingetragen |
+| **claude.ai im Browser und am Handy** | `docker compose up` aus `deploy/` auf einem VPS, als Connector eingetragen |
 
 Der Grund: Claude Code und die Desktop-App laufen auf deinem Rechner und
 dürfen dort ein Programm starten. Browser und Handy können nur eine
@@ -63,6 +67,17 @@ optionalem Adressfilter auf Anthropics veröffentlichten Bereich.
 
 Der vollständige Weg für alle drei steht in
 `plugins/neo-google-ads/skills/neo-google-ads/references/claude-anbindung.md`.
+
+Für den Browser liegt der Aufbau fertig unter `deploy/`: ein Container mit
+dem Server, einer mit Caddy für HTTPS, eine `.env` für Zugangsdaten und
+Schutzgrenzen. Der Server hat kein `ports:` — erreichbar ist er nur durch
+Caddy.
+
+```bash
+cp .env.example .env && nano .env
+mkdir -p data && sudo chown 10001:10001 data
+docker compose up -d --build
+```
 
 ## Installation
 

@@ -1,0 +1,50 @@
+# Two containers: the MCP server, and Caddy in front of it for HTTPS.
+#
+# Caddy fetches and renews the certificate on its own, so there is nothing
+# to remember in three months. The MCP server is not published to the host
+# at all — only Caddy can reach it, over the internal network.
+
+services:
+  google-ads-mcp:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    image: neo-google-ads:latest
+    container_name: neo-google-ads
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      # Credentials, token and change log. Keep this directory backed up:
+      # the change log is the answer to "who changed this and why".
+      - ./data:/data
+    # No ports section on purpose. The server is reachable through Caddy
+    # and in no other way; a stray firewall rule cannot expose it.
+    expose:
+      - "8788"
+    networks: [intern]
+    command: >
+      --host 0.0.0.0 --port 8788
+      --token-file /data/http-token
+      --anthropic-only
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: neo-google-ads-caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    networks: [intern]
+    depends_on: [google-ads-mcp]
+
+networks:
+  intern:
+    driver: bridge
+
+volumes:
+  caddy-data:
+  caddy-config:

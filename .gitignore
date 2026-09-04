@@ -13,3 +13,9 @@ __pycache__/
 /config.json
 /changes.jsonl
 /neo-google-ads/
+
+# Was der Docker-Aufbau auf dem Server erzeugt. Die .env enthält Refresh
+# Token, Client-Geheimnis und Developer Token; data/ das Zugangswort und
+# das Änderungsprotokoll.
+/deploy/.env
+/deploy/data/
