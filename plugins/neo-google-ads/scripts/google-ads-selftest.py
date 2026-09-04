@@ -10,7 +10,7 @@ That distinction matters. A guardrail that has never been shown to refuse
 anything is a comment, not a guardrail — and the thing it is supposed to
 stop is a five-figure invoice.
 
-Twenty cases in five groups:
+The cases fall in seven groups:
 
     guardrails    switch off, wrong account, budget ceiling, budget jump,
                   too many operations, and the clean case that must pass
@@ -18,6 +18,7 @@ Twenty cases in five groups:
     shaping       micros to currency, nested answer to flat field names
     queries       every prepared report produces valid GAQL
     protocol      the MCP handshake, both generations, and tools/list
+    http door     a real server on a real port: token, address filter, paths
 
     google-ads-selftest.py
     google-ads-selftest.py --verbose
@@ -343,7 +344,99 @@ def test_protocol() -> None:
 
 
 # --------------------------------------------------------------------------
-# 6. Change log
+# 6. The HTTP door
+#
+# This transport sits on the internet, so its lock is worth more than a
+# reading. The cases below start a real server on a real port and knock.
+# --------------------------------------------------------------------------
+
+def load_http():
+    import importlib.util
+    path = pathlib.Path(__file__).parent / "google-ads-http.py"
+    spec = importlib.util.spec_from_file_location("google_ads_http", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_http() -> None:
+    import json as _json
+    import socket
+    import threading
+    import urllib.error
+    import urllib.request
+
+    http_mod = load_http()
+    token = "t" * 60
+    http_mod.Handler.token = token
+    http_mod.Handler.anthropic_only = False
+    http_mod.Handler.path_prefix = "/mcp"
+
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+    server = http_mod.ThreadingServer(("127.0.0.1", port), http_mod.Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base = f"http://127.0.0.1:{port}"
+
+    def post(payload, bearer=token, path="/mcp"):
+        request = urllib.request.Request(base + path, method="POST",
+                                         data=_json.dumps(payload).encode())
+        request.add_header("Content-Type", "application/json")
+        if bearer:
+            request.add_header("Authorization", f"Bearer {bearer}")
+        try:
+            with urllib.request.urlopen(request, timeout=10) as response:
+                raw = response.read()
+                return response.status, (_json.loads(raw) if raw else None)
+        except urllib.error.HTTPError as exc:
+            return exc.code, exc.headers
+
+    try:
+        status, _ = post({"jsonrpc": "2.0", "id": 1, "method": "tools/list"}, bearer=None)
+        case("no token is refused with 401", status == 401, f"got {status}")
+
+        status, headers = post({"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
+                               bearer="wrong-but-same-length" + "x" * 38)
+        case("a wrong token of the same length is refused", status == 401, f"got {status}")
+        case("the 401 names the scheme the spec asks for",
+             "Bearer" in (headers.get("WWW-Authenticate") or ""))
+
+        status, body = post({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
+        tools = (body or {}).get("result", {}).get("tools", [])
+        case("the right token reaches the same thirteen tools",
+             status == 200 and len(tools) == len(mcp_handlers()), f"{status}, {len(tools)} tools")
+
+        status, body = post({"jsonrpc": "2.0", "method": "notifications/initialized"})
+        case("a notification is accepted with 202 and no body",
+             status == 202 and body is None, f"got {status}")
+
+        status, _ = post({"jsonrpc": "2.0", "id": 3, "method": "tools/list"}, path="/andere")
+        case("another path is 404, not the tool list", status == 404, f"got {status}")
+
+        status, body = post({"jsonrpc": "2.0", "id": 4, "method": "keine/methode"})
+        code = (body or {}).get("error", {}).get("code")
+        case("an unknown method answers -32601", code == -32601, str(code))
+
+        # The address filter is the second lock; it must refuse a caller from
+        # outside the range even when the token is right.
+        http_mod.Handler.anthropic_only = True
+        status, _ = post({"jsonrpc": "2.0", "id": 5, "method": "tools/list"})
+        case("with --anthropic-only a local caller is refused despite the right token",
+             status == 401, f"got {status}")
+        http_mod.Handler.anthropic_only = False
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def mcp_handlers():
+    return load_server().HANDLERS
+
+
+# --------------------------------------------------------------------------
+# 7. Change log
 # --------------------------------------------------------------------------
 
 def test_change_log() -> None:
@@ -373,7 +466,8 @@ def main() -> int:
     print("\nGoogle Ads tools — self test (no network, no credentials)\n")
     for group, run in (("guardrails", test_guardrails), ("errors", test_errors),
                        ("shaping", test_shaping), ("reports", test_reports),
-                       ("protocol", test_protocol), ("change log", test_change_log)):
+                       ("protocol", test_protocol), ("http door", test_http),
+                       ("change log", test_change_log)):
         start = len(RESULTS)
         run()
         failed = sum(1 for _, ok, _ in RESULTS[start:] if not ok)

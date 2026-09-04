@@ -210,7 +210,8 @@ Dazu vier Skripte, die von Hand laufen:
 | `google-ads-auth.py` | Verbinden, Schutzgrenzen setzen (`--allow-write`), Stand zeigen (`--show`), Zugangsdaten für eine Cloud-Sitzung ausgeben (`--env`) |
 | `google-ads-check.py` | Misst die Verbindung in acht Prüfungen, darunter Zugriffsstufe und Schreibweg |
 | `google-ads-selftest.py` | Weist ohne Netz nach, dass die Schutzgrenzen greifen — 34 Fälle |
-| `google-ads-mcp.py` | Der Server selbst; `--list-tools` und `--check-config` zur Diagnose |
+| `google-ads-mcp.py` | Der Server für Claude Code und Claude Desktop (lokaler Prozess); `--list-tools` und `--check-config` zur Diagnose |
+| `google-ads-http.py` | Derselbe Server über HTTP, für claude.ai im Browser und am Handy; `--new-token` erzeugt das Zugangswort |
 
 Darunter liegt `google_ads_client.py`: Konfiguration, Zugangstausch, HTTP,
 Fehlerübersetzung und die Schutzgrenzen. Keine ausführbare Datei — wer eine

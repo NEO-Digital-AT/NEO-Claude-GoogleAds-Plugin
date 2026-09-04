@@ -46,6 +46,24 @@ Darunter sitzen vier Schutzgrenzen im Werkzeug, nicht in der Absicht:
 Jeder Versuch — Trockenlauf eingeschlossen — steht mit Zeitstempel,
 Konto, Begründung und Ergebnis im Änderungsprotokoll.
 
+## In welchem Claude
+
+Die Werkzeuge sind überall dieselben, nur die Tür ist eine andere.
+
+| Wo | Wie |
+| --- | --- |
+| **Claude Code** | Plugin installieren, Server läuft als lokaler Prozess |
+| **Claude Desktop** | derselbe Prozess, fünf Zeilen in `claude_desktop_config.json` |
+| **claude.ai im Browser und am Handy** | `google-ads-http.py` auf einem eigenen Server, als Connector eingetragen |
+
+Der Grund: Claude Code und die Desktop-App laufen auf deinem Rechner und
+dürfen dort ein Programm starten. Browser und Handy können nur eine
+Adresse aufrufen — dafür ist der HTTP-Weg da, mit Zugangswort und
+optionalem Adressfilter auf Anthropics veröffentlichten Bereich.
+
+Der vollständige Weg für alle drei steht in
+`plugins/neo-google-ads/skills/neo-google-ads/references/claude-anbindung.md`.
+
 ## Installation
 
 ```
@@ -88,6 +106,7 @@ Alle laufen ohne Abhängigkeiten und taugen als Tor in einer CI.
 | Werkzeug | Wofür |
 | --- | --- |
 | `google-ads-mcp.py` | Der MCP-Server. Dreizehn Werkzeuge über die REST-Schnittstelle der Google Ads API v25. Spricht beide MCP-Fassungen — `initialize` und `server/discover`. `--list-tools` und `--check-config` zur Diagnose. |
+| `google-ads-http.py` | Derselbe MCP-Server über Streamable HTTP, damit claude.ai im Browser und am Handy ihn als Connector erreichen kann. Zugangswort mit `--new-token`, `--anthropic-only` lässt nur Aufrufe aus Anthropics veröffentlichtem Adressbereich durch. TLS gehört vor den Prozess, in einen Reverse Proxy. |
 | `google-ads-auth.py` | Verbinden über OAuth mit PKCE. `--paste-url` für Maschinen ohne Browser, `--allow-write` setzt die Schutzgrenzen, `--show` zeigt den Stand ohne Geheimnisse, `--env` gibt sie als Übergabeblock für eine Cloud-Sitzung aus. |
 | `google-ads-check.py` | Misst die Verbindung in acht Prüfungen. Prüfung 7 verrät die Zugriffsstufe, die die API nie ausspricht — ein Explorer-Token hat die Planungswerkzeuge gesperrt. Prüfung 8 ist ein Trockenlauf gegen das echte Konto, der nichts verändert. Jede fehlgeschlagene Prüfung nennt die Abhilfe. |
 | `google-ads-selftest.py` | Weist ohne Netz und ohne Zugangsdaten nach, dass die Handbremse hält: 35 Fälle in sechs Gruppen. Gegen sabotierte Fassungen geprüft — jede fiel auf. |
