@@ -27,6 +27,24 @@ aus, die kann kein Skript erzeugen:
    **Desktop-App**.
 6. Client-ID und Client-Geheimnis notieren.
 
+**Das Geheimnis erscheint genau einmal.** Google speichert es gehasht und
+zeigt es nur unmittelbar nach dem Erstellen; danach stehen in der Console
+nur noch die letzten vier Zeichen. Wer das Fenster schließt, ohne zu
+kopieren oder die JSON herunterzuladen, sieht es nie wieder — es ist dann
+verloren, nicht versteckt.
+
+Ist es weg, wird ein zweites erzeugt statt eines neuen Clients:
+<https://console.cloud.google.com/auth/clients> → Client anklicken →
+rechts **Geheimnis hinzufügen**. Ein Client darf mehrere haben; das alte
+bleibt gültig und kann später entfernt werden. In der Liste der
+Anmeldedaten führt auch das **Download-Symbol** zum Ziel — die JSON
+enthält Kennung und Geheimnis zusammen.
+
+**Die Client-ID ist kein Geheimnis.** Sie steht bei jeder Anmeldung
+sichtbar in der Browser-Adresse. Das Client-Geheimnis dagegen wird
+behandelt wie ein Passwort: nie in eine Nachricht, nie in ein Ticket, nie
+in ein Repository.
+
 ## Schritt 2: Developer Token
 
 1. In einem **Manager-Konto** (MCC) anmelden. Ein normales Ads-Konto hat
@@ -306,6 +324,7 @@ sie und braucht dann keine Datei.
 | `USER_PERMISSION_DENIED` | Kein Zugriff auf dieses Konto, oder `login_customer_id` fehlt | Manager-ID setzen |
 | `CUSTOMER_NOT_ENABLED` | Konto stillgelegt oder ohne Zahlungsmittel | Im Ads-Konto klären |
 | `no refresh token` beim Verbinden | Konto hatte diesem Client schon zugestimmt | Eintrag unter <https://myaccount.google.com/permissions> entfernen |
+| Nur eine Client-ID, kein Geheimnis | Google zeigt es nur einmal beim Erstellen | Client anklicken, **Geheimnis hinzufügen** |
 | Werkzeuge fehlen in Claude Code | Plugin nicht aktiv, oder `python3` nicht im Pfad | `/plugin`, dann `google-ads-mcp.py --check-config` |
 | Werkzeuge fehlen unter Windows | `python3` gibt es dort meist nicht | `GOOGLE_ADS_PYTHON=python` setzen, Claude Code neu starten |
 | In der Cloud-Sitzung keine Verbindung | Netzwerkstufe Trusted kennt die Google-Ads-Hosts nicht | Auf Custom stellen, beide Hosts eintragen |
