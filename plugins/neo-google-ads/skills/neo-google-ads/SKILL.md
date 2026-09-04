@@ -208,7 +208,7 @@ Dazu vier Skripte, die von Hand laufen:
 | Skript | Zweck |
 | --- | --- |
 | `google-ads-auth.py` | Verbinden, Schutzgrenzen setzen (`--allow-write`), Stand zeigen (`--show`), Zugangsdaten für eine Cloud-Sitzung ausgeben (`--env`) |
-| `google-ads-check.py` | Misst die Verbindung in sieben Prüfungen, mit `--customer-id` auch den Schreibweg |
+| `google-ads-check.py` | Misst die Verbindung in acht Prüfungen, darunter Zugriffsstufe und Schreibweg |
 | `google-ads-selftest.py` | Weist ohne Netz nach, dass die Schutzgrenzen greifen — 34 Fälle |
 | `google-ads-mcp.py` | Der Server selbst; `--list-tools` und `--check-config` zur Diagnose |
 

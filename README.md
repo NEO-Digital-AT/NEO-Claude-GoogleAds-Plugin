@@ -89,7 +89,7 @@ Alle laufen ohne Abhängigkeiten und taugen als Tor in einer CI.
 | --- | --- |
 | `google-ads-mcp.py` | Der MCP-Server. Dreizehn Werkzeuge über die REST-Schnittstelle der Google Ads API v25. Spricht beide MCP-Fassungen — `initialize` und `server/discover`. `--list-tools` und `--check-config` zur Diagnose. |
 | `google-ads-auth.py` | Verbinden über OAuth mit PKCE. `--paste-url` für Maschinen ohne Browser, `--allow-write` setzt die Schutzgrenzen, `--show` zeigt den Stand ohne Geheimnisse, `--env` gibt sie als Übergabeblock für eine Cloud-Sitzung aus. |
-| `google-ads-check.py` | Misst die Verbindung in sieben Prüfungen, mit `--customer-id` als achte einen Trockenlauf gegen das echte Konto. Jede fehlgeschlagene Prüfung nennt die Abhilfe. |
+| `google-ads-check.py` | Misst die Verbindung in acht Prüfungen. Prüfung 7 verrät die Zugriffsstufe, die die API nie ausspricht — ein Explorer-Token hat die Planungswerkzeuge gesperrt. Prüfung 8 ist ein Trockenlauf gegen das echte Konto, der nichts verändert. Jede fehlgeschlagene Prüfung nennt die Abhilfe. |
 | `google-ads-selftest.py` | Weist ohne Netz und ohne Zugangsdaten nach, dass die Handbremse hält: 35 Fälle in sechs Gruppen. Gegen sabotierte Fassungen geprüft — jede fiel auf. |
 
 ## Regeln

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Measures whether the Google Ads connection actually works.
 
-Seven checks, in the order in which they fail in practice. Each one names
+Eight checks, in the order in which they fail in practice. Each one names
 what to do when it fails, because "connection failed" is not a finding
 anyone can act on.
 
@@ -11,11 +11,18 @@ anyone can act on.
     4  Developer token        accepted by the API
     5  Accounts               at least one is readable
     6  Guardrails             what writing is currently allowed to do
-    7  Write path             a validate-only mutate reaches Google
+    7  Planning tools         whether the Keyword Planner answers at all
+    8  Write path             a validate-only mutate reaches Google
 
-Check 7 changes nothing: it sends a deliberately harmless operation with
-validateOnly, which makes Google run every rule and write nothing. It is
-skipped unless an account is given, because it needs one to aim at.
+Check 7 reveals the access level, which the API never states outright: a
+token with Explorer access reaches production accounts but has the
+planning tools switched off, while everything else keeps working.
+
+Check 8 changes nothing. It sends a deliberately harmless operation with
+validateOnly, which makes Google run every rule and write nothing.
+
+Both are skipped unless an account is given, because both need one to aim
+at.
 
     google-ads-check.py
     google-ads-check.py --customer-id 123-456-7890
@@ -205,6 +212,41 @@ def check_write_path(report: Report, client: Client, customer_id: str) -> None:
                "(nothing changed)")
 
 
+def check_planning_tools(report: Report, client: Client, customer_id: str) -> None:
+    """Asks the Keyword Planner one cheap question to reveal the access level.
+
+    The API never states the developer token's access level outright. It
+    shows through: a token with Explorer access reaches production
+    accounts but has the planning tools switched off. One tiny request
+    answers 'what do I actually have' — and that answer decides whether
+    two of the thirteen tools work.
+    """
+    if not customer_id:
+        report.add("planning tools", SKIP, "no --customer-id given")
+        return
+    body = {
+        "keywords": ["test"],
+        "language": "languageConstants/1001",
+        "geoTargetConstants": ["geoTargetConstants/2040"],
+        "keywordPlanNetwork": "GOOGLE_SEARCH",
+    }
+    try:
+        client.call("POST", f"customers/{customer_id}:generateKeywordHistoricalMetrics", body)
+    except GoogleAdsError as exc:
+        first = exc.message.splitlines()[0]
+        if exc.status in (401, 403) or "not_approved" in exc.message.lower() \
+                or "permission" in exc.message.lower():
+            report.add("planning tools", PASS,
+                       "NOT available — the token looks like EXPLORER access. Eleven of the "
+                       "thirteen tools work; the Keyword Planner does not")
+        else:
+            report.add("planning tools", FAIL, first,
+                       "Unexpected refusal. The message above says by what.")
+        return
+    report.add("planning tools", PASS,
+               "available — the token has BASIC access or higher, the Keyword Planner works")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Check the Google Ads connection.")
     parser.add_argument("--customer-id", default="",
@@ -231,6 +273,7 @@ def main() -> int:
             customer_id = normalize_customer_id(customer_id)
         elif len(readable) == 1:
             customer_id = readable[0]
+        check_planning_tools(report, client, customer_id)
         check_write_path(report, client, customer_id)
 
     if options.json:

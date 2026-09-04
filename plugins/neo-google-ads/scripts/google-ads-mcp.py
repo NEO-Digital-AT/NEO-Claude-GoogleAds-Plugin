@@ -432,7 +432,9 @@ def tool_catalogue() -> list[dict]:
             "name": "google_ads_keyword_ideas",
             "description": ("Keyword Planner. Returns keyword ideas with monthly search "
                             "volume, competition and bid estimates. Seed it with keywords, "
-                            "a page URL, a whole site, or keywords plus a URL."),
+                            "a page URL, a whole site, or keywords plus a URL. Needs a "
+                            "developer token with BASIC access; EXPLORER has the planning "
+                            "tools switched off."),
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -463,7 +465,8 @@ def tool_catalogue() -> list[dict]:
             "name": "google_ads_keyword_metrics",
             "description": ("Historical search volume, competition and bid range for "
                             "keywords you already have. Unlike keyword_ideas it invents "
-                            "nothing, it only measures the list you pass in."),
+                            "nothing, it only measures the list you pass in. Needs BASIC "
+                            "access, same as keyword_ideas."),
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -835,6 +838,32 @@ def _micros_to_amount(value) -> float | None:
         return None
 
 
+def _call_planning(client: Client, path: str, body: dict, login: str) -> dict:
+    """Calls a Keyword Planner endpoint and explains the one refusal that surprises.
+
+    A developer token with Explorer access reaches production accounts but
+    has the planning tools switched off. Everything else in this server
+    keeps working, so the failure looks like a bug in the tool rather than
+    a property of the token. It is neither: it is the access level, and
+    the message says so.
+    """
+    try:
+        return client.call("POST", path, body, login_customer_id=login)
+    except GoogleAdsError as exc:
+        if exc.status in (401, 403) or "not_approved" in exc.message.lower() \
+                or "permission" in exc.message.lower():
+            raise GoogleAdsError(
+                exc.message
+                + "\n  Hint: the Keyword Planner needs at least BASIC access. A developer "
+                  "token with EXPLORER access reaches production accounts but has the "
+                  "planning tools switched off, while every other tool here keeps working. "
+                  "Check the access level in the API Center of your manager account, and "
+                  "apply for Basic there if you need the planner.",
+                detail=exc.detail, status=exc.status,
+            ) from exc
+        raise
+
+
 def tool_keyword_ideas(args: dict) -> dict:
     body = _keyword_plan_common(args)
     keywords = [k for k in (args.get("keywords") or []) if k.strip()][:20]
@@ -853,9 +882,8 @@ def tool_keyword_ideas(args: dict) -> dict:
         raise GoogleAdsError("Give at least one seed: keywords, url or site.")
 
     customer_id = normalize_customer_id(args["customer_id"])
-    client = _client(args)
-    answer = client.call("POST", f"customers/{customer_id}:generateKeywordIdeas", body,
-                         login_customer_id=_login(args))
+    answer = _call_planning(_client(args), f"customers/{customer_id}:generateKeywordIdeas",
+                            body, _login(args))
     results = answer.get("results", [])
     limit = int(args.get("limit") or DEFAULT_ROW_LIMIT)
     ideas = [_shape_keyword_metrics(r) for r in results[:limit]]
@@ -874,9 +902,9 @@ def tool_keyword_metrics(args: dict) -> dict:
         raise GoogleAdsError("keywords is empty.")
 
     customer_id = normalize_customer_id(args["customer_id"])
-    client = _client(args)
-    answer = client.call("POST", f"customers/{customer_id}:generateKeywordHistoricalMetrics",
-                         body, login_customer_id=_login(args))
+    answer = _call_planning(_client(args),
+                            f"customers/{customer_id}:generateKeywordHistoricalMetrics",
+                            body, _login(args))
     results = answer.get("results", [])
     limit = int(args.get("limit") or DEFAULT_ROW_LIMIT)
     rows = [_shape_keyword_metrics(r) for r in results[:limit]]

@@ -61,6 +61,65 @@ Stufe in vielen Fällen ohne Wartezeit. Zwei Einschränkungen dabei:
 Wer den Keyword-Planer braucht oder mehr Operationen, beantragt auf
 derselben Seite **Basic**.
 
+## Schritt 2b: Wenn es kein Verwaltungskonto gibt
+
+Das API Center existiert **nur** in einem Verwaltungskonto. Ein normales
+Konto hat den Menüpunkt nicht — er ist nicht versteckt, er ist nicht da.
+Wer `https://ads.google.com/aw/apicenter` in einem normalen Konto aufruft,
+landet im Kontowähler, und keine Auswahl führt weiter.
+
+Ein bestehendes Kundenkonto lässt sich **nicht** in ein Verwaltungskonto
+umwandeln. Es muss ein neues her:
+
+<https://ads.google.com/home/tools/manager-accounts/> → Verwaltungskonto
+erstellen. Es kostet nichts, braucht keine Kampagnen, kein Budget und
+keine Zahlungsdaten. Bei der Frage nach dem Zweck ist „Konten anderer
+verwalten" richtig, sobald fremde Konten dazukommen sollen.
+
+### Wenn Google das Anlegen verweigert
+
+„Die zulässige Höchstzahl von Verwaltungskonten, die Sie erstellen
+können, wurde erreicht." — diese Meldung trifft auch Konten mit **zwei
+oder drei** Google-Ads-Konten. Es ist ein eigenes, von Google nicht
+veröffentlichtes Limit auf das **Erstellen** von Verwaltungskonten, nicht
+das Limit von 20 Konten je E-Mail-Adresse. Aufgelöste Konten zählen
+offenbar weiter mit.
+
+Zwei Wege, in dieser Reihenfolge:
+
+1. **Andere E-Mail-Adresse.** Das Limit hängt am Google-Konto. Eine
+   zweite Adresse der eigenen Firma — etwa `googleads-api@…` — genügt.
+   Der Developer Token und der Kontozugriff sind **getrennt**: der Token
+   kommt aus dem Verwaltungskonto, die Zustimmung im Browser gibt das
+   Konto, das die Kampagnen sieht. Beide dürfen verschiedene Konten sein.
+2. **Support fragen.** In Google Ads: Hilfe → Kontakt. Das Limit ist
+   anhebbar; als Grund genügt der API-Zugang.
+
+### Die eigenen Konten mit dem Verwaltungskonto verknüpfen
+
+Nötig, sobald der Antrag auf Basic-Zugriff läuft: Google verlangt dafür,
+dass die verwalteten Konten unter dem Verwaltungskonto hängen, das den
+Token hält.
+
+**Im Verwaltungskonto:**
+
+1. Linkes Menü → Einstellungen → oben **Einstellungen für Unterkonten**
+2. Pluszeichen → **Vorhandenes Konto verknüpfen**
+3. Kundennummer eintragen, **Anfrage senden**. Je Konto einmal.
+
+**Im jeweiligen Kundenkonto** (Konto wechseln):
+
+4. **Verwaltung** → **Zugriff und Sicherheit** → Reiter **Manager** →
+   Einladung **annehmen**
+
+Wer in beiden Konten Administrator ist, erledigt beide Seiten selbst.
+Aufgelöste Konten werden nicht verknüpft.
+
+Danach ist die Kundennummer des Verwaltungskontos die
+`login_customer_id`, und das Konto, in dem gearbeitet wird, die
+`customer_id`. Die zu verwechseln ist die häufigste Ursache für
+`USER_PERMISSION_DENIED`.
+
 ## Schritt 3: Verbinden
 
 ```bash
@@ -92,9 +151,16 @@ python3 <plugin>/scripts/google-ads-check.py
 python3 <plugin>/scripts/google-ads-check.py --customer-id 123-456-7890
 ```
 
-Sieben Prüfungen. Jede sagt bei einem Fehlschlag, was zu tun ist. Mit
-`--customer-id` kommt eine achte dazu: ein Trockenlauf gegen das echte
-Konto, der nichts verändert, aber beweist, dass der Schreibweg offen ist.
+Acht Prüfungen. Jede sagt bei einem Fehlschlag, was zu tun ist. Die
+letzten beiden brauchen `--customer-id`, weil sie ein Konto zum Zielen
+brauchen:
+
+- **Prüfung 7** stellt dem Keyword-Planer eine winzige Frage und verrät
+  damit die Zugriffsstufe, die die API nie ausspricht. Antwortet er
+  nicht, ist es ein Explorer-Token: elf der dreizehn Werkzeuge laufen,
+  der Keyword-Planer nicht.
+- **Prüfung 8** ist ein Trockenlauf gegen das echte Konto. Er verändert
+  nichts, beweist aber, dass der Schreibweg offen ist.
 
 ## Schritt 5: Schreiben freischalten
 
