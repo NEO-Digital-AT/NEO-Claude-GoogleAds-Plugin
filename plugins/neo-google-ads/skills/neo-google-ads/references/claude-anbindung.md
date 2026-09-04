@@ -5,52 +5,13 @@ weil die drei Claude-Oberflächen verschieden an einen Server kommen.
 
 | Wo | Wie | Aufwand |
 | --- | --- | --- |
+| **claude.ai im Browser und auf dem Handy** | `google-ads-http.py` läuft bei dir, claude.ai ruft die Adresse auf | eigener Server mit HTTPS |
 | **Claude Code** | Plugin, startet den Server als lokalen Prozess | eingerichtet |
-| **Claude Desktop** (Windows, macOS) | derselbe lokale Prozess, in der Desktop-Konfiguration | fünf Zeilen JSON |
-| **claude.ai im Browser, Claude auf dem Handy** | Server läuft bei dir und ist über HTTPS erreichbar | eigener Server nötig |
+| **Claude Desktop** | derselbe lokale Prozess, in der Desktop-Konfiguration | fünf Zeilen JSON |
 
 Der Grund für den Unterschied: Claude Code und die Desktop-App laufen auf
 deinem Rechner und dürfen dort ein Programm starten. Die Weboberfläche und
 die Handy-App laufen nicht bei dir — sie können nur eine Adresse aufrufen.
-
-## Claude Desktop
-
-Der stdio-Server, den Claude Code startet, ist derselbe, den die Desktop-App
-starten kann. Es ist keine Änderung nötig, nur ein Eintrag.
-
-Datei anlegen oder ergänzen:
-
-```
-Windows   %APPDATA%\Claude\claude_desktop_config.json
-macOS     ~/Library/Application Support/Claude/claude_desktop_config.json
-```
-
-```json
-{
-  "mcpServers": {
-    "neo-google-ads": {
-      "command": "python",
-      "args": ["C:\\Pfad\\zu\\scripts\\google-ads-mcp.py"],
-      "env": {
-        "PYTHONUNBUFFERED": "1",
-        "PYTHONDONTWRITEBYTECODE": "1",
-        "PYTHONIOENCODING": "utf-8"
-      }
-    }
-  }
-}
-```
-
-- Unter Windows `"python"`, unter macOS und Linux `"python3"`. Die Regel ist
-  dieselbe wie in `einrichtung.md`.
-- Der Pfad muss **absolut** sein. In JSON werden Backslashes verdoppelt.
-- Claude Desktop danach **vollständig beenden** und neu starten — das
-  Schließen des Fensters genügt nicht, das Programm läuft im Infobereich
-  weiter.
-- Die Zugangsdaten kommen aus derselben Datei wie bei Claude Code. Wer
-  `google-ads-auth.py` schon durchlaufen hat, ist fertig.
-
-Danach erscheinen die dreizehn Werkzeuge im Werkzeugmenü der Desktop-App.
 
 ## claude.ai im Browser und auf dem Handy
 
@@ -144,6 +105,45 @@ verrät nichts über die Konten, nur dass ein Server da ist.
 - **Zeitgrenze fünf Minuten.** Reicht für jede Abfrage dieses Servers.
 - Wer den Server abschaltet, verliert den Connector nicht — er antwortet
   nur nicht mehr. Beim nächsten Start ist er wieder da.
+
+## Claude Desktop
+
+Der stdio-Server, den Claude Code startet, ist derselbe, den die Desktop-App
+starten kann. Es ist keine Änderung nötig, nur ein Eintrag.
+
+Datei anlegen oder ergänzen:
+
+```
+Windows   %APPDATA%\Claude\claude_desktop_config.json
+macOS     ~/Library/Application Support/Claude/claude_desktop_config.json
+```
+
+```json
+{
+  "mcpServers": {
+    "neo-google-ads": {
+      "command": "python",
+      "args": ["C:\\Pfad\\zu\\scripts\\google-ads-mcp.py"],
+      "env": {
+        "PYTHONUNBUFFERED": "1",
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "PYTHONIOENCODING": "utf-8"
+      }
+    }
+  }
+}
+```
+
+- Unter Windows `"python"`, unter macOS und Linux `"python3"`. Die Regel ist
+  dieselbe wie in `einrichtung.md`.
+- Der Pfad muss **absolut** sein. In JSON werden Backslashes verdoppelt.
+- Claude Desktop danach **vollständig beenden** und neu starten — das
+  Schließen des Fensters genügt nicht, das Programm läuft im Infobereich
+  weiter.
+- Die Zugangsdaten kommen aus derselben Datei wie bei Claude Code. Wer
+  `google-ads-auth.py` schon durchlaufen hat, ist fertig.
+
+Danach erscheinen die dreizehn Werkzeuge im Werkzeugmenü der Desktop-App.
 
 ## Was du in welcher Oberfläche tust
 
