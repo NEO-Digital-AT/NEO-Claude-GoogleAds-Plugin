@@ -27,7 +27,10 @@ Google used to offer was switched off in 2022, so there has to be a
 browser somewhere — on this machine, or on another one with --paste-url.
 
     google-ads-auth.py                    ask, open a browser, write the file
-    google-ads-auth.py --paste-url        no browser here: paste the URL back
+    google-ads-auth.py --auth-url --env-file deploy/.env
+                                          step 1 without retyping anything
+    google-ads-auth.py --auth-code URL    step 2: hand back where the browser landed
+    google-ads-auth.py --paste-url        one process, waits for the paste
     google-ads-auth.py --show             print the current configuration
     google-ads-auth.py --allow-write      switch writing on (asks first)
     google-ads-auth.py --env              print it as a .env block for a cloud session
@@ -43,6 +46,7 @@ import hashlib
 import http.server
 import json
 import os
+import pathlib
 import secrets
 import socket
 import sys
@@ -56,6 +60,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from google_ads_client import (  # noqa: E402
     CONFIG_FILE,
+    ENV_FIELDS,
     DEFAULT_API_VERSION,
     DEFAULT_GUARDRAILS,
     Client,
@@ -250,6 +255,32 @@ def ask_yes(prompt: str, default: bool = False) -> bool:
     return answer in ("y", "yes", "j", "ja")
 
 
+def read_env_file(path: pathlib.Path) -> dict:
+    """Reads a .env file into the fields this script knows.
+
+    Whoever filled in deploy/.env has already typed the client ID, the
+    secret and the developer token once. Asking for them a second time is
+    an invitation to a typo, so they are read from where they already are.
+    """
+    if not path.exists():
+        raise GoogleAdsError(f"{path} does not exist.")
+    from_env = {}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key = key.strip()
+        value = value.strip()
+        # Strip a matching pair of quotes, the way .env readers do.
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+            value = value[1:-1]
+        for field, name in ENV_FIELDS.items():
+            if key == name and value:
+                from_env[field] = value
+    return from_env
+
+
 def existing_config() -> dict:
     """Reads what is already there, without insisting it is complete."""
     if not CONFIG_FILE.exists():
@@ -321,6 +352,185 @@ def show() -> int:
         "guardrails": config["guardrails"],
     }
     print(json.dumps(safe, indent=2, ensure_ascii=False))
+    return 0
+
+
+PENDING_FILE = CONFIG_FILE.parent / "pending-auth.json"
+
+
+def auth_url(env_file: str = "") -> int:
+    """Prints the consent URL and EXITS, so the URL can be copied in peace.
+
+    --paste-url keeps the process waiting for the pasted redirect. On a
+    terminal that is a trap: Ctrl-C is 'interrupt', not 'copy', so the
+    obvious way to pick up the URL kills the very process that is waiting
+    for it. Splitting the flow removes the trap — nothing is running while
+    the operator copies, and the second command takes the answer as an
+    argument.
+
+    The PKCE verifier and the state value are written to a file so the
+    second step can finish what this one began.
+    """
+    config = existing_config()
+
+    # Values already present win over questions: from an --env-file, then
+    # from the environment, then from the stored configuration.
+    if env_file:
+        config.update(read_env_file(pathlib.Path(env_file).expanduser()))
+        print(f"Read from {env_file}: "
+              f"{', '.join(k for k in ENV_FIELDS if config.get(k))}")
+    for field, name in ENV_FIELDS.items():
+        if os.environ.get(name):
+            config[field] = os.environ[name]
+
+    needed = ("client_id", "client_secret", "developer_token")
+    if all(config.get(field) for field in needed):
+        print("\nClient ID, client secret and developer token are known — not asking again.")
+        client_id = config["client_id"]
+        client_secret = config["client_secret"]
+        developer_token = config["developer_token"]
+        login = config.get("login_customer_id", "")
+    else:
+        print(CONSOLE_HINT)
+        print("\n-- OAuth client --")
+        client_id = ask("Client ID", config.get("client_id", ""))
+        client_secret = ask("Client secret", config.get("client_secret", ""), secret=True)
+        if not client_id or not client_secret:
+            print("Both are required.", file=sys.stderr)
+            return 1
+
+        print("\n-- Developer token --")
+        developer_token = ask("Developer token", config.get("developer_token", ""), secret=True)
+        if not developer_token:
+            print("A developer token is required.", file=sys.stderr)
+            return 1
+
+        print("\n-- Manager account --")
+        print("The manager (MCC) account ID whose API Center issued the developer token.")
+        print("Leave empty if you only have your own account.")
+        login = ask("Manager customer ID", config.get("login_customer_id", ""))
+    login = normalize_customer_id(login) if login else ""
+
+    verifier, challenge = pkce_pair()
+    state = secrets.token_urlsafe(24)
+    port = free_port()
+    redirect_uri = f"http://127.0.0.1:{port}"
+    url = AUTH_URL + "?" + urllib.parse.urlencode({
+        "client_id": client_id,
+        "redirect_uri": redirect_uri,
+        "response_type": "code",
+        "scope": OAUTH_SCOPE,
+        "access_type": "offline",
+        "prompt": "consent",
+        "code_challenge": challenge,
+        "code_challenge_method": "S256",
+        "state": state,
+    })
+
+    config.update({
+        "client_id": client_id, "client_secret": client_secret,
+        "developer_token": developer_token, "login_customer_id": login,
+        "api_version": config.get("api_version") or DEFAULT_API_VERSION,
+    })
+    config["guardrails"] = dict(DEFAULT_GUARDRAILS, **(config.get("guardrails") or {}))
+    # The refresh token is still missing, so save_config's completeness
+    # check would reject this. Write it the same way, minus the check.
+    CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
+    CONFIG_FILE.write_text(json.dumps(config, indent=2, ensure_ascii=False) + "\n",
+                           encoding="utf-8")
+    os.chmod(CONFIG_FILE, 0o600)
+
+    PENDING_FILE.write_text(json.dumps({
+        "verifier": verifier, "state": state, "redirect_uri": redirect_uri,
+    }, indent=2) + "\n", encoding="utf-8")
+    os.chmod(PENDING_FILE, 0o600)
+
+    print("\n" + "=" * 70)
+    print("STEP 1 of 2 — open this in a browser on any machine:")
+    print("=" * 70 + "\n")
+    print(url)
+    print("\n" + "=" * 70)
+    print("Nothing is running now, so copy the line above at your leisure.")
+    print("In most Linux terminals copying is Ctrl+Shift+C, not Ctrl+C —")
+    print("Ctrl+C interrupts. In PuTTY, selecting with the mouse copies.")
+    print("")
+    print("After granting access the browser lands on a 127.0.0.1 address")
+    print("that will not load. That is expected: the code is in the address.")
+    print("Copy the WHOLE address bar, then run STEP 2:")
+    print("")
+    print("    google-ads-auth.py --auth-code '<the pasted address>'")
+    print("=" * 70)
+    return 0
+
+
+def auth_code(pasted: str, env_file: str = "") -> int:
+    """Finishes what --auth-url started: trades the code for a refresh token."""
+    if not PENDING_FILE.exists():
+        print(f"No pending authorisation at {PENDING_FILE}.\n"
+              "Run google-ads-auth.py --auth-url first.", file=sys.stderr)
+        return 1
+    pending = json.loads(PENDING_FILE.read_text(encoding="utf-8"))
+    config = existing_config()
+    if env_file:
+        config.update(read_env_file(pathlib.Path(env_file).expanduser()))
+    if not config.get("client_id"):
+        print(f"{CONFIG_FILE} has no client ID. Run --auth-url first.", file=sys.stderr)
+        return 1
+
+    query = urllib.parse.parse_qs(urllib.parse.urlparse(pasted.strip()).query)
+    if not query:
+        # Someone may paste only the code rather than the whole address.
+        query = urllib.parse.parse_qs(pasted.strip().lstrip("?"))
+    if (query.get("state") or [""])[0] != pending["state"]:
+        print("The pasted address carries a different state value than the one\n"
+              "this machine issued. Start over with --auth-url rather than\n"
+              "trusting it.", file=sys.stderr)
+        return 1
+    code = (query.get("code") or [""])[0]
+    if not code:
+        reason = (query.get("error") or ["no code in that address"])[0]
+        print(f"Google reported: {reason}", file=sys.stderr)
+        return 1
+
+    payload = urllib.parse.urlencode({
+        "code": code,
+        "client_id": config["client_id"],
+        "client_secret": config["client_secret"],
+        "redirect_uri": pending["redirect_uri"],
+        "grant_type": "authorization_code",
+        "code_verifier": pending["verifier"],
+    }).encode("utf-8")
+    request = urllib.request.Request(TOKEN_URL, data=payload, method="POST")
+    request.add_header("Content-Type", "application/x-www-form-urlencoded")
+    try:
+        with urllib.request.urlopen(request, timeout=60) as response:
+            body = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", "replace")
+        print(f"Google rejected the code: {detail}\n"
+              "An authorisation code is valid for a few minutes only. If time\n"
+              "passed, run --auth-url again.", file=sys.stderr)
+        return 1
+
+    token = body.get("refresh_token", "")
+    if not token:
+        print("Google returned no refresh token. This happens when the account\n"
+              "already granted access to this client. Remove the entry at\n"
+              "https://myaccount.google.com/permissions and start over.",
+              file=sys.stderr)
+        return 1
+
+    config["refresh_token"] = token
+    save_config(config)
+    PENDING_FILE.unlink(missing_ok=True)
+    print(f"\nRefresh token received and written to {CONFIG_FILE}.")
+
+    if not verify(config):
+        print("Saved, but the API refused it. Fix the reason above.", file=sys.stderr)
+        return 1
+    print("\nDone. Reading works.")
+    print("\nFor a container or a CI, hand the credentials on with:")
+    print("    google-ads-auth.py --env")
     return 0
 
 
@@ -496,10 +706,21 @@ def main() -> int:
                         help="switch writing on and set the guardrails")
     parser.add_argument("--env", action="store_true",
                         help="print the credentials as a .env block, for a cloud session or CI")
+    parser.add_argument("--auth-url", action="store_true",
+                        help="step 1 of 2: print the consent URL and exit (no browser needed)")
+    parser.add_argument("--env-file", metavar="PATH", default="",
+                        help=("read client ID, secret and developer token from a .env file "
+                              "instead of asking for them again, e.g. deploy/.env"))
+    parser.add_argument("--auth-code", metavar="URL",
+                        help="step 2 of 2: the address the browser landed on")
     options = parser.parse_args()
 
     if options.show:
         return show()
+    if options.auth_url:
+        return auth_url(options.env_file)
+    if options.auth_code:
+        return auth_code(options.auth_code, options.env_file)
     if options.env:
         return show_env()
     if options.allow_write:

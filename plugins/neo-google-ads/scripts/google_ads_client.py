@@ -206,10 +206,19 @@ def save_config(data: dict, path: pathlib.Path | None = None) -> pathlib.Path:
 
 
 def normalize_customer_id(customer_id: str | int) -> str:
-    """Strips the hyphens Google writes in the interface but rejects in the API."""
+    """Strips the hyphens Google writes in the interface but rejects in the API.
+
+    A Google Ads customer ID is exactly ten digits. Checking the length is
+    not pedantry: a typo that keeps some digits would otherwise pass here
+    and come back as a permission error from the API, which reads like a
+    problem with the account rather than with the number.
+    """
     digits = "".join(c for c in str(customer_id) if c.isdigit())
-    if not digits:
-        raise GoogleAdsError(f"'{customer_id}' is not a customer ID. Expected ten digits.")
+    if len(digits) != 10:
+        raise GoogleAdsError(
+            f"'{customer_id}' is not a customer ID. Expected ten digits, "
+            f"got {len(digits)}. Hyphens are allowed: 123-456-7890."
+        )
     return digits
 
 

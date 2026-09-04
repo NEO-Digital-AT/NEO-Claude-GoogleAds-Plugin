@@ -148,15 +148,33 @@ Das Skript fragt die vier Angaben ab, öffnet den Zustimmungsbildschirm im
 Browser, tauscht den Code gegen einen Refresh Token und schreibt alles
 nach `~/.config/neo-google-ads/config.json` mit Rechten 0600.
 
-Kein Browser auf dieser Maschine (Server, Container):
+### Auf einem Server, ohne Browser
+
+`--paste-url` hält den Prozess an, bis die Adresse eingefügt ist. Auf
+einem Terminal ist das eine Falle: **Strg+C heißt dort „abbrechen", nicht
+„kopieren"** — der übliche Griff zum Kopieren der URL beendet genau den
+Prozess, der auf sie wartet. Deshalb gibt es den Ablauf in zwei Schritten,
+zwischen denen nichts läuft:
 
 ```bash
-python3 <plugin>/scripts/google-ads-auth.py --paste-url
+# Schritt 1 — druckt die URL und beendet sich
+python3 <plugin>/scripts/google-ads-auth.py --auth-url --env-file deploy/.env
+
+# URL in Ruhe kopieren, im Browser öffnen, zustimmen.
+# Der Browser landet auf einer 127.0.0.1-Adresse, die nicht lädt —
+# das ist richtig so, der Code steht darin. Ganze Adresszeile kopieren.
+
+# Schritt 2 — Adresse als Argument
+python3 <plugin>/scripts/google-ads-auth.py --auth-code 'http://127.0.0.1:.../?state=...&code=...'
 ```
 
-Dann wird die URL ausgegeben, auf einem beliebigen Rechner geöffnet, und
-die Adresse, auf der der Browser landet, zurückkopiert. Sie lädt nicht —
-das ist richtig so, der Code steht darin.
+**`--env-file` erspart das Abtippen.** Wer die `.env` für den Container
+schon gefüllt hat, hat Client-ID, Geheimnis und Developer Token dort
+stehen; das Skript liest sie von dort und fragt nichts mehr. Ohne die
+Angabe fragt es wie gehabt.
+
+Zum Kopieren im Terminal: in den meisten Linux-Terminals **Strg+Umschalt+C**,
+in PuTTY genügt das Markieren mit der Maus.
 
 Das Google-Konto, das im Browser zustimmt, muss **Nutzer der
 Ads-Konten** sein, um die es geht. Ein Google-Konto ohne Zugriff auf ein
