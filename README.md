@@ -79,6 +79,12 @@ mkdir -p data && sudo chown 10001:10001 data
 docker compose up -d --build
 ```
 
+Wer über Plesk ausrollt: `deploy/plesk-deploy.sh` nimmt dessen vier
+Eigenheiten ab — jede Zeile im Aktionsfeld läuft in einer eigenen Shell,
+der Agent hat einen kargen PATH, der Abo-Benutzer darf kein Docker, und
+ohne echten Shell-Zugang steckt alles in einer Chroot-Jail. Ins Feld
+kommt eine Zeile, der Rest steht in der Datei.
+
 ## Installation
 
 ```

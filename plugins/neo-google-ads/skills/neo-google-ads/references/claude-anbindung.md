@@ -86,6 +86,39 @@ Steht ein anderer Proxy davor als der aus dem Compose-Aufbau, muss er die
 echte Absenderadresse als `X-Forwarded-For` weitergeben, und seine eigene
 Adresse muss privat sein oder über `--trusted-proxy` genannt werden.
 
+### Bereitstellung über Plesk
+
+Plesk kann bei jedem Push neu ausrollen. Vier Eigenheiten stehen dem im
+Weg, und `deploy/plesk-deploy.sh` nimmt sie alle vier:
+
+| Eigenheit | Folge |
+| --- | --- |
+| **Jede Zeile im Feld „Bereitstellungsaktionen" läuft in einer eigenen Shell** | Eine Variable aus Zeile 1 gibt es in Zeile 2 nicht. `cd` wirkt nicht weiter, `set -e` schützt nur seine Zeile. Deshalb steht alles in einer Datei und im Feld nur ihr Aufruf. |
+| **Der Agent hat einen kargen PATH** | `docker` allein wird nicht gefunden. Das Skript sucht es unter den bekannten Pfaden. |
+| **Der Abo-Benutzer darf kein Docker** | Das Skript versucht es direkt, dann über `sudo -n`, und druckt bei Fehlschlag die fertige sudoers-Regel. |
+| **Ohne echten Shell-Zugang läuft alles in einer Chroot-Jail** | Dort ist Docker nicht erreichbar. In Plesk unter Webhosting-Zugriff `/bin/bash` einstellen, nicht die chrooted-Variante. |
+
+Ins Feld **Bereitstellungsaktionen** kommt genau eine Zeile:
+
+```
+/bin/bash /var/www/vhosts/<domain>/<verzeichnis>/deploy/plesk-deploy.sh
+```
+
+**Docker-Rechte: nicht über die Gruppe.** Der verbreitete Rat lautet
+`usermod -aG docker <benutzer>`. Wer Docker steuern darf, kann jedes
+Verzeichnis des Wirts in einen Container einhängen — das ist root mit
+anderem Namen, und auf einem Plesk-Server mit Kundendomains eine schlechte
+Idee. Eine sudo-Regel für genau zwei Befehle reicht; das Skript druckt sie
+aus, wenn sie fehlt.
+
+`.env` und `data/` kommen **nicht** über Git — sie stehen in der
+`.gitignore`. Einmal von Hand anlegen, danach überstehen sie jede
+Bereitstellung.
+
+Das Skript endet mit einem Fehler, wenn der Server nicht antwortet, und
+legt die letzten Protokollzeilen ins Plesk-Protokoll. Eine grüne
+Bereitstellung heißt damit: der Server läuft wirklich.
+
 ### Sichern
 
 Zwei Dinge im `data/`-Verzeichnis sind es wert:
