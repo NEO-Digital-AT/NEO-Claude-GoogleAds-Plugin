@@ -1,0 +1,33 @@
+# Variante für einen Plesk-Server.
+#
+# Auf einem Plesk-Server gibt es bereits einen Webserver, der Port 80 und
+# 443 belegt, und Plesk verwaltet für die Domain schon ein Let's-Encrypt-
+# Zertifikat. Ein zweiter Webserver im Container würde nur mit ihm um die
+# Ports streiten. Deshalb fehlt Caddy hier: der MCP-Server hört auf
+# 127.0.0.1, und Plesks nginx reicht durch.
+#
+#   docker compose -f docker-compose.plesk.yml up -d --build
+#
+# Dazu in Plesk: Domain -> Apache & nginx -> Zusätzliche nginx-Direktiven,
+# der Block aus references/claude-anbindung.md.
+
+services:
+  google-ads-mcp:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    image: neo-google-ads:latest
+    container_name: neo-google-ads
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      # Zugangsdaten, Zugangswort und Änderungsprotokoll. Sichern.
+      - ./data:/data
+    ports:
+      # Nur auf die Loopback-Adresse. Von außen ist der Port nicht
+      # erreichbar; allein Plesks nginx auf demselben Rechner kommt daran.
+      - "127.0.0.1:8788:8788"
+    command: >
+      --host 0.0.0.0 --port 8788
+      --token-file /data/http-token
+      --anthropic-only

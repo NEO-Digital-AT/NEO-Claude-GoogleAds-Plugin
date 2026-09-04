@@ -29,7 +29,17 @@ while [ -L "$_self" ]; do
     case "$_self" in /*) ;; *) _self="$_dir/$_self" ;; esac
 done
 DEPLOY_DIR="$(cd -- "$(dirname -- "$_self")" && pwd)"
-COMPOSE_FILE="$DEPLOY_DIR/docker-compose.yml"
+
+# On a Plesk server, Plesk's own nginx already holds ports 80 and 443 and
+# already manages the domain's certificate. The Plesk variant therefore
+# leaves the web server out and binds to the loopback address instead. It
+# wins wherever it exists, so nobody has to remember a flag.
+if [ -f "$DEPLOY_DIR/docker-compose.plesk.yml" ]; then
+    COMPOSE_NAME="docker-compose.plesk.yml"
+else
+    COMPOSE_NAME="docker-compose.yml"
+fi
+COMPOSE_FILE="$DEPLOY_DIR/$COMPOSE_NAME"
 DATA_DIR="$DEPLOY_DIR/data"
 CONTAINER_UID=10001            # matches the user in the Dockerfile
 HEALTH_TRIES=30                # times two seconds
@@ -46,7 +56,10 @@ fail()  { printf 'FEHLER: %s\n' "$1" >&2; exit 1; }
 step "Voraussetzungen"
 [ -n "$DOCKER" ] || fail "docker nicht gefunden. Erwartet unter /usr/bin/docker."
 [ -f "$COMPOSE_FILE" ] || fail "$COMPOSE_FILE fehlt."
-[ -f "$DEPLOY_DIR/Caddyfile" ] || fail "$DEPLOY_DIR/Caddyfile fehlt."
+if [ "$COMPOSE_NAME" = "docker-compose.yml" ]; then
+    [ -f "$DEPLOY_DIR/Caddyfile" ] || fail "$DEPLOY_DIR/Caddyfile fehlt."
+fi
+echo "Aufbau: $COMPOSE_NAME"
 [ -f "$DEPLOY_DIR/.env" ] || fail ".env fehlt. Einmalig anlegen:
   cp $DEPLOY_DIR/.env.example $DEPLOY_DIR/.env
   nano $DEPLOY_DIR/.env      # Block aus: google-ads-auth.py --env

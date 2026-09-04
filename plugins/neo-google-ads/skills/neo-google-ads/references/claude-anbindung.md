@@ -98,6 +98,37 @@ Weg, und `deploy/plesk-deploy.sh` nimmt sie alle vier:
 | **Der Abo-Benutzer darf kein Docker** | Das Skript versucht es direkt, dann über `sudo -n`, und druckt bei Fehlschlag die fertige sudoers-Regel. |
 | **Ohne echten Shell-Zugang läuft alles in einer Chroot-Jail** | Dort ist Docker nicht erreichbar. In Plesk unter Webhosting-Zugriff `/bin/bash` einstellen, nicht die chrooted-Variante. |
 
+**Kein Caddy auf einem Plesk-Server.** Plesks nginx belegt bereits Port 80
+und 443, und Plesk verwaltet für die Domain schon ein Let's-Encrypt-
+Zertifikat. Ein zweiter Webserver im Container streitet nur mit ihm um die
+Ports. Dafür liegt `docker-compose.plesk.yml` daneben: derselbe Server,
+ohne Caddy, gebunden an `127.0.0.1:8788`. Das Bereitstellungsskript nimmt
+sie automatisch, wo sie liegt — es ist nichts umzustellen.
+
+Durchgereicht wird über Plesk: **Domain → Apache & nginx → Zusätzliche
+nginx-Direktiven**:
+
+```nginx
+location / {
+    proxy_pass http://127.0.0.1:8788;
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-Proto $scheme;
+
+    # Die echte Absenderadresse, nicht die angehängte Kette. Ohne sie
+    # kann der Server --anthropic-only nicht anwenden und sieht nur nginx.
+    proxy_set_header X-Forwarded-For $remote_addr;
+
+    # claude.ai lässt einem Aufruf bis zu fünf Minuten Zeit.
+    proxy_read_timeout 300s;
+    proxy_send_timeout 300s;
+    proxy_buffering off;
+}
+```
+
+Das Zertifikat holt Plesk unter **SSL/TLS-Zertifikate → Let's Encrypt**.
+Erst danach ist die Adresse über https erreichbar.
+
 Ins Feld **Bereitstellungsaktionen** kommt genau eine Zeile:
 
 ```

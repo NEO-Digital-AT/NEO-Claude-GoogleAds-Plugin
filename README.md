@@ -83,7 +83,7 @@ Wer über Plesk ausrollt: `deploy/plesk-deploy.sh` nimmt dessen vier
 Eigenheiten ab — jede Zeile im Aktionsfeld läuft in einer eigenen Shell,
 der Agent hat einen kargen PATH, der Abo-Benutzer darf kein Docker, und
 ohne echten Shell-Zugang steckt alles in einer Chroot-Jail. Ins Feld
-kommt eine Zeile, der Rest steht in der Datei.
+kommt eine Zeile, der Rest steht in der Datei. Auf einem Plesk-Server entfällt Caddy — `docker-compose.plesk.yml` bindet an 127.0.0.1, und Plesks nginx reicht mit seinem eigenen Zertifikat durch.
 
 ## Installation
 
