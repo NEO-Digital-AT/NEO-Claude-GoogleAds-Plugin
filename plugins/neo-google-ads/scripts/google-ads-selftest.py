@@ -451,10 +451,14 @@ def test_errors() -> None:
     denied = client._translate(FakeHTTPError(403, {  # noqa: SLF001
         "error": {"code": 403, "message": "The caller does not have permission",
                   "details": [{"errors": [{
-                      "errorCode": {"authorizationError": "DEVELOPER_TOKEN_NOT_APPROVED"},
+                      "errorCode": {"authorizationError":
+                                    "CLOUD_PROJECT_NOT_APPROVED_FOR_PRODUCTION"},
                       "message": "The developer token is not approved."}]}]}}))
-    case("403 on the developer token points at the API Center",
-         "API Center" in denied.message)
+    case("A 403 POINTS AT THE CLOUD PROJECT, NOT THE DEVELOPER TOKEN",
+         "Cloud project" in denied.message and "API Center" not in denied.message,
+         denied.message.splitlines()[-1][:90])
+    case("and it names where the project number can be read off",
+         "client ID" in denied.message)
 
     broken = client._translate(FakeHTTPError(500, {}))
     case("an error without the envelope still produces a message",

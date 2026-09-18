@@ -174,13 +174,16 @@ def check_accounts(report: Report, client: Client) -> list[str]:
     except GoogleAdsError as exc:
         first = exc.message.splitlines()[0]
         if exc.status == 403 or "developer" in exc.message.lower():
-            report.add("developer token", FAIL, first,
-                       "Check the token in the API Center of your manager account.\n"
-                       "A token with TEST access only works on test accounts.")
+            report.add("API access", FAIL, first,
+                       "The Google Cloud project behind these credentials decides\n"
+                       "the access level — developer tokens were sunset on\n"
+                       "9 September 2026 and the header is ignored. A new project\n"
+                       "starts at Test access and reads test accounts only.\n"
+                       "Cloud Console -> Google Ads API -> Overview -> upgrade.")
         else:
-            report.add("developer token", FAIL, first, "See the message above.")
+            report.add("API access", FAIL, first, "See the message above.")
         return []
-    report.add("developer token", PASS, "accepted by the API")
+    report.add("API access", PASS, "the API answers these credentials")
 
     if not ids:
         report.add("accounts", FAIL, "no accessible accounts",

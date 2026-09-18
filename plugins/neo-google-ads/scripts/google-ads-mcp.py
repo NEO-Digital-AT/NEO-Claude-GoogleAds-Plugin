@@ -46,7 +46,7 @@ from google_ads_client import (  # noqa: E402
 )
 
 SERVER_NAME = "neo-google-ads"
-SERVER_VERSION = "2.3.3"
+SERVER_VERSION = "2.4.0"
 
 # Protocol revisions this server can answer, newest first. The 2026-07-28
 # revision replaced initialize with server/discover; the older ones are

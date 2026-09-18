@@ -150,7 +150,7 @@ Alle laufen ohne Abhängigkeiten und taugen als Tor in einer CI.
 | `google-ads-http.py` | Derselbe MCP-Server über Streamable HTTP, damit claude.ai im Browser und am Handy ihn als Connector erreichen kann. Zugangswort mit `--new-token`, `--anthropic-only` lässt nur Aufrufe aus Anthropics veröffentlichtem Adressbereich durch. TLS gehört vor den Prozess, in einen Reverse Proxy. |
 | `google-ads-auth.py` | Verbinden über OAuth mit PKCE. `--paste-url` für Maschinen ohne Browser, `--allow-write` setzt die Schutzgrenzen, `--show` zeigt den Stand ohne Geheimnisse, `--env` gibt sie als Übergabeblock für eine Cloud-Sitzung aus. |
 | `google-ads-check.py` | Misst die Verbindung in acht Prüfungen. Prüfung 7 verrät die Zugriffsstufe, die die API nie ausspricht — ein Explorer-Token hat die Planungswerkzeuge gesperrt. Prüfung 8 ist ein Trockenlauf gegen das echte Konto, der nichts verändert. Jede fehlgeschlagene Prüfung nennt die Abhilfe. |
-| `google-ads-selftest.py` | Weist ohne Netz und ohne Zugangsdaten nach, dass die Handbremse hält: 240 Fälle in sechzehn Gruppen, von den Schutzgrenzen über die Gestalt des Anfragekörpers bis zu Portal, Zwei-Faktor und QR-Code. Gegen sabotierte Fassungen geprüft — jede fiel auf. |
+| `google-ads-selftest.py` | Weist ohne Netz und ohne Zugangsdaten nach, dass die Handbremse hält: 241 Fälle in sechzehn Gruppen, von den Schutzgrenzen über die Gestalt des Anfragekörpers bis zu Portal, Zwei-Faktor und QR-Code. Gegen sabotierte Fassungen geprüft — jede fiel auf. |
 
 ## Regeln
 

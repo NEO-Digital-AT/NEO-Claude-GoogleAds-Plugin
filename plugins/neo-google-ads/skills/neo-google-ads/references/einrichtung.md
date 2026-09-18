@@ -55,6 +55,21 @@ Die Weiterleitungs-URI steht **am Client**, nicht in den Einstellungen der
 Google Auth Platform. Wer unter Branding, Zielgruppe oder Datenzugriff
 sucht, findet sie nicht.
 
+### Der Developer Token ist abgeschafft
+
+Seit dem **9. September 2026** gibt es ihn nicht mehr als Schlüssel.
+Google schreibt:
+
+> Developer tokens were sunset on September 9, 2026.
+> You can continue sending developer tokens in your API call headers, but
+> this is **optional and ignored** by the API servers.
+> Your API access levels are now determined by the **Google Cloud
+> project** you used to generate your OAuth credentials.
+
+Dieses Werkzeug schickt den Token weiterhin mit, weil das erlaubt und
+harmlos ist. Er entscheidet aber nichts mehr. Wer bei einem
+Berechtigungsfehler den Token prüft, sucht an der falschen Stelle.
+
 ### Die Zugriffsstufe hängt am Cloud-Projekt, nicht am Token
 
 Das ist die Falle, die am teuersten ist, weil sie wie ein

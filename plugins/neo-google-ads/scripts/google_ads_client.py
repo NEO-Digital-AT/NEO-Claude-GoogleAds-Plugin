@@ -427,9 +427,16 @@ class Client:
             summary += "\n  " + "\n  ".join(lines)
         if exc.code == 401:
             summary += "\n  Hint: the access token was rejected. Run google-ads-auth.py again."
-        if exc.code == 403 and "developer" in raw.lower():
-            summary += ("\n  Hint: the developer token is missing, wrong, or has no access "
-                        "to this account. Check the API Center of your manager account.")
+        if exc.code == 403:
+            # Not the developer token: Google sunset those on 9 September
+            # 2026 and the header is now ignored. What decides access is
+            # the Google Cloud project behind the OAuth credentials.
+            summary += ("\n  Hint: the Google Cloud project behind these OAuth "
+                        "credentials is probably not approved for production yet — "
+                        "a new project starts at Test access and may only read test "
+                        "accounts. Cloud Console -> Google Ads API -> Overview -> "
+                        "upgrade the access level. The project is the number before "
+                        "the dash in the client ID.")
         return GoogleAdsError(summary, detail=payload, status=exc.code)
 
     # -- reading -----------------------------------------------------------
