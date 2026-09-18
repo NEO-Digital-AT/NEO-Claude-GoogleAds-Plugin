@@ -31,3 +31,4 @@ services:
       --host 0.0.0.0 --port 8788
       --token-file /data/http-token
       --anthropic-only
+      --setup

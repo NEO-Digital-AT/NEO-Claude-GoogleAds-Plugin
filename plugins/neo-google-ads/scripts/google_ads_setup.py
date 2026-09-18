@@ -1,0 +1,576 @@
+#!/usr/bin/env python3
+"""A small management page for the Google Ads connection, served in the browser.
+
+Setting the connection up over SSH means copying an URL out of a terminal
+where Ctrl-C interrupts rather than copies, pasting it back, and reading a
+JSON file to see what happened. The container already answers on a public
+HTTPS address, so it can serve a page instead, and the whole round trip
+becomes three clicks.
+
+    /setup              status: connection, accounts, access level, guardrails
+    /setup/credentials  the four values Google requires (POST)
+    /setup/connect      starts the consent flow
+    /setup/callback     where Google returns; trades the code for a token
+    /setup/paste        the fallback when the OAuth client is a desktop one
+    /setup/disconnect   forgets the refresh token (POST, asks first)
+    /setup/check        runs the connection checks and shows the result
+
+THE PAGE IS AS SENSITIVE AS THE SERVER ITSELF, so it lives behind the same
+bearer token, offered as HTTP Basic auth: any user name, the token as the
+password. That turns an existing secret into a browser login instead of
+inventing a second one.
+
+The page speaks German because a person reads it. Everything around it —
+names, comments, log lines — stays English, like every other tool here.
+
+No dependencies, no template engine, no JavaScript: one function per page,
+HTML as text.
+"""
+from __future__ import annotations
+
+import base64
+import datetime
+import hashlib
+import html
+import json
+import os
+import pathlib
+import secrets
+import urllib.error
+import urllib.parse
+import urllib.request
+
+import google_ads_client as gac
+
+AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
+PENDING_FILE = gac.CONFIG_FILE.parent / "pending-auth.json"
+
+STYLE = """
+:root {
+  --bg: #fbfbfa; --fg: #1a1a18; --muted: #6b6b66; --line: #e3e3df;
+  --card: #ffffff; --ok: #1a7f4b; --warn: #a65d00; --bad: #b3261e;
+  --accent: #2c5aa0;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #17171a; --fg: #e8e8e4; --muted: #9a9a94; --line: #2e2e33;
+    --card: #1f1f23; --ok: #4ac47f; --warn: #e0a34a; --bad: #f2776b;
+    --accent: #7aa7e8;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--fg);
+  font: 16px/1.55 system-ui, -apple-system, "Segoe UI", sans-serif; }
+main { max-width: 52rem; margin: 0 auto; padding: 2rem 1rem 4rem; }
+h1 { font-size: 1.5rem; margin: 0 0 .25rem; }
+h2 { font-size: 1.1rem; margin: 2rem 0 .75rem; }
+p.lead { color: var(--muted); margin: 0 0 2rem; }
+.card { background: var(--card); border: 1px solid var(--line);
+  border-radius: .6rem; padding: 1.25rem; margin-bottom: 1rem; }
+table { width: 100%; border-collapse: collapse; font-size: .94rem; }
+th, td { text-align: left; padding: .5rem .6rem; border-bottom: 1px solid var(--line);
+  vertical-align: top; }
+th { font-weight: 600; color: var(--muted); font-size: .85rem;
+  text-transform: uppercase; letter-spacing: .03em; }
+tr:last-child td { border-bottom: none; }
+code, .mono { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: .9em; }
+.state { display: inline-block; padding: .1rem .5rem; border-radius: 1rem;
+  font-size: .8rem; font-weight: 600; }
+.state.ok { background: color-mix(in srgb, var(--ok) 15%, transparent); color: var(--ok); }
+.state.warn { background: color-mix(in srgb, var(--warn) 15%, transparent); color: var(--warn); }
+.state.bad { background: color-mix(in srgb, var(--bad) 15%, transparent); color: var(--bad); }
+label { display: block; margin: 1rem 0 .25rem; font-weight: 600; font-size: .92rem; }
+label span { display: block; font-weight: 400; color: var(--muted);
+  font-size: .85rem; margin-top: .15rem; }
+input[type=text], input[type=password] { width: 100%; padding: .55rem .7rem;
+  border: 1px solid var(--line); border-radius: .4rem; background: var(--bg);
+  color: var(--fg); font-family: ui-monospace, Menlo, monospace; font-size: .9rem; }
+button, .button { display: inline-block; padding: .55rem 1.1rem; border-radius: .4rem;
+  border: 1px solid transparent; background: var(--accent); color: #fff;
+  font: inherit; font-weight: 600; font-size: .94rem; cursor: pointer;
+  text-decoration: none; margin-top: 1.25rem; }
+button.quiet, .button.quiet { background: transparent; color: var(--fg);
+  border-color: var(--line); }
+button.danger { background: var(--bad); }
+pre { background: var(--bg); border: 1px solid var(--line); border-radius: .4rem;
+  padding: .9rem; overflow-x: auto; font-size: .86rem; margin: 0; }
+.row { display: flex; gap: .6rem; flex-wrap: wrap; align-items: center; }
+.note { color: var(--muted); font-size: .88rem; margin-top: .75rem; }
+a { color: var(--accent); }
+@media (max-width: 34rem) {
+  main { padding: 1.25rem .8rem 3rem; }
+  th, td { padding: .45rem .35rem; font-size: .88rem; }
+}
+"""
+
+
+def page(title: str, body: str) -> bytes:
+    """One HTML document. No framework, no build step, nothing to update."""
+    return (f"""<!doctype html>
+<html lang="de"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>{html.escape(title)} — NEO Google Ads</title>
+<style>{STYLE}</style></head>
+<body><main>{body}</main></body></html>""").encode("utf-8")
+
+
+def esc(value) -> str:
+    return html.escape(str(value if value is not None else ""))
+
+
+# --------------------------------------------------------------------------
+# Reading the current state
+# --------------------------------------------------------------------------
+
+def load_state() -> dict:
+    """Everything the status page shows, gathered in one place."""
+    state: dict = {"configured": False, "connected": False, "error": "",
+                   "accounts": [], "guardrails": {}, "config": {}}
+    try:
+        config = gac.load_config()
+    except gac.GoogleAdsError as exc:
+        state["error"] = exc.message
+        raw = {}
+        if gac.CONFIG_FILE.exists():
+            try:
+                raw = json.loads(gac.CONFIG_FILE.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                raw = {}
+        for field, name in gac.ENV_FIELDS.items():
+            if os.environ.get(name):
+                raw[field] = os.environ[name]
+        state["config"] = raw
+        state["guardrails"] = dict(gac.DEFAULT_GUARDRAILS)
+        return state
+
+    state["configured"] = True
+    state["config"] = config
+    state["guardrails"] = config["guardrails"]
+    client = gac.Client(config)
+    try:
+        ids = client.list_accessible_customers()
+    except gac.GoogleAdsError as exc:
+        state["error"] = exc.message
+        return state
+
+    state["connected"] = True
+    for customer_id in ids:
+        entry = {"id": customer_id, "name": "", "currency": "", "manager": False,
+                 "problem": ""}
+        try:
+            rows = client.search(
+                customer_id,
+                "SELECT customer.descriptive_name, customer.currency_code, "
+                "customer.manager, customer.status FROM customer LIMIT 1",
+                max_rows=1)
+            if rows:
+                customer = rows[0].get("customer", {})
+                entry["name"] = customer.get("descriptiveName", "")
+                entry["currency"] = customer.get("currencyCode", "")
+                entry["manager"] = bool(customer.get("manager"))
+                entry["status"] = customer.get("status", "")
+        except gac.GoogleAdsError as exc:
+            entry["problem"] = exc.message.splitlines()[0]
+        state["accounts"].append(entry)
+    return state
+
+
+def recent_changes(limit: int = 5) -> list[dict]:
+    if not gac.CHANGE_LOG.exists():
+        return []
+    entries = []
+    for line in gac.CHANGE_LOG.read_text(encoding="utf-8").splitlines():
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        entry.pop("operations", None)
+        entry.pop("detail", None)
+        entries.append(entry)
+    return list(reversed(entries))[:limit]
+
+
+# --------------------------------------------------------------------------
+# Pages
+# --------------------------------------------------------------------------
+
+def status_page(base_url: str) -> bytes:
+    state = load_state()
+    config = state["config"]
+    rails = state["guardrails"]
+
+    if state["connected"]:
+        badge = '<span class="state ok">verbunden</span>'
+    elif state["configured"]:
+        badge = '<span class="state bad">Zugang abgelehnt</span>'
+    elif config.get("client_id"):
+        badge = '<span class="state warn">noch nicht verbunden</span>'
+    else:
+        badge = '<span class="state warn">nicht eingerichtet</span>'
+
+    parts = [f"<h1>Google Ads {badge}</h1>",
+             '<p class="lead">Verbindung, Konten und Schutzgrenzen dieses Servers.</p>']
+
+    if state["error"]:
+        parts.append('<div class="card"><h2 style="margin-top:0">Meldung der API</h2>'
+                     f'<pre>{esc(state["error"])}</pre></div>')
+
+    # -- Zugangsdaten ------------------------------------------------------
+    have = lambda key: "gesetzt" if config.get(key) else "fehlt"  # noqa: E731
+    parts.append(f"""<div class="card">
+<h2 style="margin-top:0">Zugangsdaten</h2>
+<table>
+<tr><th>Client-ID</th><td class="mono">{esc(config.get('client_id','') [:42])}{'…' if len(config.get('client_id','')) > 42 else ''}</td></tr>
+<tr><th>Client-Geheimnis</th><td>{have('client_secret')}</td></tr>
+<tr><th>Developer Token</th><td>{have('developer_token')}</td></tr>
+<tr><th>Refresh Token</th><td>{have('refresh_token')}</td></tr>
+<tr><th>Verwaltungskonto</th><td class="mono">{esc(config.get('login_customer_id') or '—')}</td></tr>
+<tr><th>API-Fassung</th><td class="mono">{esc(config.get('api_version','—'))}</td></tr>
+</table>
+<div class="row">
+<a class="button quiet" href="/setup/credentials">Zugangsdaten bearbeiten</a>
+{'<a class="button" href="/setup/connect">Mit Google verbinden</a>'
+ if config.get('client_id') and config.get('client_secret') else ''}
+{'<a class="button quiet" href="/setup/check">Verbindung prüfen</a>' if state['configured'] else ''}
+</div></div>""")
+
+    # -- Konten ------------------------------------------------------------
+    if state["accounts"]:
+        zeilen = []
+        for account in state["accounts"]:
+            if account["problem"]:
+                rechts = f'<span class="state bad">nicht lesbar</span><br>' \
+                         f'<span class="note">{esc(account["problem"])}</span>'
+            else:
+                marks = " · Verwaltungskonto" if account["manager"] else ""
+                rechts = (f'{esc(account["name"] or "ohne Namen")} '
+                          f'<span class="note">{esc(account["currency"])}{marks}</span>')
+            zeilen.append(f'<tr><th class="mono">{esc(account["id"])}</th>'
+                          f'<td>{rechts}</td></tr>')
+        lesbar = sum(1 for a in state["accounts"] if not a["problem"])
+        parts.append(f"""<div class="card">
+<h2 style="margin-top:0">Konten <span class="note">{lesbar} von
+{len(state['accounts'])} lesbar</span></h2>
+<table>{''.join(zeilen)}</table></div>""")
+
+    # -- Schutzgrenzen -----------------------------------------------------
+    schreiben = ('<span class="state warn">eingeschaltet</span>'
+                 if rails.get("write_enabled") else '<span class="state ok">aus</span>')
+    konten = ", ".join(rails.get("allowed_customer_ids") or []) or "alle zugänglichen"
+    deckel = rails.get("max_daily_budget_micros") or 0
+    parts.append(f"""<div class="card">
+<h2 style="margin-top:0">Schutzgrenzen</h2>
+<table>
+<tr><th>Schreiben</th><td>{schreiben}</td></tr>
+<tr><th>Erlaubte Konten</th><td class="mono">{esc(konten)}</td></tr>
+<tr><th>Budgetdeckel je Tag</th><td>{f'{deckel / 1_000_000:.2f}' if deckel else 'keiner'}</td></tr>
+<tr><th>Größter Budgetsprung</th><td>Faktor {esc(rails.get('max_budget_increase_factor'))}</td></tr>
+<tr><th>Operationen je Aufruf</th><td>{esc(rails.get('max_operations_per_call'))}</td></tr>
+</table>
+<p class="note">Diese Werte stehen in der <code>.env</code> des Containers und
+werden dort geändert. Auch bei eingeschaltetem Schreiben ist jeder Aufruf
+zuerst ein Trockenlauf — scharf wird er erst nach ausdrücklicher Freigabe im
+Gespräch.</p></div>""")
+
+    # -- Letzte Änderungen -------------------------------------------------
+    changes = recent_changes()
+    if changes:
+        zeilen = []
+        for entry in changes:
+            art = "Trockenlauf" if entry.get("dry_run") else "<b>scharf</b>"
+            zeilen.append(
+                f'<tr><th class="mono">{esc(entry.get("time","")[:16])}</th>'
+                f'<td>{art} · {esc(entry.get("customer_id"))} · '
+                f'{esc(entry.get("operation_count"))} Operationen · '
+                f'{esc(entry.get("result"))}<br>'
+                f'<span class="note">{esc(entry.get("reason") or "ohne Begründung")}'
+                f'</span></td></tr>')
+        parts.append(f'<div class="card"><h2 style="margin-top:0">Letzte Änderungen</h2>'
+                     f'<table>{"".join(zeilen)}</table></div>')
+
+    # -- Verbindung trennen ------------------------------------------------
+    if config.get("refresh_token"):
+        parts.append("""<div class="card">
+<h2 style="margin-top:0">Verbindung trennen</h2>
+<p class="note">Löscht den Refresh Token auf diesem Server. Die Zugangsdaten
+bleiben, sodass ein erneutes Verbinden ohne Eingaben auskommt. Der Zugriff
+des Google-Kontos wird damit nicht widerrufen — das geschieht unter
+<a href="https://myaccount.google.com/permissions" target="_blank"
+rel="noopener">myaccount.google.com/permissions</a>.</p>
+<form method="post" action="/setup/disconnect">
+<button class="danger" type="submit">Refresh Token löschen</button>
+</form></div>""")
+
+    parts.append(f'<p class="note">MCP-Adresse für claude.ai: '
+                 f'<code>{esc(base_url)}/mcp</code></p>')
+    return page("Status", "".join(parts))
+
+
+def credentials_page(message: str = "") -> bytes:
+    state = load_state()
+    config = state["config"]
+    hinweis = f'<div class="card"><p>{esc(message)}</p></div>' if message else ""
+    return page("Zugangsdaten", f"""
+<h1>Zugangsdaten</h1>
+<p class="lead">Die vier Angaben, die Google verlangt. Zwei davon stellt Google
+einer namentlich bekannten Person aus — sie können nicht erzeugt werden.</p>
+{hinweis}
+<form method="post" action="/setup/credentials"><div class="card">
+<label>Client-ID
+<span>Google Cloud Console → Anmeldedaten → OAuth-Client. Für den Weg über
+diese Seite: Typ <b>Webanwendung</b>, mit der Rückadresse, die unten steht.</span>
+<input type="text" name="client_id" value="{esc(config.get('client_id',''))}"
+       autocomplete="off" spellcheck="false"></label>
+
+<label>Client-Geheimnis
+<span>Wird von Google nur einmal angezeigt. Leer lassen behält das gespeicherte.</span>
+<input type="password" name="client_secret" placeholder="{'gespeichert' if config.get('client_secret') else ''}"
+       autocomplete="off"></label>
+
+<label>Developer Token
+<span>API Center eines Verwaltungskontos. Leer lassen behält das gespeicherte.</span>
+<input type="password" name="developer_token" placeholder="{'gespeichert' if config.get('developer_token') else ''}"
+       autocomplete="off"></label>
+
+<label>Verwaltungskonto (Kundennummer)
+<span>Zehn Ziffern, Bindestriche erlaubt. Leer lassen, wenn die Konten direkt
+erreicht werden.</span>
+<input type="text" name="login_customer_id"
+       value="{esc(config.get('login_customer_id',''))}" autocomplete="off"></label>
+
+<button type="submit">Speichern</button>
+<a class="button quiet" href="/setup">Zurück</a>
+</div></form>""")
+
+
+def connect_page(base_url: str, force_paste: bool = False) -> bytes:
+    """Starts the consent flow, in whichever way the OAuth client allows."""
+    try:
+        config = gac.load_config()
+    except gac.GoogleAdsError:
+        config = {}
+        if gac.CONFIG_FILE.exists():
+            config = json.loads(gac.CONFIG_FILE.read_text(encoding="utf-8"))
+    if not config.get("client_id") or not config.get("client_secret"):
+        return page("Verbinden", """<h1>Verbinden</h1>
+<div class="card"><p>Client-ID und Geheimnis fehlen noch.</p>
+<a class="button" href="/setup/credentials">Zugangsdaten eintragen</a></div>""")
+
+    verifier, challenge = pkce_pair()
+    state_value = secrets.token_urlsafe(24)
+    redirect_uri = f"{base_url}/setup/callback"
+    url = AUTH_URL + "?" + urllib.parse.urlencode({
+        "client_id": config["client_id"], "redirect_uri": redirect_uri,
+        "response_type": "code", "scope": gac.OAUTH_SCOPE,
+        "access_type": "offline", "prompt": "consent",
+        "code_challenge": challenge, "code_challenge_method": "S256",
+        "state": state_value,
+    })
+    PENDING_FILE.parent.mkdir(parents=True, exist_ok=True)
+    PENDING_FILE.write_text(json.dumps({
+        "verifier": verifier, "state": state_value, "redirect_uri": redirect_uri,
+    }) + "\n", encoding="utf-8")
+    os.chmod(PENDING_FILE, 0o600)
+
+    return page("Verbinden", f"""<h1>Mit Google verbinden</h1>
+<p class="lead">Melde dich mit dem Google-Konto an, das deine Ads-Konten sieht —
+nicht zwingend das des Verwaltungskontos.</p>
+<div class="card">
+<a class="button" href="{esc(url)}">Bei Google anmelden und zustimmen</a>
+<p class="note">Danach kommst du hierher zurück. Steht die App noch auf
+„Test", erscheint eine Warnung; unter „Erweitert" lässt sie sich
+übergehen. Im Testmodus läuft die Verbindung allerdings nach sieben Tagen
+ab — für den Dauerbetrieb gehört die App auf „In Produktion".</p>
+</div>
+<div class="card">
+<h2 style="margin-top:0">Diese Rückadresse muss bei Google eingetragen sein</h2>
+<pre>{esc(redirect_uri)}</pre>
+<p class="note">Google Cloud Console → Anmeldedaten → dein OAuth-Client →
+Autorisierte Weiterleitungs-URIs. Das geht nur bei einem Client vom Typ
+<b>Webanwendung</b>. Bei einem Desktop-Client kommt stattdessen
+<code>redirect_uri_mismatch</code> — dann den Weg unten nehmen.</p>
+</div>
+<div class="card">
+<h2 style="margin-top:0">Desktop-Client: Adresse von Hand zurückgeben</h2>
+<p class="note">Nach der Zustimmung landet der Browser auf einer Adresse, die
+nicht lädt. Die ganze Adresszeile hier einfügen.</p>
+<form method="post" action="/setup/paste">
+<input type="text" name="pasted" placeholder="http://127.0.0.1:…/?state=…&amp;code=…"
+       autocomplete="off" spellcheck="false">
+<button type="submit">Adresse auswerten</button>
+</form></div>
+<p><a href="/setup">Zurück zum Status</a></p>""")
+
+
+def pkce_pair() -> tuple[str, str]:
+    verifier = base64.urlsafe_b64encode(secrets.token_bytes(64)).decode().rstrip("=")
+    digest = hashlib.sha256(verifier.encode("ascii")).digest()
+    return verifier, base64.urlsafe_b64encode(digest).decode().rstrip("=")
+
+
+def exchange_code(pasted_or_query: str) -> tuple[bool, str]:
+    """Trades an authorisation code for a refresh token. Returns (ok, message)."""
+    if not PENDING_FILE.exists():
+        return False, ("Keine offene Anmeldung. Der Vorgang muss über „Mit Google "
+                       "verbinden" " beginnen.")
+    pending = json.loads(PENDING_FILE.read_text(encoding="utf-8"))
+    parsed = urllib.parse.urlparse(pasted_or_query.strip())
+    query = urllib.parse.parse_qs(parsed.query or pasted_or_query.strip().lstrip("?"))
+
+    if (query.get("state") or [""])[0] != pending["state"]:
+        return False, ("Die Rückmeldung trägt einen anderen Prüfwert als der "
+                       "Server vergeben hat. Bitte neu beginnen.")
+    code = (query.get("code") or [""])[0]
+    if not code:
+        return False, f"Google meldet: {(query.get('error') or ['kein Code'])[0]}"
+
+    config = json.loads(gac.CONFIG_FILE.read_text(encoding="utf-8")) \
+        if gac.CONFIG_FILE.exists() else {}
+    for field, name in gac.ENV_FIELDS.items():
+        if os.environ.get(name):
+            config.setdefault(field, os.environ[name])
+
+    payload = urllib.parse.urlencode({
+        "code": code, "client_id": config["client_id"],
+        "client_secret": config["client_secret"],
+        "redirect_uri": pending["redirect_uri"],
+        "grant_type": "authorization_code",
+        "code_verifier": pending["verifier"],
+    }).encode("utf-8")
+    request = urllib.request.Request(gac.TOKEN_URL, data=payload, method="POST")
+    request.add_header("Content-Type", "application/x-www-form-urlencoded")
+    try:
+        with urllib.request.urlopen(request, timeout=60) as response:
+            body = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", "replace")[:400]
+        return False, ("Google hat den Code abgelehnt. Ein Code gilt nur wenige "
+                       f"Minuten. Antwort: {detail}")
+    except urllib.error.URLError as exc:
+        return False, f"Google war nicht erreichbar: {exc.reason}"
+
+    token = body.get("refresh_token", "")
+    if not token:
+        return False, ("Google hat keinen Refresh Token geschickt. Das passiert, "
+                       "wenn das Konto dieser Anwendung schon zugestimmt hat. Den "
+                       "Eintrag unter myaccount.google.com/permissions entfernen "
+                       "und erneut verbinden.")
+
+    config["refresh_token"] = token
+    config.setdefault("api_version", gac.DEFAULT_API_VERSION)
+    config["guardrails"] = dict(gac.DEFAULT_GUARDRAILS, **(config.get("guardrails") or {}))
+    gac.save_config(config)
+    PENDING_FILE.unlink(missing_ok=True)
+    return True, "Verbunden. Der Refresh Token ist gespeichert."
+
+
+def result_page(ok: bool, message: str) -> bytes:
+    zustand = '<span class="state ok">erledigt</span>' if ok \
+        else '<span class="state bad">fehlgeschlagen</span>'
+    return page("Ergebnis", f"""<h1>Ergebnis {zustand}</h1>
+<div class="card"><p>{esc(message)}</p>
+<div class="row"><a class="button" href="/setup">Zum Status</a>
+{'<a class="button quiet" href="/setup/connect">Erneut versuchen</a>' if not ok else ''}
+</div></div>""")
+
+
+def check_page() -> bytes:
+    """Runs the same checks as google-ads-check.py and shows them as a table."""
+    state = load_state()
+    zeilen = []
+
+    def zeile(name, ok, text):
+        marke = ('<span class="state ok">ok</span>' if ok
+                 else '<span class="state bad">Befund</span>')
+        zeilen.append(f'<tr><th>{esc(name)}</th><td>{marke} {esc(text)}</td></tr>')
+
+    zeile("Konfiguration", state["configured"],
+          "vollständig" if state["configured"] else state["error"].splitlines()[0])
+    if state["configured"]:
+        zeile("Zugang", state["connected"],
+              "die API antwortet" if state["connected"]
+              else state["error"].splitlines()[0])
+        lesbar = [a for a in state["accounts"] if not a["problem"]]
+        zeile("Konten", bool(lesbar),
+              f"{len(lesbar)} von {len(state['accounts'])} lesbar")
+
+        if lesbar:
+            client = gac.Client(state["config"])
+            try:
+                client.call("POST", f"customers/{lesbar[0]['id']}:"
+                                    "generateKeywordHistoricalMetrics",
+                            {"keywords": ["test"], "language": "languageConstants/1001",
+                             "geoTargetConstants": ["geoTargetConstants/2040"],
+                             "keywordPlanNetwork": "GOOGLE_SEARCH"})
+                zeile("Keyword-Planer", True, "verfügbar — Zugriffsstufe Basic oder höher")
+            except gac.GoogleAdsError:
+                zeile("Keyword-Planer", True,
+                      "gesperrt — Zugriffsstufe Explorer. Elf der dreizehn Werkzeuge "
+                      "laufen, der Keyword-Planer nicht")
+
+    rails = state["guardrails"]
+    zeile("Schutzgrenzen", True,
+          "Schreiben aus" if not rails.get("write_enabled")
+          else f"Schreiben ein, Konten: "
+               f"{', '.join(rails.get('allowed_customer_ids') or ['ALLE']) }")
+
+    return page("Prüfung", f"""<h1>Verbindung geprüft</h1>
+<p class="lead">Dieselben Prüfungen wie <code>google-ads-check.py</code>.</p>
+<div class="card"><table>{''.join(zeilen)}</table></div>
+<a class="button" href="/setup">Zurück zum Status</a>""")
+
+
+def save_credentials(form: dict) -> tuple[bool, str]:
+    """Writes the four values, keeping stored secrets when a field is left empty."""
+    config = {}
+    if gac.CONFIG_FILE.exists():
+        try:
+            config = json.loads(gac.CONFIG_FILE.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            config = {}
+
+    client_id = (form.get("client_id") or [""])[0].strip()
+    if not client_id:
+        return False, "Die Client-ID darf nicht leer sein."
+    config["client_id"] = client_id
+
+    for field in ("client_secret", "developer_token"):
+        value = (form.get(field) or [""])[0].strip()
+        if value:
+            config[field] = value
+        elif not config.get(field):
+            return False, f"Das Feld {field} ist noch nicht gesetzt."
+
+    login = (form.get("login_customer_id") or [""])[0].strip()
+    if login:
+        try:
+            config["login_customer_id"] = gac.normalize_customer_id(login)
+        except gac.GoogleAdsError as exc:
+            return False, exc.message
+    else:
+        config["login_customer_id"] = ""
+
+    config.setdefault("api_version", gac.DEFAULT_API_VERSION)
+    config["guardrails"] = dict(gac.DEFAULT_GUARDRAILS, **(config.get("guardrails") or {}))
+    gac.CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
+    gac.CONFIG_FILE.write_text(json.dumps(config, indent=2, ensure_ascii=False) + "\n",
+                               encoding="utf-8")
+    os.chmod(gac.CONFIG_FILE, 0o600)
+    return True, "Gespeichert."
+
+
+def disconnect() -> tuple[bool, str]:
+    """Forgets the refresh token, keeps everything else."""
+    if not gac.CONFIG_FILE.exists():
+        return False, "Es gibt keine Konfiguration."
+    config = json.loads(gac.CONFIG_FILE.read_text(encoding="utf-8"))
+    if not config.pop("refresh_token", None):
+        return False, "Es war kein Refresh Token gespeichert."
+    gac.CONFIG_FILE.write_text(json.dumps(config, indent=2, ensure_ascii=False) + "\n",
+                               encoding="utf-8")
+    os.chmod(gac.CONFIG_FILE, 0o600)
+    PENDING_FILE.unlink(missing_ok=True)
+    return True, ("Der Refresh Token ist gelöscht. Die Zugangsdaten bleiben, ein "
+                  "erneutes Verbinden kommt ohne Eingaben aus.")

@@ -38,6 +38,8 @@ No dependencies beyond the standard library.
 from __future__ import annotations
 
 import argparse
+import base64
+import binascii
 import contextlib
 import datetime
 import hmac
@@ -50,6 +52,7 @@ import secrets
 import socketserver
 import ssl
 import sys
+import urllib.parse
 import traceback
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -67,6 +70,7 @@ def load_mcp():
 
 
 mcp = load_mcp()
+import google_ads_setup as setup  # noqa: E402
 
 # Anthropic publishes the range its servers call out from. Restricting to it
 # turns a guessed token into a useless one, because the guess has to come
@@ -108,6 +112,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
     token = ""
     anthropic_only = False
     path_prefix = "/mcp"
+    setup_enabled = False
     # A reverse proxy sits on a private address: the loopback interface, or
     # a container network. Nothing on the public internet is trusted to
     # describe who it is forwarding for.
@@ -162,7 +167,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.wfile.write(body)
 
     def _authorized(self) -> bool:
-        """Address first, then token — both in constant time where it matters."""
+        """Address first, then token — both in constant time where it matters.
+
+        Only the MCP endpoint goes through here. The management pages use
+        Basic auth instead, because the person opening them sits at a desk,
+        not in Anthropic's network.
+        """
         if self.anthropic_only:
             address = self._client_ip()
             if address is None or address not in ANTHROPIC_EGRESS:
@@ -176,6 +186,63 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.log_line("refused: bad or missing token")
             return False
         return True
+
+    def _basic_authorized(self) -> bool:
+        """The same token, offered the way a browser can present it.
+
+        A browser cannot send a bearer header on a plain navigation, but it
+        can do Basic auth. Any user name, the token as the password: one
+        secret for both doors instead of a second one to keep.
+        """
+        header = self.headers.get("Authorization", "")
+        if not header.lower().startswith("basic "):
+            return False
+        try:
+            decoded = base64.b64decode(header[6:].strip()).decode("utf-8", "replace")
+        except (ValueError, binascii.Error):
+            return False
+        _, _, presented = decoded.partition(":")
+        return bool(presented) and hmac.compare_digest(presented, self.token)
+
+    def _ask_for_login(self):
+        body = (b"<!doctype html><meta charset=utf-8><title>Anmeldung</title>"
+                b"<p>Benutzername beliebig, Kennwort ist das Zugangswort des Servers.")
+        self.send_response(401)
+        self.send_header("WWW-Authenticate", 'Basic realm="NEO Google Ads"')
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _base_url(self) -> str:
+        """The address a browser reached this server on, as Google must see it."""
+        host = self.headers.get("X-Forwarded-Host") or self.headers.get("Host") or ""
+        scheme = self.headers.get("X-Forwarded-Proto") or "http"
+        return f"{scheme}://{host}".rstrip("/")
+
+    def _send_html(self, body: bytes, status: int = 200):
+        self.send_response(status)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _redirect(self, where: str):
+        self.send_response(303)
+        self.send_header("Location", where)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    def _read_form(self) -> dict:
+        try:
+            length = min(int(self.headers.get("Content-Length") or 0), 100_000)
+        except ValueError:
+            return {}
+        raw = self.rfile.read(length).decode("utf-8", "replace") if length else ""
+        return urllib.parse.parse_qs(raw)
 
     def _unauthorized(self):
         # The 401 carries the WWW-Authenticate header the MCP spec asks for,
@@ -193,15 +260,80 @@ class Handler(http.server.BaseHTTPRequestHandler):
     # -- verbs -------------------------------------------------------------
 
     def do_GET(self):  # noqa: N802
-        """Only a health check. The MCP endpoint itself answers POST."""
-        if self.path.rstrip("/") in ("/health", "/healthz"):
+        """Health check and, when switched on, the management pages."""
+        path = urllib.parse.urlparse(self.path).path.rstrip("/") or "/"
+        if path in ("/health", "/healthz"):
             self._send(200, {"status": "ok", "server": mcp.SERVER_NAME,
                              "version": mcp.SERVER_VERSION,
                              "protocol_versions": list(mcp.PROTOCOL_VERSIONS)})
             return
+
+        if self.setup_enabled and path.startswith("/setup"):
+            if not self._basic_authorized():
+                self.log_line(f"setup: refused {path}")
+                self._ask_for_login()
+                return
+            self.log_line(f"setup: {path}")
+            try:
+                self._setup_get(path)
+            except Exception as exc:  # noqa: BLE001
+                print(traceback.format_exc(), file=sys.stderr)
+                self._send_html(setup.result_page(False, f"{type(exc).__name__}: {exc}"), 500)
+            return
+
+        if path == "/" and self.setup_enabled:
+            self._redirect("/setup")
+            return
         self._send(404, {"error": "not found"})
 
+    def _setup_get(self, path: str):
+        if path == "/setup":
+            self._send_html(setup.status_page(self._base_url()))
+        elif path == "/setup/credentials":
+            self._send_html(setup.credentials_page())
+        elif path == "/setup/connect":
+            self._send_html(setup.connect_page(self._base_url()))
+        elif path == "/setup/check":
+            self._send_html(setup.check_page())
+        elif path == "/setup/callback":
+            query = urllib.parse.urlparse(self.path).query
+            ok, message = setup.exchange_code("?" + query)
+            self._send_html(setup.result_page(ok, message))
+        else:
+            self._send_html(setup.result_page(False, "Diese Seite gibt es nicht."), 404)
+
+    def _setup_post(self, path: str):
+        form = self._read_form()
+        if path == "/setup/credentials":
+            ok, message = setup.save_credentials(form)
+            if ok:
+                self._redirect("/setup")
+            else:
+                self._send_html(setup.credentials_page(message))
+        elif path == "/setup/paste":
+            ok, message = setup.exchange_code((form.get("pasted") or [""])[0])
+            self._send_html(setup.result_page(ok, message))
+        elif path == "/setup/disconnect":
+            ok, message = setup.disconnect()
+            self._send_html(setup.result_page(ok, message))
+        else:
+            self._send_html(setup.result_page(False, "Diese Seite gibt es nicht."), 404)
+
     def do_POST(self):  # noqa: N802
+        path = urllib.parse.urlparse(self.path).path.rstrip("/") or "/"
+        if self.setup_enabled and path.startswith("/setup"):
+            if not self._basic_authorized():
+                self.log_line(f"setup: refused POST {path}")
+                self._ask_for_login()
+                return
+            self.log_line(f"setup: POST {path}")
+            try:
+                self._setup_post(path)
+            except Exception as exc:  # noqa: BLE001
+                print(traceback.format_exc(), file=sys.stderr)
+                self._send_html(setup.result_page(False, f"{type(exc).__name__}: {exc}"), 500)
+            return
+
         if self.path.rstrip("/") not in (self.path_prefix.rstrip("/"), ""):
             self._send(404, {"error": "not found"})
             return
@@ -288,6 +420,9 @@ def main() -> int:
                         help="write a fresh token to --token-file and exit")
     parser.add_argument("--anthropic-only", action="store_true",
                         help="refuse callers outside Anthropic's published egress range")
+    parser.add_argument("--setup", action="store_true",
+                        help=("serve the management pages at /setup, behind the same "
+                              "token as Basic auth (any user name, token as password)"))
     parser.add_argument("--trusted-proxy", action="append", default=[], metavar="CIDR",
                         help=("address or network whose X-Forwarded-For header is believed. "
                               "Repeatable. Defaults to the loopback and private ranges, "
@@ -305,16 +440,27 @@ def main() -> int:
         print("  Authorization: Bearer <token>")
         return 0
 
-    # Fail before binding a port if the credentials are not usable.
+    # Refusing to start without credentials is right for a server whose only
+    # job is to answer MCP calls — but wrong when --setup is on, because the
+    # setup pages exist precisely for the machine that has none yet. With
+    # them, an incomplete configuration is a state to fix in the browser,
+    # not a reason to stay down.
     try:
         mcp.load_config()
     except mcp.GoogleAdsError as exc:
-        print(exc.message, file=sys.stderr)
-        return 1
+        if not options.setup:
+            print(exc.message, file=sys.stderr)
+            print("\nStart with --setup to configure it in a browser instead.",
+                  file=sys.stderr)
+            return 1
+        print(f"Not configured yet: {exc.message.splitlines()[0]}", file=sys.stderr)
+        print("The MCP endpoint answers with an error until that is fixed at /setup.",
+              file=sys.stderr)
 
     Handler.token = load_token(token_path)
     Handler.anthropic_only = options.anthropic_only
     Handler.path_prefix = options.path
+    Handler.setup_enabled = options.setup
     if options.trusted_proxy:
         try:
             Handler.trusted_proxies = tuple(
@@ -344,6 +490,9 @@ def main() -> int:
     print(f"  TLS:        {'this process' if options.tls_cert else 'expected from a proxy'}",
           file=sys.stderr)
     print("  health:     GET /health", file=sys.stderr)
+    if options.setup:
+        print(f"  setup:      GET {options.path.rsplit('/', 1)[0]}/setup "
+              "(Basic auth: any user, token as password)", file=sys.stderr)
     with contextlib.suppress(KeyboardInterrupt):
         server.serve_forever()
     server.server_close()
