@@ -10,7 +10,7 @@ That distinction matters. A guardrail that has never been shown to refuse
 anything is a comment, not a guardrail — and the thing it is supposed to
 stop is a five-figure invoice.
 
-The cases fall in fourteen groups:
+The cases fall in fifteen groups:
 
     guardrails    switch off, wrong account, budget ceiling, budget jump,
                   too many operations, and the clean case that must pass
@@ -25,6 +25,7 @@ The cases fall in fourteen groups:
     two factor    RFC 6238, and that a code cannot be used twice
     portal        accounts, sessions, the lockout, recovery codes
     portal door   which requests get in, and how the address is read
+    permission    which manager header opens which account — measured
 
     google-ads-selftest.py
     google-ads-selftest.py --verbose
@@ -1183,6 +1184,194 @@ def test_portal_door() -> None:
          gegangen == [("setup", "/setup/guardrails")], str(gegangen))
 
 
+# --------------------------------------------------------------------------
+# 15. Permission matrix
+# --------------------------------------------------------------------------
+
+def denied(code: str = "USER_PERMISSION_DENIED") -> gac.GoogleAdsError:
+    """The envelope Google actually sends for a refused account."""
+    payload = {"error": {"code": 403, "message": "The caller does not have permission",
+                         "status": "PERMISSION_DENIED",
+                         "details": [{"errors": [{"errorCode": {"authorizationError": code},
+                                                  "message": "User doesn't have permission "
+                                                             "to access customer."}]}]}}
+    return gac.GoogleAdsError("The caller does not have permission\n"
+                              f"  authorizationError={code} — User doesn't have permission.",
+                              detail=payload, status=403)
+
+
+def client_answering(rule) -> gac.Client:
+    """A client whose search() follows `rule(customer_id, login) -> bool`."""
+    client = make_client()
+    calls = []
+
+    def fake_search(customer_id, query, *, max_rows=10000, login_customer_id=None):
+        effective = (client.config.get("login_customer_id") or ""
+                     if login_customer_id is None else login_customer_id)
+        calls.append((customer_id, effective))
+        if rule(customer_id, effective):
+            return [{"customer": {"id": customer_id}}]
+        raise denied()
+
+    client.search = fake_search
+    client.calls = calls
+    return client
+
+
+def test_permission_matrix() -> None:
+    """The measurement that replaced guessing at USER_PERMISSION_DENIED.
+
+    The API refuses an account without saying whether the manager header
+    is wrong, the link is missing, or the token is. Reading the message
+    cannot tell those apart — trying can.
+    """
+    MANAGER, A, B, FREMD = "5303457641", "5691007627", "6286913360", "8323427154"
+    ALLE = [FREMD, A, B, MANAGER]
+
+    case("the error code is dug back out of the envelope",
+         gac.error_code_of(denied()) == "authorizationError=USER_PERMISSION_DENIED",
+         gac.error_code_of(denied()))
+    case("and out of a message alone, with no envelope",
+         gac.error_code_of(gac.GoogleAdsError(
+             "The caller does not have permission\n"
+             "  authorizationError=USER_PERMISSION_DENIED — nope")) 
+         == "authorizationError=USER_PERMISSION_DENIED")
+
+    # The case in front of us: a manager header that fits nothing.
+    client = client_answering(lambda cid, login: login == "")
+    client.config["login_customer_id"] = MANAGER
+    matrix = client.permission_matrix(ALLE)
+    case("every account is found readable without the manager header",
+         all(row["works_with"] == "" for row in matrix),
+         str([(r["id"], r["works_with"]) for r in matrix]))
+    case("and the configured header is recorded as the failure",
+         all(row["attempts"][0]["label"] == "wie eingestellt"
+             and not row["attempts"][0]["ok"] for row in matrix))
+    case("the measurement stops at the first setting that works",
+         all(len(row["attempts"]) == 2 for row in matrix),
+         str([len(r["attempts"]) for r in matrix]))
+
+    # The other shape: the accounts really are under the manager.
+    client = client_answering(lambda cid, login: login == MANAGER)
+    client.config["login_customer_id"] = MANAGER
+    matrix = client.permission_matrix(ALLE)
+    case("with the right manager, one call per account is enough",
+         all(len(row["attempts"]) == 1 and row["works_with"] is None
+             or row["attempts"][0]["ok"] for row in matrix),
+         str([(r["id"], len(r["attempts"])) for r in matrix]))
+
+    # A manager that is not the configured one.
+    client = client_answering(lambda cid, login: login == FREMD and cid in (A, B))
+    client.config["login_customer_id"] = MANAGER
+    matrix = client.permission_matrix(ALLE)
+    treffer = {row["id"]: row["works_with"] for row in matrix}
+    case("an account readable only under ANOTHER manager is found",
+         treffer[A] == FREMD and treffer[B] == FREMD, str(treffer))
+    case("and one that no header opens is reported as such",
+         treffer[MANAGER] is None and treffer[FREMD] is None, str(treffer))
+    case("the failing rows carry the API's error code",
+         all(row["code"] == "authorizationError=USER_PERMISSION_DENIED"
+             for row in matrix if row["works_with"] is None))
+
+    # Nothing works at all — the header is not the problem.
+    client = client_answering(lambda cid, login: False)
+    client.config["login_customer_id"] = MANAGER
+    matrix = client.permission_matrix(ALLE)
+    case("when nothing works, every candidate was tried",
+         all(len(row["attempts"]) == len(ALLE) + 1 for row in matrix),
+         str([len(r["attempts"]) for r in matrix]))
+    case("and no duplicate header is tried twice",
+         all(len({(a["login"] if a["login"] is not None else "\x00")
+                  for a in row["attempts"]}) == len(row["attempts"])
+             for row in matrix))
+
+    # The measured mapping, once adopted, must actually be used.
+    client = make_client()
+    client.config["login_customer_id"] = MANAGER
+    client.config["account_logins"] = {A: "", B: FREMD, MANAGER: MANAGER}
+    case("an account mapped to no header gets none",
+         client.login_for(A) == "" and client.login_for(A.replace("569", "569")) == "")
+    case("an account mapped to another manager gets that one",
+         client.login_for(B) == FREMD)
+    case("an unmapped account falls back to the configuration",
+         client.login_for("1234567890") is None)
+    case("and an explicit argument beats the mapping",
+         client.login_for(A, MANAGER) == MANAGER)
+    case("the mapping is matched with hyphens too",
+         client.login_for("569-100-7627") == "")
+
+    gesendet = []
+    client.call = lambda method, path, body=None, *, login_customer_id=None: (
+        gesendet.append((path, login_customer_id)) or {"results": []})
+    client.search(A, "SELECT customer.id FROM customer")
+    client.search(B, "SELECT customer.id FROM customer")
+    client.search("1234567890", "SELECT customer.id FROM customer")
+    case("SEARCH USES THE MAPPED HEADER, PER ACCOUNT",
+         [g[1] for g in gesendet] == ["", FREMD, None], str(gesendet))
+
+    # A measurement that consults the mapping it is measuring measures
+    # itself. Stubbed at call() so login_for really runs.
+    client = make_client()
+    client.config["login_customer_id"] = MANAGER
+    client.config["account_logins"] = {A: FREMD}
+    gesehen = []
+    client.call = lambda method, path, body=None, *, login_customer_id=None: (
+        gesehen.append(login_customer_id) or {"results": [{"customer": {}}]})
+    client.probe_account(A, "")
+    case("MEASURING WITHOUT A HEADER REALLY SENDS NONE, MAPPING OR NOT",
+         gesehen == [""], str(gesehen))
+    client.probe_account(A, MANAGER)
+    case("and measuring with one sends that one", gesehen[-1] == MANAGER, str(gesehen))
+    client.probe_account(A, None)
+    case("'as configured' means the configuration, not the stored mapping",
+         gesehen[-1] == MANAGER, f"{gesehen[-1]!r} — the mapping says {FREMD}")
+
+    # load_state must not throw the error code away again.
+    setup = load_setup()
+    with tempfile.TemporaryDirectory() as folder:
+        konfig = pathlib.Path(folder) / "config.json"
+        konfig.write_text(json.dumps({
+            "client_id": "t", "client_secret": "t", "refresh_token": "t",
+            "developer_token": "t", "api_version": "v25",
+            "login_customer_id": MANAGER}), encoding="utf-8")
+        echte_datei, gac.CONFIG_FILE = gac.CONFIG_FILE, konfig
+        echt_liste = gac.Client.list_accessible_customers
+        echt_suche = gac.Client.search
+        echt_token = gac.Client.access_token
+        try:
+            gac.Client.list_accessible_customers = lambda self: [A]
+            gac.Client.access_token = lambda self: "x"
+
+            def weigern(self, customer_id, query, **rest):
+                raise denied()
+            gac.Client.search = weigern
+            zustand = setup.load_state()
+            konto = zustand["accounts"][0]
+            case("A REFUSED ACCOUNT KEEPS THE API'S ERROR CODE",
+                 konto["code"] == "authorizationError=USER_PERMISSION_DENIED",
+                 f"code={konto['code']!r} problem={konto['problem']!r}")
+            case("and still carries Google's own sentence",
+                 "does not have permission" in konto["problem"])
+        finally:
+            gac.Client.list_accessible_customers = echt_liste
+            gac.Client.search = echt_suche
+            gac.Client.access_token = echt_token
+            gac.CONFIG_FILE = echte_datei
+
+    # The header itself: three states, and the third is the new one.
+    client = make_client()
+    client.config["login_customer_id"] = MANAGER
+    case("no argument means: take the configured manager",
+         client._headers().get("login-customer-id") == MANAGER)  # noqa: SLF001
+    case("AN EMPTY STRING MEANS: SEND NO MANAGER HEADER",
+         "login-customer-id" not in client._headers(""))  # noqa: SLF001
+    case("a value means: send exactly that one",
+         client._headers("123-456-7890").get("login-customer-id")  # noqa: SLF001
+         == "1234567890")
+    case("and measuring does not leave the configuration changed",
+         client.config["login_customer_id"] == MANAGER)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Prove the Google Ads guardrails hold.")
     parser.add_argument("--verbose", action="store_true", help="show the detail of every case")
@@ -1199,7 +1388,8 @@ def main() -> int:
                        ("management console", test_console),
                        ("qr code", test_qr), ("two factor", test_two_factor),
                        ("portal accounts", test_portal),
-                       ("portal door", test_portal_door)):
+                       ("portal door", test_portal_door),
+                       ("permission matrix", test_permission_matrix)):
         start = len(RESULTS)
         run()
         failed = sum(1 for _, ok, _ in RESULTS[start:] if not ok)

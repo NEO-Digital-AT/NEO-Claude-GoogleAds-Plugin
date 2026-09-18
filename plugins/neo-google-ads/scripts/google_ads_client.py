@@ -226,6 +226,27 @@ def normalize_customer_id(customer_id: str | int) -> str:
 # The client
 # --------------------------------------------------------------------------
 
+def error_code_of(exc: "GoogleAdsError") -> str:
+    """The API's own error code, e.g. authorizationError=USER_PERMISSION_DENIED.
+
+    _translate already puts it on the second line of the message; this
+    digs it back out so a caller can show it instead of Google's opening
+    sentence, which says only "The caller does not have permission" and
+    names neither the account nor the reason.
+    """
+    payload = getattr(exc, "detail", None) or {}
+    for detail in (payload.get("error") or {}).get("details") or []:
+        for item in detail.get("errors") or []:
+            code = item.get("errorCode") or {}
+            for key, value in code.items():
+                return f"{key}={value}"
+    for line in exc.message.splitlines()[1:]:
+        stripped = line.strip()
+        if "=" in stripped and " — " in stripped:
+            return stripped.split(" — ")[0]
+    return ""
+
+
 class Client:
     """One configured connection to the Google Ads API."""
 
@@ -271,19 +292,35 @@ class Client:
 
     # -- transport ---------------------------------------------------------
 
-    def _headers(self, login_customer_id: str = "") -> dict:
+    def _headers(self, login_customer_id: str | None = None) -> dict:
+        """The three headers every call carries, plus the manager header.
+
+        login_customer_id has three states on purpose, because the header
+        is the usual reason an account cannot be read and a diagnosis has
+        to be able to try all three:
+
+            None   take whatever the configuration says (the default)
+            ""     send NO login-customer-id at all
+            value  send exactly this one
+
+        The previous version could not express "send none": an empty
+        string fell back to the configuration, so the only way to try
+        without the header was to overwrite config in place — shared
+        state, in a server that answers requests on several threads.
+        """
         headers = {
             "Authorization": f"Bearer {self.access_token()}",
             "developer-token": self.config["developer_token"],
             "Content-Type": "application/json",
         }
-        login = login_customer_id or self.config.get("login_customer_id") or ""
+        login = self.config.get("login_customer_id") or "" \
+            if login_customer_id is None else login_customer_id
         if login:
             headers["login-customer-id"] = normalize_customer_id(login)
         return headers
 
     def call(self, method: str, path: str, body: dict | None = None,
-             *, login_customer_id: str = "") -> dict:
+             *, login_customer_id: str | None = None) -> dict:
         """One REST call. Raises GoogleAdsError with the API's own wording."""
         url = f"{API_HOST}/{self.api_version}/{path.lstrip('/')}"
         data = json.dumps(body).encode("utf-8") if body is not None else None
@@ -346,7 +383,8 @@ class Client:
         return [name.split("/")[-1] for name in answer.get("resourceNames", [])]
 
     def search(self, customer_id: str, query: str, *,
-               max_rows: int = 10000, login_customer_id: str = "") -> list[dict]:
+               max_rows: int = 10000,
+               login_customer_id: str | None = None) -> list[dict]:
         """Runs a GAQL query and follows the pages until max_rows is reached.
 
         The request body carries the query and nothing else. pageSize was
@@ -357,6 +395,7 @@ class Client:
         result, put LIMIT in the query, which is what GAQL is for.
         """
         customer_id = normalize_customer_id(customer_id)
+        login_customer_id = self.login_for(customer_id, login_customer_id)
         rows: list[dict] = []
         page_token = ""
         while True:
@@ -371,10 +410,95 @@ class Client:
                 break
         return rows[:max_rows]
 
+    def login_for(self, customer_id: str,
+                  login_customer_id: str | None = None) -> str | None:
+        """Which manager header this one account needs.
+
+        A single login_customer_id in the configuration assumes every
+        account hangs under the same manager. That is often false: some
+        are reached directly, some through one manager, some through
+        another. The measurement on /setup/diagnose writes what it found
+        into account_logins, and this is where that is read back.
+
+        An explicit argument always wins. A stored empty string means
+        "this account wants no manager header" — which is why the lookup
+        tests for the key rather than for a truthy value.
+        """
+        if login_customer_id is not None:
+            return login_customer_id
+        per_account = self.config.get("account_logins") or {}
+        return per_account.get(normalize_customer_id(customer_id))
+
+    def probe_account(self, customer_id: str,
+                      login_customer_id: str | None = None) -> tuple[bool, str, str]:
+        """One read against one account with one header setting.
+
+        Returns (worked, error code, full message). Changes nothing and
+        reads a single row, so a whole matrix of these costs little.
+        """
+        # Ausdruecklich an login_for vorbei: diese Messung ermittelt die
+        # Zuordnung gerade erst und darf sich nicht auf sie stuetzen.
+        if login_customer_id is None:
+            login_customer_id = self.config.get("login_customer_id") or ""
+        try:
+            self.search(customer_id, "SELECT customer.id FROM customer LIMIT 1",
+                        max_rows=1, login_customer_id=login_customer_id)
+            return True, "", ""
+        except GoogleAdsError as exc:
+            return False, error_code_of(exc), exc.message
+
+    def permission_matrix(self, customer_ids: list[str]) -> list[dict]:
+        """Which manager header makes which account readable. Measured, not guessed.
+
+        USER_PERMISSION_DENIED names neither the header nor the link that
+        is missing, so reading the message is guesswork. This tries every
+        combination that could be right — no header, the account itself,
+        and each other accessible account as the manager — and reports
+        what actually happened.
+
+        It stops at the first setting that works for an account, so the
+        common case costs one call per account and only a broken one
+        costs the full row.
+        """
+        results = []
+        for customer_id in customer_ids:
+            candidates: list[tuple[str, str | None]] = [
+                ("wie eingestellt", None),
+                ("ohne Verwaltungskopf", ""),
+                ("das Konto selbst", customer_id),
+            ]
+            candidates += [("Verwaltungskonto " + other, other)
+                           for other in customer_ids if other != customer_id]
+
+            row = {"id": customer_id, "works_with": None, "works_label": "",
+                   "attempts": [], "code": "", "message": ""}
+            # Deduplicated by the header that actually goes out, not by the
+            # argument: "as configured" sends the configured manager, which
+            # appears again further down the list by name. Without this the
+            # same call is made twice for every account.
+            configured = self.config.get("login_customer_id") or ""
+            seen: set[str] = set()
+            for label, login in candidates:
+                key = configured if login is None else login
+                if key in seen:
+                    continue
+                seen.add(key)
+                ok, code, message = self.probe_account(customer_id, login)
+                row["attempts"].append({"label": label, "login": login,
+                                        "ok": ok, "code": code})
+                if ok:
+                    row["works_with"] = key
+                    row["works_label"] = label
+                    break
+                if not row["code"]:
+                    row["code"], row["message"] = code, message
+            results.append(row)
+        return results
+
     # -- writing -----------------------------------------------------------
 
     def mutate(self, customer_id: str, operations: list[dict], *, dry_run: bool = True,
-               partial_failure: bool = False, login_customer_id: str = "",
+               partial_failure: bool = False, login_customer_id: str | None = None,
                response_content_type: str = "RESOURCE_NAME_ONLY",
                reason: str = "") -> dict:
         """Sends mutate operations. Refuses everything the guardrails forbid.
@@ -385,6 +509,7 @@ class Client:
         was meant as a question.
         """
         customer_id = normalize_customer_id(customer_id)
+        login_customer_id = self.login_for(customer_id, login_customer_id)
         self.check_write_allowed(customer_id, operations, dry_run=dry_run)
 
         body = {

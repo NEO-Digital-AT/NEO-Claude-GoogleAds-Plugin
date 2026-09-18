@@ -394,7 +394,7 @@ def load_state() -> dict:
     state["connected"] = True
     for customer_id in ids:
         entry = {"id": customer_id, "name": "", "currency": "", "manager": False,
-                 "problem": ""}
+                 "problem": "", "code": ""}
         try:
             rows = client.search(
                 customer_id,
@@ -408,7 +408,12 @@ def load_state() -> dict:
                 entry["manager"] = bool(customer.get("manager"))
                 entry["status"] = customer.get("status", "")
         except gac.GoogleAdsError as exc:
+            # Nicht nur die erste Zeile: die ist Googles eigener Satz
+            # ("The caller does not have permission") und nennt weder das
+            # Konto noch den Grund. Der Fehlercode steht darunter.
+            code = gac.error_code_of(exc)
             entry["problem"] = exc.message.splitlines()[0]
+            entry["code"] = code
         state["accounts"].append(entry)
     return state
 
@@ -477,8 +482,10 @@ def status_page(base_url: str) -> bytes:
         zeilen = []
         for account in state["accounts"]:
             if account["problem"]:
-                rechts = f'<span class="state bad">nicht lesbar</span><br>' \
-                         f'<span class="note">{esc(account["problem"])}</span>'
+                code = (f'<br><span class="mono" style="font-size:.8rem">'
+                        f'{esc(account["code"])}</span>' if account.get("code") else "")
+                rechts = (f'<span class="state bad">nicht lesbar</span>{code}<br>'
+                          f'<span class="note">{esc(account["problem"])}</span>')
             else:
                 marks = " · Verwaltungskonto" if account["manager"] else ""
                 rechts = (f'{esc(account["name"] or "ohne Namen")} '
@@ -486,10 +493,19 @@ def status_page(base_url: str) -> bytes:
             zeilen.append(f'<tr><th class="mono">{esc(account["id"])}</th>'
                           f'<td>{rechts}</td></tr>')
         lesbar = sum(1 for a in state["accounts"] if not a["problem"])
+        nicht_lesbar = len(state["accounts"]) - lesbar
+        hinweis = ""
+        if nicht_lesbar:
+            hinweis = ('<p class="note">Ein Konto, das die API auflistet, aber nicht '
+                       'lesen lässt, scheitert fast immer am Verwaltungskopf — der '
+                       'Fehler nennt ihn nur nicht. Die Messung probiert jede '
+                       'Kombination durch und sagt, welche geht.</p>'
+                       '<a class="button" href="/setup/diagnose">'
+                       'Berechtigungen messen</a>')
         parts.append(f"""<div class="card">
 <h2 style="margin-top:0">Konten <span class="note">{lesbar} von
 {len(state['accounts'])} lesbar</span></h2>
-<table>{''.join(zeilen)}</table></div>""")
+<table>{''.join(zeilen)}</table>{hinweis}</div>""")
 
     # -- Schutzgrenzen -----------------------------------------------------
     schreiben = ('<span class="state warn">eingeschaltet</span>'
@@ -805,6 +821,156 @@ def check_page() -> bytes:
 <p class="lead">Dieselben Prüfungen wie <code>google-ads-check.py</code>.</p>
 <div class="card"><table>{''.join(zeilen)}</table></div>
 <a class="button" href="/setup">Zurück zur Übersicht</a>""")
+
+
+def diagnose_page() -> bytes:
+    """Misst, welcher Verwaltungskopf welches Konto lesbar macht.
+
+    Der Fehler USER_PERMISSION_DENIED nennt weder die Kopfzeile noch die
+    fehlende Verknüpfung. Statt daraus zu raten, probiert diese Seite
+    jede Kombination durch, die richtig sein könnte, und zeigt, was
+    tatsächlich passiert ist.
+    """
+    state = load_state()
+    if not state["configured"]:
+        return result_page(False, "Erst Zugangsdaten eintragen und verbinden.")
+
+    client = gac.Client(state["config"])
+    try:
+        ids = client.list_accessible_customers()
+    except gac.GoogleAdsError as exc:
+        return result_page(
+            False, "Schon die Kontenliste ist nicht lesbar: "
+                   + exc.message.splitlines()[0]
+                   + " — dann liegt es nicht am Verwaltungskopf, sondern am "
+                     "Developer Token oder am angemeldeten Google-Konto.")
+
+    eingestellt = state["config"].get("login_customer_id") or ""
+    matrix = client.permission_matrix(ids)
+
+    zeilen = []
+    for row in matrix:
+        if row["works_with"] is None:
+            wie = ('<span class="state bad">gar nicht lesbar</span>'
+                   + (f'<br><span class="mono" style="font-size:.8rem">'
+                      f'{esc(row["code"])}</span>' if row["code"] else ""))
+        elif row["works_with"] == "":
+            wie = ('<span class="state ok">lesbar</span> '
+                   '<span class="note">ohne Verwaltungskopf</span>')
+        elif row["works_with"] == row["id"]:
+            wie = ('<span class="state ok">lesbar</span> '
+                   '<span class="note">mit sich selbst als Verwaltungskonto</span>')
+        else:
+            wie = ('<span class="state ok">lesbar</span> '
+                   f'<span class="note">mit Verwaltungskonto '
+                   f'<span class="mono">{esc(row["works_with"])}</span></span>')
+        versuche = " · ".join(
+            ("✓ " if v["ok"] else "✗ ") + esc(v["label"]) for v in row["attempts"])
+        zeilen.append(f'<tr><th class="mono">{esc(row["id"])}</th><td>{wie}'
+                      f'<br><span class="note">{versuche}</span></td></tr>')
+
+    lesbar = [r for r in matrix if r["works_with"] is not None]
+    ohne_kopf = [r for r in lesbar if r["works_with"] == ""]
+    passend = {r["works_with"] for r in lesbar if r["works_with"]}
+
+    if not lesbar:
+        schluss = ("<b>Kein einziges Konto ist lesbar, mit keiner Kopfzeile.</b> "
+                   "Dann liegt es nicht an einer fehlenden Verknüpfung — die "
+                   "betrifft immer nur einzelne Konten, nie alle.<br><br>"
+                   "Die wahrscheinlichste Ursache ist die <b>Zugriffsstufe des "
+                   "Google-Cloud-Projekts</b>. Sie hängt am Projekt, nicht am "
+                   "Developer Token, und Google sagt dazu: <i>„After you've "
+                   "enabled Google Ads API, your Google Cloud project is granted "
+                   "Test access“</i> — und Test-Zugriff darf <i>„only make Google "
+                   "Ads API requests against test accounts“</i>. Ein <b>frisch "
+                   "angelegtes Projekt steht also auf Test</b> und weist jedes "
+                   "echte Konto ab.<br><br>"
+                   "Wer gerade einen neuen OAuth-Client gebaut hat, sollte prüfen, "
+                   "ob der im <b>selben</b> Cloud-Projekt liegt wie der alte. Liegt "
+                   "er in einem neuen, ist die Stufe dort zurück auf Test, und der "
+                   "Zugriff muss neu beantragt werden: "
+                   "<a href=\"https://developers.google.com/google-ads/api/docs/access-levels\" "
+                   "target=\"_blank\" rel=\"noopener\">Zugriffsstufen</a>. "
+                   "Die zweite Möglichkeit: das angemeldete Google-Konto hat auf "
+                   "diese Ads-Konten gar keinen Zugriff mehr.")
+    elif len(ohne_kopf) == len(lesbar) and eingestellt:
+        schluss = (f"<b>Alles ist ohne Verwaltungskopf lesbar.</b> Das eingestellte "
+                   f"Verwaltungskonto <span class=\"mono\">{esc(eingestellt)}</span> "
+                   f"passt zu keinem dieser Konten — entweder sind sie nicht darunter "
+                   f"verknüpft, oder das angemeldete Google-Konto ist gar kein Nutzer "
+                   f"dieses Verwaltungskontos. Trag es unter "
+                   f"<a href=\"/setup/credentials\">Zugangsdaten bearbeiten</a> leer ein.")
+    elif len(passend) == 1 and not ohne_kopf:
+        einziges = next(iter(passend))
+        schluss = (f"Alle lesbaren Konten hängen am Verwaltungskonto "
+                   f"<span class=\"mono\">{esc(einziges)}</span>."
+                   + ("" if einziges == eingestellt else
+                      f" Eingestellt ist aber <span class=\"mono\">"
+                      f"{esc(eingestellt) or '(leer)'}</span> — das gehört geändert."))
+    else:
+        schluss = ("Die Konten brauchen unterschiedliche Verwaltungsköpfe. Ein "
+                   "einzelner Wert in den Zugangsdaten kann nicht für alle stimmen; "
+                   "der Server nimmt deshalb je Konto den, der hier funktioniert hat.")
+
+    gefunden = {r["id"]: r["works_with"] for r in lesbar}
+    gespeichert = state["config"].get("account_logins") or {}
+    if gefunden and gefunden != gespeichert:
+        felder = "".join(
+            f'<input type="hidden" name="zuordnung" value="{esc(k)}:{esc(v)}">'
+            for k, v in sorted(gefunden.items()))
+        uebernehmen = f"""<div class="card">
+<h2 style="margin-top:0">Ergebnis übernehmen</h2>
+<p class="note" style="margin-top:0">Speichert je Konto den Kopf, der eben
+funktioniert hat. Danach liest der Server jedes Konto so, wie es gelesen
+werden will — statt für alle denselben Wert zu raten.</p>
+<form method="post" action="/setup/diagnose">{felder}
+<button type="submit">Zuordnung übernehmen</button></form></div>"""
+    elif gefunden:
+        uebernehmen = ('<div class="card"><p class="note" style="margin:0">'
+                       'Diese Zuordnung ist bereits gespeichert.</p></div>')
+    else:
+        uebernehmen = ""
+
+    return page("Berechtigungen", f"""
+<h1>Welcher Verwaltungskopf öffnet welches Konto</h1>
+<p class="lead">Gemessen, nicht geraten: für jedes Konto wurde eine Zeile
+gelesen — ohne Verwaltungskopf, mit sich selbst und mit jedem anderen
+zugänglichen Konto, bis eines ging.</p>
+<div class="card"><table>{"".join(zeilen)}</table></div>
+<div class="card akzent"><p style="margin-top:0">{schluss}</p></div>
+{uebernehmen}
+<p class="note">Eingestellt ist derzeit
+<span class="mono">{esc(eingestellt) or "(kein Verwaltungskonto)"}</span>.
+Die Messung selbst verändert nichts — sie liest je Konto eine Zeile.</p>
+<a class="button quiet" href="/setup">Zurück zur Übersicht</a>""")
+
+
+def save_account_logins(form: dict) -> tuple[bool, str]:
+    """Schreibt die gemessene Zuordnung in die Konfiguration."""
+    zuordnung = {}
+    for eintrag in form.get("zuordnung") or []:
+        konto, _, login = eintrag.partition(":")
+        try:
+            konto = gac.normalize_customer_id(konto)
+            login = gac.normalize_customer_id(login) if login else ""
+        except gac.GoogleAdsError as exc:
+            return False, exc.message
+        zuordnung[konto] = login
+
+    config = {}
+    if gac.CONFIG_FILE.exists():
+        try:
+            config = json.loads(gac.CONFIG_FILE.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            config = {}
+    config["account_logins"] = zuordnung
+    gac.CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
+    gac.CONFIG_FILE.write_text(json.dumps(config, indent=2, ensure_ascii=False) + "\n",
+                               encoding="utf-8")
+    os.chmod(gac.CONFIG_FILE, 0o600)
+    ohne = sum(1 for v in zuordnung.values() if not v)
+    return True, (f"{len(zuordnung)} Konten zugeordnet"
+                  + (f", davon {ohne} ohne Verwaltungskopf" if ohne else "") + ".")
 
 
 def save_credentials(form: dict) -> tuple[bool, str]:

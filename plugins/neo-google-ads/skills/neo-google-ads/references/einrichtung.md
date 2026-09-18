@@ -55,6 +55,37 @@ Die Weiterleitungs-URI steht **am Client**, nicht in den Einstellungen der
 Google Auth Platform. Wer unter Branding, Zielgruppe oder Datenzugriff
 sucht, findet sie nicht.
 
+### Die Zugriffsstufe hängt am Cloud-Projekt, nicht am Token
+
+Das ist die Falle, die am teuersten ist, weil sie wie ein
+Berechtigungsproblem aussieht. Google schreibt:
+
+> After you've enabled Google Ads API, your Google Cloud project is
+> granted **Test** access.
+
+und Test-Zugriff darf
+
+> only make Google Ads API requests against **test accounts**.
+
+Daraus folgt: **einen OAuth-Client in einem neuen Cloud-Projekt anzulegen
+setzt die Zugriffsstufe zurück auf Test.** Die API listet dann weiterhin
+brav alle Konten auf — `listAccessibleCustomers` rührt keine Kontodaten an
+—, aber jede Abfrage eines echten Kontos wird abgewiesen. Der Fehler
+lautet dann *„The caller does not have permission"* und sieht aus, als
+fehle eine Verknüpfung.
+
+**Merkmal, das die beiden Ursachen trennt:** eine fehlende Verknüpfung
+trifft immer nur einzelne Konten. Steht die Zugriffsstufe auf Test, ist
+**kein einziges** Konto lesbar, auch das Verwaltungskonto nicht.
+
+Wer einen zweiten Client braucht, legt ihn deshalb im **selben** Projekt
+an. Muss es ein neues sein, ist der Zugriff dort neu zu beantragen:
+<https://developers.google.com/google-ads/api/docs/access-levels>
+
+Die Messung unter **/setup/diagnose** im Portal unterscheidet die Fälle
+ohne Raterei: sie probiert jedes Konto mit jedem denkbaren
+Verwaltungskopf durch.
+
 **Das Geheimnis erscheint genau einmal.** Google speichert es gehasht und
 zeigt es nur unmittelbar nach dem Erstellen; danach stehen in der Console
 nur noch die letzten vier Zeichen. Wer das Fenster schließt, ohne zu

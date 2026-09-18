@@ -738,6 +738,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self._send_html(setup.guardrails_page())
         elif path == "/setup/check":
             self._send_html(setup.check_page())
+        elif path == "/setup/diagnose":
+            self._send_html(setup.diagnose_page())
         elif path == "/setup/callback":
             query = urllib.parse.urlparse(self.path).query
             ok, message = setup.exchange_code("?" + query)
@@ -772,6 +774,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 self._send_html(setup.guardrails_page(message))
             else:
                 self._send_html(setup.guardrails_page(message))
+        elif path == "/setup/diagnose":
+            ok, message = setup.save_account_logins(form)
+            self.log_line(f"setup: account logins saved ({message})" if ok
+                          else f"setup: account logins refused ({message})")
+            self._send_html(setup.result_page(ok, message))
         elif path == "/setup/disconnect":
             ok, message = setup.disconnect()
             self._send_html(setup.result_page(ok, message))

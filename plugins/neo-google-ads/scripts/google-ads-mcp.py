@@ -45,7 +45,7 @@ from google_ads_client import (  # noqa: E402
 )
 
 SERVER_NAME = "neo-google-ads"
-SERVER_VERSION = "2.1.1"
+SERVER_VERSION = "2.2.0"
 
 # Protocol revisions this server can answer, newest first. The 2026-07-28
 # revision replaced initialize with server/discover; the older ones are
@@ -701,8 +701,13 @@ def _client(args: dict) -> Client:
     return Client()
 
 
-def _login(args: dict) -> str:
-    return args.get("login_customer_id") or ""
+def _login(args: dict) -> str | None:
+    """None means: take the manager account from the configuration.
+
+    Not the empty string — that now means "send no manager header at
+    all", which is a thing a diagnosis needs to be able to ask for.
+    """
+    return args.get("login_customer_id") or None
 
 
 def tool_accounts(args: dict) -> dict:
