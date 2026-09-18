@@ -60,16 +60,24 @@ import google_ads_client as gac
 AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 PENDING_FILE = gac.CONFIG_FILE.parent / "pending-auth.json"
 
-# The word mark, drawn as paths so it needs no font and no second file.
-# It takes its colour from the surrounding text, so one variable changes
-# the whole page. To use a real logo instead, drop an SVG at
-# /data/logo.svg — it is served in place of this one.
-LOGO = """<svg viewBox="0 0 132 40" role="img" aria-label="NEO Digital"
+# Das Favicon, wie geliefert: grünes Zeichen auf dem Markenviolett. Als
+# data:-URI eingebettet, damit die Seite eine Datei weniger ausliefern muss
+# und im Tab sofort steht — ein zweiter Abruf für 500 Byte lohnt nicht.
+FAVICON = "data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2016%2016%22%3E%3Crect%20width%3D%2216%22%20height%3D%2216%22%20fill%3D%22%232a025f%22%2F%3E%3Cg%20fill%3D%22%23a8f20d%22%3E%3Cpolygon%20points%3D%223.98%207.6%204.54%208.03%204.54%2013.86%202.2%2013.86%202.2%206.26%203.98%207.6%22%2F%3E%3Cpolygon%20points%3D%2213.8%202.14%2013.8%209.75%2012.02%208.4%2011.46%207.97%2011.46%202.14%2013.8%202.14%22%2F%3E%3Cpolygon%20points%3D%2213.8%2010.92%2013.8%2013.86%2013.8%2013.86%2011.46%2012.09%204.54%206.85%202.2%205.08%202.2%202.14%202.2%202.14%204.54%203.91%2011.46%209.15%2013.8%2010.92%22%2F%3E%3C%2Fg%3E%3C%2Fsvg%3E"
+
+# Die NEO-Wortmarke, wie sie aus Illustrator kommt — nur ohne die
+# eingebettete Klasse: fill="currentColor" am Wurzelelement laesst sie die
+# Akzentfarbe der Seite annehmen, sodass eine Variable alles aendert. Eine
+# eigene Datei unter /data/logo.svg wird stattdessen ausgeliefert.
+LOGO = """<svg viewBox="0 0 449.49 143.2" role="img" aria-label="NEO Digital"
   fill="currentColor" xmlns="http://www.w3.org/2000/svg">
-<path d="M0 40V0h7.2l17.4 26.6V0h6.6v40h-7.2L6.6 13.4V40H0z"/>
-<path d="M40 40V0h25.6v6.4H46.6v9.4h17.2v6.4H46.6v11.4h19.4V40H40z"/>
-<path d="M92.4 40c-11 0-19.4-8.6-19.4-20S81.4 0 92.4 0s19.4 8.6 19.4 20-8.4 20-19.4 20zm0-6.6c7.2 0 12.6-5.6 12.6-13.4S99.6 6.6 92.4 6.6 79.8 12.2 79.8 20s5.4 13.4 12.6 13.4z"/>
-<rect x="120" y="30" width="10" height="10" rx="2"/>
+<polygon points="21.72 66.74 28.64 71.98 28.64 143.2 0 143.2 0 50.29 21.72 66.74"/>
+<polygon points="141.67 0 141.67 92.92 119.95 76.47 113.04 71.23 113.04 0 141.67 0"/>
+<polygon points="141.67 107.29 141.67 143.2 141.66 143.2 113.04 121.52 28.64 57.61 0 35.92 0 0 .01 0 28.64 21.69 113.04 85.6 141.67 107.29"/>
+<rect x="153.14" y="0" width="141.67" height="28.64"/>
+<rect x="153.14" y="114.56" width="141.67" height="28.64"/>
+<rect x="153.14" y="57.28" width="141.67" height="28.64"/>
+<path d="M420.85 28.64v85.92h-85.92V28.64h85.92ZM449.49 0H306.29v143.2h143.2V0h0Z"/>
 </svg>"""
 
 STYLE = """
@@ -82,23 +90,42 @@ STYLE = """
   --line:    #242C24;   /* Rahmen, nur Fläche — kein Text darauf        */
   --fg:      #E8EDE8;   /* Fließtext            16,3:1 auf --bg         */
   --muted:   #A3ADA3;   /* Nebentext             7,7:1 auf --card       */
-  --neon:    #39FF14;   /* Akzent               13,2:1 auf --card       */
-  --neon-dim:#2BC410;   /* Akzent auf Flächen, wo Neon zu laut wäre     */
+  --neon:    #a8f20d;   /* NEO-Grün             13,1:1 auf --card       */
+  --neon-dim:#7fb80a;   /* dasselbe Grün ruhiger  7,5:1 auf --card       */
+  --neon-up: #bcff33;   /* heller, für Hover     16,1:1 auf --bg         */
   --warn:    #FFB454;   /* Hinweis              10,2:1 auf --card       */
+  /* Das Markenviolett. NUR auf hellen Flächen: auf --bg läge es bei
+     1,3:1 und wäre schlicht unsichtbar. Hier steht es deshalb allein auf
+     der weißen Kachel des QR-Codes, wo es 16,4:1 erreicht. */
+  --violett: #2a025f;
   --bad:     #FF6B5C;   /* Befund                6,4:1 auf --card       */
 }
 * { box-sizing: border-box; }
 html { color-scheme: dark; }
 body { margin: 0; background: var(--bg); color: var(--fg);
-  font: 16px/1.55 system-ui, -apple-system, "Segoe UI", sans-serif;
-  -webkit-font-smoothing: antialiased; }
+  font: 16px/1.6 "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system,
+        "SF Pro Text", Roboto, "Helvetica Neue", Arial, sans-serif;
+  font-synthesis-weight: none;
+  -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; }
+
+/* Überschriften enger und schwerer als der Fließtext: bei einer Seite ohne
+   Bilder macht die Typografie die Gliederung, nicht das Layout. */
+h1, h2, h3 { font-family: "Segoe UI Variable Display", "Segoe UI", system-ui,
+             -apple-system, "SF Pro Display", sans-serif;
+             letter-spacing: -.021em; text-wrap: balance; }
+h1 { font-size: 1.9rem; font-weight: 650; line-height: 1.2; margin: 0 0 .5rem; }
+h2 { font-size: 1.12rem; font-weight: 620; letter-spacing: -.012em;
+     margin: 2rem 0 .8rem; }
+p.lead { color: var(--muted); font-size: 1.02rem; max-width: 42em;
+         margin: 0 0 1.8rem; }
+table { font-variant-numeric: tabular-nums; }
 main { max-width: 54rem; margin: 0 auto; padding: 2.5rem 1rem 5rem; }
 
-header.marke { display: flex; align-items: center; gap: .9rem;
+header.marke { display: flex; align-items: center; gap: 1rem;
   padding-bottom: 1.5rem; margin-bottom: 2rem;
   border-bottom: 1px solid var(--line); }
 header.marke svg { height: 1.55rem; width: auto; color: var(--neon);
-  filter: drop-shadow(0 0 14px color-mix(in srgb, var(--neon) 45%, transparent)); }
+  filter: drop-shadow(0 0 18px color-mix(in srgb, var(--neon) 28%, transparent)); }
 header.marke .wo { margin-left: auto; color: var(--muted); font-size: .82rem;
   letter-spacing: .08em; text-transform: uppercase; }
 
@@ -123,9 +150,16 @@ pre { background: var(--bg); border: 1px solid var(--line); border-radius: .45re
   padding: .9rem; overflow-x: auto; font-size: .85rem; margin: 0;
   color: var(--fg); white-space: pre-wrap; word-break: break-all; }
 
-.state { display: inline-block; padding: .12rem .6rem; border-radius: 1rem;
-  font-size: .76rem; font-weight: 700; letter-spacing: .04em;
-  text-transform: uppercase; vertical-align: middle; }
+/* Ein Zustand ist eine Fußnote zur Überschrift, kein zweiter Titel. Also
+   klein, in Grundschrift, mit einem Punkt davor statt Versalien in einer
+   farbigen Pille. */
+.state { display: inline-flex; align-items: center; gap: .4rem;
+  padding: .16rem .55rem .16rem .5rem; border-radius: .35rem;
+  font-size: .8rem; font-weight: 600; letter-spacing: 0;
+  vertical-align: middle; position: relative; top: -.12em;
+  font-family: inherit; }
+.state::before { content: ""; width: .42rem; height: .42rem; border-radius: 50%;
+  background: currentColor; flex: none; }
 .state.ok   { background: color-mix(in srgb, var(--neon) 16%, transparent);
               color: var(--neon); }
 .state.warn { background: color-mix(in srgb, var(--warn) 16%, transparent);
@@ -137,18 +171,29 @@ label { display: block; margin: 1.35rem 0 .3rem; font-weight: 600; font-size: .9
 label:first-child { margin-top: 0; }
 label span { display: block; font-weight: 400; color: var(--muted);
   font-size: .85rem; margin-top: .2rem; line-height: 1.45; }
-input[type=text], input[type=password] { width: 100%; padding: .6rem .75rem;
+input[type=text], input[type=password], input[type=email] {
+  width: 100%; padding: .62rem .8rem;
   margin-top: .45rem; border: 1px solid var(--line); border-radius: .45rem;
   background: var(--bg); color: var(--fg);
-  font-family: ui-monospace, Menlo, monospace; font-size: .9rem; }
-input:focus-visible { outline: 2px solid var(--neon); outline-offset: 1px;
-  border-color: transparent; }
+  font-family: ui-monospace, Menlo, monospace; font-size: .9rem;
+  transition: border-color .12s, box-shadow .12s; }
+input[type=text]:hover, input[type=password]:hover, input[type=email]:hover {
+  border-color: color-mix(in srgb, var(--neon) 30%, var(--line)); }
+/* Ein Ring, kein Rahmen: 1px in der Markenfarbe plus ein weicher Schein.
+   Der 2px-Umriss von vorher sass aussen auf der Ecke und wirkte wie ein
+   Fehler, nicht wie ein Fokus. */
+input:focus { outline: none; border-color: var(--neon);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--neon) 22%, transparent); }
+input[type=text]:-webkit-autofill, input[type=password]:-webkit-autofill {
+  -webkit-text-fill-color: var(--fg);
+  -webkit-box-shadow: 0 0 0 40rem var(--bg) inset; }
 
-button, .button { display: inline-block; padding: .6rem 1.2rem; border-radius: .45rem;
+button, .button { display: inline-block; padding: .62rem 1.15rem; border-radius: .5rem;
   border: 1px solid transparent; background: var(--neon); color: #07120A;
-  font: inherit; font-weight: 700; font-size: .93rem; cursor: pointer;
+  font: inherit; font-weight: 620; font-size: .92rem; cursor: pointer;
+  letter-spacing: -.005em; transition: background .12s, border-color .12s;
   text-decoration: none; margin-top: 1.4rem; }
-button:hover, .button:hover { background: #55FF38; }
+button:hover, .button:hover { background: var(--neon-up); }
 button:focus-visible, .button:focus-visible { outline: 2px solid var(--fg);
   outline-offset: 2px; }
 button.quiet, .button.quiet { background: transparent; color: var(--fg);
@@ -174,14 +219,41 @@ label.kasten input:disabled { opacity: .5; }
 .note { color: var(--muted); font-size: .87rem; margin-top: .8rem; line-height: 1.5; }
 /* Der QR-Code bleibt weiss auf weiss: ein Scanner erwartet dunkel auf hell,
    und eine Umkehrung kostet auf manchen Kameras die Erkennung. */
-.qr { display: flex; justify-content: center; padding: 1rem; }
-.qr svg { background: #fff; border-radius: .4rem; max-width: 100%; height: auto; }
+/* Feste Breite statt voller Kachel: ein Code von 57 Modulen wird sonst
+   riesig und schiebt alles andere aus dem Bild. 15rem reichen jeder
+   Telefonkamera aus Armlänge. */
+.qr svg { display: block; width: 15rem; max-width: 100%; height: auto; }
 ol.codes { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
            gap: .45rem 1.2rem; margin: 0; padding-left: 1.4rem; }
 ol.codes li { font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
               font-size: 1rem; letter-spacing: .04em; }
 @media (max-width: 34rem) { ol.codes { grid-template-columns: 1fr; } }
 .card.schlecht { border-color: color-mix(in srgb, var(--bad) 45%, var(--line)); }
+/* Die schmale Spalte: Anmeldung und zweiter Faktor. Eine Karte, zwei
+   Felder, mittig — und das Logo darüber statt einer Kopfleiste. */
+body.schmal main { max-width: 25rem; padding-top: 4.5rem; }
+body.schmal header.marke { justify-content: center; border-bottom: none;
+  padding-bottom: 0; margin-bottom: 2.2rem; }
+body.schmal header.marke svg { height: 2.1rem; }
+body.schmal header.marke .wo { display: none; }
+body.schmal h1 { font-size: 1.45rem; text-align: center; }
+body.schmal p.lead { text-align: center; margin-bottom: 1.6rem; font-size: .95rem; }
+body.schmal button[type=submit] { width: 100%; padding: .72rem 1rem; }
+body.schmal .card { padding: 1.5rem 1.35rem; margin-bottom: 1.1rem; }
+body.schmal .card p.note:last-of-type { margin-bottom: 0; }
+body.schmal form { margin: 0; }
+body.schmal > main > p.note { text-align: center; margin-top: 1.8rem;
+  font-size: .82rem; }
+@media (max-width: 34rem) { body.schmal main { padding-top: 2.5rem; } }
+
+/* Die weiße Kachel des QR-Codes ist die einzige helle Fläche der Seite —
+   und damit die einzige, auf der das Markenviolett lesbar ist. */
+.qr { background: #fff; border-radius: .6rem; padding: 1.1rem 1.1rem .8rem;
+      display: flex; flex-direction: column; align-items: center; gap: .5rem;
+      width: fit-content; margin: 0 auto; }
+.qr figcaption { color: var(--violett); font-size: .8rem; font-weight: 600;
+                 letter-spacing: .01em; }
+
 nav.nav { display: flex; align-items: center; gap: 1.1rem; flex-wrap: wrap;
           margin: -1rem 0 2rem; padding-bottom: 1rem;
           border-bottom: 1px solid var(--line); font-size: .9rem; }
@@ -196,7 +268,7 @@ nav.nav .button { padding: .35rem .8rem; font-size: .85rem; }
            margin: 0 0 1rem; color: var(--text); font-size: .9rem;
            line-height: 1.55; }
 a { color: var(--neon); text-underline-offset: .2em; }
-a:hover { color: #7CFF5C; }
+a:hover { color: #c4ff4d; }
 
 @media (max-width: 34rem) {
   main { padding: 1.5rem .85rem 3.5rem; }
@@ -249,18 +321,30 @@ def logo_markup() -> str:
     return LOGO
 
 
-def page(title: str, body: str) -> bytes:
-    """One HTML document. No framework, no build step, nothing to update."""
+def page(title: str, body: str, *, schmal: bool = False) -> bytes:
+    """One HTML document. No framework, no build step, nothing to update.
+
+    schmal is for the pages with one job and two fields — signing in, the
+    second factor. A form of 54rem width with two inputs in it looks like
+    a mistake, because it is one: the eye has to travel the whole line to
+    find a field that is 20 characters long.
+    """
+    klasse = " class=\"schmal\"" if schmal else ""
+    # Eine schmale Seite hat genau eine Aufgabe. Eine Navigationsleiste
+    # darüber böte Wege an, die alle sofort hierher zurückführen — auf der
+    # erzwungenen Kennwortseite tat sie genau das.
+    leiste = "" if schmal else navigation()
     return (f"""<!doctype html>
 <html lang="de"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="dark">
 <meta name="robots" content="noindex, nofollow">
+<link rel="icon" href="{FAVICON}">
 <title>{html.escape(title)} — NEO Google Ads</title>
 <style>{STYLE}</style></head>
-<body><main>
+<body{klasse}><main>
 <header class="marke">{logo_markup()}<span class="wo">Google Ads</span></header>
-{navigation()}
+{leiste}
 {body}</main></body></html>""").encode("utf-8")
 
 
@@ -630,14 +714,28 @@ def exchange_code(pasted_or_query: str) -> tuple[bool, str]:
     return True, "Verbunden. Der Refresh Token ist gespeichert."
 
 
-def result_page(ok: bool, message: str) -> bytes:
-    zustand = '<span class="state ok">erledigt</span>' if ok \
-        else '<span class="state bad">fehlgeschlagen</span>'
-    return page("Ergebnis", f"""<h1>Ergebnis {zustand}</h1>
-<div class="card"><p>{esc(message)}</p>
-<div class="row"><a class="button" href="/setup">Zum Status</a>
-{'<a class="button quiet" href="/setup/connect">Erneut versuchen</a>' if not ok else ''}
-</div></div>""")
+def result_page(ok: bool, message: str, *, nochmal: str = "",
+                nochmal_text: str = "Noch einmal versuchen") -> bytes:
+    """Ein Ergebnis, ein Weg weiter.
+
+    Vorher standen hier zwei Knöpfe, die beide nur zurückführten — einer
+    davon mit der Aufschrift „Zum Status", was niemandem sagt, wohin er
+    führt. Jetzt gibt es einen Weg zurück, der ihn beim Namen nennt, und
+    daneben nur dann einen zweiten, wenn der Aufrufer wirklich eine
+    Wiederholung anzubieten hat.
+    """
+    if ok:
+        kopf = "Erledigt"
+        marke = ""
+    else:
+        kopf = "Hat nicht geklappt"
+        marke = '<span class="state bad">Fehler</span>'
+    zweiter = (f'<a class="button quiet" href="{esc(nochmal)}">{esc(nochmal_text)}</a>'
+               if nochmal else "")
+    return page(kopf, f"""<h1>{esc(kopf)} {marke}</h1>
+<div class="card"><p style="margin-top:0">{esc(message)}</p>
+<div class="row"><a class="button" href="/setup">Zurück zur Übersicht</a>
+{zweiter}</div></div>""")
 
 
 def check_page() -> bytes:

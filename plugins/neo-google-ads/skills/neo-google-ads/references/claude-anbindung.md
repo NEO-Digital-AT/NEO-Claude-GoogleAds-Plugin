@@ -196,6 +196,23 @@ Eine Datei `logo.svg` in das Datenverzeichnis legen
 Kopf. Nimmt das SVG `fill="currentColor"`, übernimmt es die Akzentfarbe der
 Seite.
 
+### Die Adresse festnageln
+
+In die `.env` gehört:
+
+```
+GOOGLE_ADS_PUBLIC_URL=https://ads.mcp.neo-digital.at
+```
+
+Ohne diese Zeile leitet der Server seine eigene Adresse aus den Köpfen des
+Reverse Proxys ab. **Plesks Docker-Proxy-Regeln schicken kein
+`X-Forwarded-Proto`**, dann hält sich der Server für `http://…` — und
+daraus folgen zwei Fehler: die Rückadresse für OAuth ist falsch, und der
+Sitzungskeks bekommt kein `Secure`. Mit der Zeile ist nichts geraten.
+
+Wer stattdessen die nginx-Direktiven von Hand einträgt (siehe unten), hat
+das Problem nicht — aber die Zeile schadet auch dann nicht.
+
 ### Zwei Türen, zwei Schlüssel
 
 | Tür | Wer | Womit |

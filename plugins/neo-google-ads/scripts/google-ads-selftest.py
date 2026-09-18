@@ -10,7 +10,7 @@ That distinction matters. A guardrail that has never been shown to refuse
 anything is a comment, not a guardrail — and the thing it is supposed to
 stop is a five-figure invoice.
 
-The cases fall in thirteen groups:
+The cases fall in fourteen groups:
 
     guardrails    switch off, wrong account, budget ceiling, budget jump,
                   too many operations, and the clean case that must pass
@@ -24,6 +24,7 @@ The cases fall in thirteen groups:
     qr code       the codes an authenticator app has to be able to scan
     two factor    RFC 6238, and that a code cannot be used twice
     portal        accounts, sessions, the lockout, recovery codes
+    portal door   which requests get in, and how the address is read
 
     google-ads-selftest.py
     google-ads-selftest.py --verbose
@@ -1043,6 +1044,137 @@ def test_portal() -> None:
         case("the database is readable by its owner only", mode == 0o600, oct(mode))
 
 
+# --------------------------------------------------------------------------
+# 14. The portal door
+# --------------------------------------------------------------------------
+
+class FakeHeaders(dict):
+    """Just enough of the header mapping the handler asks for."""
+    def get(self, name, default=None):
+        for key, value in self.items():
+            if key.lower() == name.lower():
+                return value
+        return default
+
+
+def handler_with(headers: dict, public_url: str = ""):
+    """A handler bound to nothing but the headers, for the header logic."""
+    http_mod = load_http()
+    handler = http_mod.Handler.__new__(http_mod.Handler)
+    handler.headers = FakeHeaders(headers)
+    handler.connection = type("C", (), {"context": None})()
+    handler.public_url = public_url
+    return handler
+
+
+def test_portal_door() -> None:
+    """Which requests the portal lets through, and how the address is read.
+
+    Both cases below come from a deployment that did not work: behind
+    Plesk's Docker proxy rules the sign-in form was refused every time,
+    and no amount of testing over a plain socket found it. A browser did,
+    in one screenshot.
+    """
+    http_mod = load_http()
+
+    # The header that broke it. no-referrer makes a browser drop the
+    # Referer AND serialise Origin as "null" on the following form POST,
+    # which is exactly what the same-site check refuses.
+    source = pathlib.Path(__file__).parent.joinpath("google-ads-http.py").read_text("utf-8")
+    case("THE REFERRER POLICY IS NOT no-referrer",
+         'send_header("Referrer-Policy", "no-referrer")' not in source
+         and 'send_header("Referrer-Policy", "same-origin")' in source,
+         "no-referrer turns Origin into the string null on a form POST")
+
+    on_this_host = {"Host": "ads.mcp.neo-digital.at",
+                    "Origin": "https://ads.mcp.neo-digital.at"}
+    # Plesk's Docker proxy rules do not send X-Forwarded-Proto.
+    case("a form is accepted when the proxy forgets X-Forwarded-Proto",
+         handler_with(on_this_host)._same_origin())
+    case("and when the proxy does send it",
+         handler_with(dict(on_this_host, **{"X-Forwarded-Proto": "https"}))._same_origin())
+    case("and when the proxy rewrites the host with a port",
+         handler_with({"Host": "127.0.0.1:8788",
+                       "X-Forwarded-Host": "ads.mcp.neo-digital.at:443",
+                       "Origin": "https://ads.mcp.neo-digital.at"})._same_origin())
+    case("a Referer is accepted when there is no Origin",
+         handler_with({"Host": "ads.mcp.neo-digital.at",
+                       "Referer": "https://ads.mcp.neo-digital.at/anmelden"})._same_origin())
+    case("A FORM FROM ANOTHER SITE IS STILL REFUSED",
+         not handler_with({"Host": "ads.mcp.neo-digital.at",
+                           "Origin": "https://boeser.example"})._same_origin())
+    case("a look-alike host is refused",
+         not handler_with({"Host": "ads.mcp.neo-digital.at",
+                           "Origin": "https://ads.mcp.neo-digital.at.boeser.example"
+                           })._same_origin())
+    case("a request with neither header is refused",
+         not handler_with({"Host": "ads.mcp.neo-digital.at"})._same_origin())
+    case("an opaque origin falls through to the Referer",
+         handler_with({"Host": "ads.mcp.neo-digital.at", "Origin": "null",
+                       "Referer": "https://ads.mcp.neo-digital.at/konto"})._same_origin())
+    case("and an opaque origin with no Referer is refused",
+         not handler_with({"Host": "ads.mcp.neo-digital.at",
+                           "Origin": "null"})._same_origin())
+
+    # The scheme, which decides the redirect URI Google is handed.
+    for headers, expected, what in (
+            ({"Host": "x.at", "X-Forwarded-Proto": "https"}, "https", "X-Forwarded-Proto"),
+            ({"Host": "x.at", "X-Forwarded-Proto": "https, http"}, "https",
+             "a list in X-Forwarded-Proto"),
+            ({"Host": "x.at", "X-Forwarded-Ssl": "on"}, "https", "X-Forwarded-Ssl"),
+            ({"Host": "x.at", "X-Forwarded-Port": "443"}, "https", "X-Forwarded-Port"),
+            ({"Host": "x.at", "Origin": "https://x.at"}, "https",
+             "the browser's own Origin"),
+            ({"Host": "x.at"}, "http", "nothing at all")):
+        case(f"the scheme is read from {what}",
+             handler_with(headers)._scheme() == expected,
+             handler_with(headers)._scheme())
+    case("an Origin for a DIFFERENT host does not make it https",
+         handler_with({"Host": "x.at", "Origin": "https://andere.at"})._scheme() == "http")
+    case("--public-url wins over every header",
+         handler_with({"Host": "x.at", "X-Forwarded-Proto": "https"},
+                      public_url="http://pinned.example")._base_url()
+         == "http://pinned.example")
+
+    # The sign-in pages must be reachable without the address filter, or
+    # --anthropic-only locks the operator out of their own server.
+    case("the portal paths are recognised",
+         all(http_mod.Handler._is_portal_path(p) for p in
+             ("/anmelden", "/anmelden/code", "/abmelden", "/konto", "/konto/2fa",
+              "/setup", "/setup/guardrails")))
+    case("and /mcp is not one of them",
+         not http_mod.Handler._is_portal_path("/mcp")
+         and not http_mod.Handler._is_portal_path("/health"))
+    case("the cookie is HttpOnly and SameSite, and Secure over TLS",
+         all(bit in handler_with({"X-Forwarded-Proto": "https"})._cookie_header("abc")
+             for bit in ("HttpOnly", "SameSite=Lax", "Secure", "abc")))
+    case("and drops Secure where there is no TLS to be had",
+         "Secure" not in handler_with({"Host": "x.at"})._cookie_header("abc"))
+    case("signing out sends an empty cookie that expires at once",
+         "Max-Age=0" in handler_with({})._cookie_header(clear=True))
+
+    # Ein Lesezeichen auf die Anmeldeseite ist kein Fehler. Geprüft wird,
+    # wohin der Weg führt — indem _redirect und _setup_get mitgeschrieben
+    # statt ausgeführt werden.
+    handler = handler_with({"Host": "x.at"})
+    gegangen = []
+    handler._redirect = lambda wohin, **rest: gegangen.append(("redirect", wohin))
+    handler._setup_get = lambda pfad: gegangen.append(("setup", pfad))
+    handler._setup_post = lambda pfad: gegangen.append(("setup", pfad))
+    handler._client_ip = lambda: None
+    handler._account = lambda *a: gegangen.append(("account", a[1]))
+    fake_user = {"username": "erich", "id": 1, "totp_confirmed": 0, "must_change": 0}
+    for pfad in ("/anmelden", "/anmelden/code", "/abbrechen"):
+        gegangen.clear()
+        handler._portal_closed(None, pfad, "GET", fake_user, {"token_hash": "x"})
+        case(f"{pfad} leads somewhere useful once signed in",
+             gegangen == [("redirect", "/setup")], str(gegangen))
+    gegangen.clear()
+    handler._portal_closed(None, "/setup/guardrails", "GET", fake_user, {"token_hash": "x"})
+    case("and the Google pages still go where they went",
+         gegangen == [("setup", "/setup/guardrails")], str(gegangen))
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Prove the Google Ads guardrails hold.")
     parser.add_argument("--verbose", action="store_true", help="show the detail of every case")
@@ -1058,7 +1190,8 @@ def main() -> int:
                        ("change log", test_change_log),
                        ("management console", test_console),
                        ("qr code", test_qr), ("two factor", test_two_factor),
-                       ("portal accounts", test_portal)):
+                       ("portal accounts", test_portal),
+                       ("portal door", test_portal_door)):
         start = len(RESULTS)
         run()
         failed = sum(1 for _, ok, _ in RESULTS[start:] if not ok)

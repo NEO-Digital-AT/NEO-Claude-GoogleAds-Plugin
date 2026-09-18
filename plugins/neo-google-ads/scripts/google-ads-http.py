@@ -137,6 +137,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
     setup_enabled = False
     token_path = ""
     database_path = None
+    public_url = ""
     # A reverse proxy sits on a private address: the loopback interface, or
     # a container network. Nothing on the public internet is trusted to
     # describe who it is forwarding for.
@@ -232,23 +233,73 @@ class Handler(http.server.BaseHTTPRequestHandler):
         return (f"{store.SESSION_COOKIE}={token}; Path=/; "
                 f"Max-Age={store.SESSION_HOURS * 3600}; HttpOnly; SameSite=Lax{secure}")
 
+    @staticmethod
+    def _host_of(url: str) -> str:
+        """The host of a URL or a Host header, lower case, default port dropped."""
+        raw = url.split(",")[0].strip()
+        parsed = urllib.parse.urlsplit(raw if "//" in raw else "//" + raw)
+        host = (parsed.hostname or "").lower()
+        try:
+            port = parsed.port
+        except ValueError:
+            port = None
+        return host if port in (None, 80, 443) else f"{host}:{port}"
+
+    def _own_host(self) -> str:
+        if self.public_url:
+            return self._host_of(self.public_url)
+        return self._host_of(self.headers.get("X-Forwarded-Host")
+                             or self.headers.get("Host") or "")
+
+    def _scheme(self) -> str:
+        """Whether the browser reached us over TLS — asked six ways.
+
+        A reverse proxy is supposed to say so in X-Forwarded-Proto, and
+        most do. Plesk's Docker proxy rules do not, and getting this wrong
+        is not cosmetic: the redirect URI handed to Google would read http,
+        and the session cookie would lose its Secure flag.
+        """
+        if self.public_url:
+            return urllib.parse.urlsplit(self.public_url).scheme or "http"
+        forwarded = (self.headers.get("X-Forwarded-Proto")
+                     or self.headers.get("X-Forwarded-Scheme") or "")
+        first = forwarded.split(",")[0].strip().lower()
+        if first in ("http", "https"):
+            return first
+        if (self.headers.get("X-Forwarded-Ssl") or "").strip().lower() == "on":
+            return "https"
+        if (self.headers.get("X-Forwarded-Port") or "").strip() == "443":
+            return "https"
+        if isinstance(getattr(self.connection, "context", None), ssl.SSLContext):
+            return "https"
+        # Last resort: the browser itself says how it reached the proxy.
+        for header in ("Origin", "Referer"):
+            value = self.headers.get(header) or ""
+            if value.lower().startswith("https://") \
+                    and self._host_of(value) == self._own_host():
+                return "https"
+        return "http"
+
     def _https(self) -> bool:
-        return (self.headers.get("X-Forwarded-Proto") or "").lower() == "https" \
-            or isinstance(getattr(self.connection, "context", None), ssl.SSLContext)
+        return self._scheme() == "https"
 
     def _same_origin(self) -> bool:
         """A cross-site POST is refused outright.
 
-        SameSite=Lax already stops the cookie riding along on one, and this
-        is the second lock: a form that did not come from this server has
-        no business changing a budget ceiling.
+        Compared by HOST, not by full origin. The scheme is whatever the
+        proxy in front chose to mention, and a proxy that forgets
+        X-Forwarded-Proto would otherwise make every form on the site look
+        like an attack — which is exactly what happened behind Plesk. The
+        host is the part that decides whether this is the same site, and
+        the part an attacker cannot fake in a browser.
         """
-        origin = self.headers.get("Origin")
-        if origin:
-            return origin.rstrip("/") == self._base_url().rstrip("/")
-        referer = self.headers.get("Referer")
-        if referer:
-            return referer.startswith(self._base_url().rstrip("/") + "/")
+        mine = self._own_host()
+        if not mine:
+            return False
+        for header in ("Origin", "Referer"):
+            value = self.headers.get(header)
+            if value and value.strip().lower() != "null":
+                return self._host_of(value) == mine
         return False        # Neither header: not a browser form. Refuse.
 
     def _signed_in(self, connection):
@@ -263,9 +314,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
     def _base_url(self) -> str:
         """The address a browser reached this server on, as Google must see it."""
-        host = self.headers.get("X-Forwarded-Host") or self.headers.get("Host") or ""
-        scheme = self.headers.get("X-Forwarded-Proto") or "http"
-        return f"{scheme}://{host}".rstrip("/")
+        if self.public_url:
+            return self.public_url.rstrip("/")
+        return f"{self._scheme()}://{self._own_host()}".rstrip("/")
 
     def _send_html(self, body: bytes, status: int = 200):
         self.send_response(status)
@@ -273,7 +324,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
-        self.send_header("Referrer-Policy", "no-referrer")
+        # same-origin, NOT no-referrer. With no-referrer a browser drops the
+        # Referer and serialises Origin as the string "null" on the form
+        # POST that follows — which made the same-site check refuse every
+        # sign-in. same-origin still sends nothing to a third party, and
+        # keeps the header the check needs on our own forms.
+        self.send_header("Referrer-Policy", "same-origin")
         self.end_headers()
         self.wfile.write(body)
 
@@ -338,9 +394,15 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def _portal_request(self, path: str, verb: str) -> None:
         """Every page behind the sign-in goes through here, in one place."""
         if verb == "POST" and not self._same_origin():
-            self.log_line(f"portal: cross-site POST refused for {path}")
+            woher = self.headers.get("Origin") or self.headers.get("Referer") or "(nichts)"
+            self.log_line(f"portal: cross-site POST refused for {path}: "
+                          f"{woher} against host {self._own_host() or '(none)'}")
             self._send_html(setup.result_page(
-                False, "Dieses Formular kam nicht von dieser Seite."), 403)
+                False, f"Dieses Formular kam nicht von dieser Seite. Der Browser "
+                       f"nennt als Herkunft {self._host_of(woher) or 'nichts'}, "
+                       f"dieser Server heißt {self._own_host() or '(unbekannt)'}. "
+                       f"Stimmt das nicht überein, fehlt dem Reverse Proxy der "
+                       f"Host-Kopf — oder GOOGLE_ADS_PUBLIC_URL steht falsch."), 403)
             return
         try:
             with store.open_database(self.database_path) as connection:
@@ -483,6 +545,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
             store.log_event(connection, "signed out", username=user["username"],
                             address=address)
             self._redirect("/anmelden", cookie=self._cookie_header(clear=True))
+            return
+        if path in self.OPEN_PATHS:
+            # Schon angemeldet. Die Anmeldeseite noch einmal aufzurufen ist
+            # kein Fehler, sondern ein Lesezeichen — also weiterleiten,
+            # statt eine 404 zu zeigen.
+            self._redirect("/setup")
             return
         if path.startswith("/konto"):
             self._account(connection, path, verb, user, session, address)
@@ -662,7 +730,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
         elif path == "/setup/callback":
             query = urllib.parse.urlparse(self.path).query
             ok, message = setup.exchange_code("?" + query)
-            self._send_html(setup.result_page(ok, message))
+            self._send_html(setup.result_page(
+                ok, message, nochmal="" if ok else "/setup/connect",
+                nochmal_text="Verbindung noch einmal aufbauen"))
         else:
             self._send_html(setup.result_page(False, "Diese Seite gibt es nicht."), 404)
 
@@ -676,7 +746,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 self._send_html(setup.credentials_page(message))
         elif path == "/setup/paste":
             ok, message = setup.exchange_code((form.get("pasted") or [""])[0])
-            self._send_html(setup.result_page(ok, message))
+            self._send_html(setup.result_page(
+                ok, message, nochmal="" if ok else "/setup/connect",
+                nochmal_text="Verbindung noch einmal aufbauen"))
         elif path == "/setup/token":
             _, neues = setup.rotate_token(pathlib.Path(self.token_path))
             self.__class__.token = neues
@@ -901,6 +973,12 @@ def main() -> int:
                               "factor and the Google pages at /setup"))
     parser.add_argument("--database", default=None, metavar="FILE",
                         help="the portal's SQLite file (default: next to the config)")
+    parser.add_argument("--public-url", default=os.environ.get("GOOGLE_ADS_PUBLIC_URL", ""),
+                        metavar="URL",
+                        help=("the address browsers reach this server on, e.g. "
+                              "https://ads.example.at. Pins the redirect URI and the "
+                              "same-site check instead of deriving them from proxy "
+                              "headers. Also read from GOOGLE_ADS_PUBLIC_URL."))
     parser.add_argument("--list-users", action="store_true",
                         help="list the portal accounts and exit")
     parser.add_argument("--add-user", metavar="NAME",
@@ -952,6 +1030,11 @@ def main() -> int:
     if options.setup:
         seed_first_account(database)
     Handler.database_path = database
+    Handler.public_url = (options.public_url or "").strip().rstrip("/")
+    if Handler.public_url and "//" not in Handler.public_url:
+        print("--public-url needs the scheme too, for example "
+              "https://ads.example.at", file=sys.stderr)
+        return 1
     Handler.token = load_token(token_path)
     Handler.anthropic_only = options.anthropic_only
     Handler.path_prefix = options.path
@@ -988,6 +1071,8 @@ def main() -> int:
     print("  health:     GET /health", file=sys.stderr)
     if options.setup:
         print(f"  portal:     GET /anmelden  (accounts in {database})", file=sys.stderr)
+        print(f"  address:    {Handler.public_url or 'derived from the proxy headers'}",
+              file=sys.stderr)
         print("  recovery:   --list-users, --set-password NAME, --disable-2fa NAME",
               file=sys.stderr)
     with contextlib.suppress(KeyboardInterrupt):

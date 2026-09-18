@@ -49,7 +49,7 @@ def login_page(message: str = "", username: str = "", *, first_run: bool = False
                    'Server.</p></div>')
     return ui.page("Anmeldung", f"""
 <h1>Anmeldung</h1>
-<p class="lead">Verwaltung des Google-Ads-Zugangs.</p>
+<p class="lead">Verwaltung des Google-Ads-Zugangs</p>
 {hinweis}
 {_meldung(message, "schlecht") if message else ""}
 <form method="post" action="/anmelden">
@@ -61,31 +61,31 @@ def login_page(message: str = "", username: str = "", *, first_run: bool = False
 </div>
 <button type="submit">Anmelden</button>
 </form>
-<p class="note">Kennwort vergessen? Auf dem Server hilft
-<code>google-ads-http.py --set-password &lt;Benutzer&gt;</code>. Es gibt keinen
-Versand per E-Mail: wer an den Server kommt, kommt auch an die Datenbank, und
-wer nicht, soll hier nicht zurückgesetzt werden können.</p>""")
+<p class="note">Kennwort vergessen? Das wird auf dem Server zurückgesetzt, mit
+<code>--set-password</code>. Per E-Mail geht hier nichts hinaus.</p>""",
+                   schmal=True)
 
 
 def second_factor_page(message: str = "", *, name: str = "") -> bytes:
     """Step two. The session exists but counts for nothing until this passes."""
     ui.set_viewer("")
+    wer = f"Angemeldet als {esc(name)}" if name else "Kennwort stimmt"
     return ui.page("Bestätigung", f"""
 <h1>Zweiter Faktor</h1>
-<p class="lead">Kennwort stimmt{f' — angemeldet als {esc(name)}' if name else ''}.
-Jetzt der Code aus der Authenticator-App.</p>
+<p class="lead">{wer} — jetzt der Code aus der App</p>
 {_meldung(message, "schlecht") if message else ""}
 <form method="post" action="/anmelden/code">
 <div class="card">
 {_feld("code", "Sechsstelliger Code",
        extra='inputmode="numeric" autocomplete="one-time-code" pattern="[0-9 ]*" '
              'autofocus required')}
-<p class="note" style="margin-bottom:0">Kein Telefon zur Hand? Statt des Codes
-einen der Wiederherstellungscodes eingeben — jeder gilt genau einmal.</p>
+<p class="note">Kein Telefon zur Hand? Statt des Codes einen
+Wiederherstellungscode eingeben — jeder gilt genau einmal.</p>
 </div>
 <button type="submit">Bestätigen</button>
-<a class="button quiet" href="/abbrechen">Abbrechen</a>
-</form>""")
+</form>
+<p class="note"><a href="/abbrechen">Abbrechen und neu anmelden</a></p>""",
+                   schmal=True)
 
 
 # -- the account -----------------------------------------------------------
@@ -180,7 +180,7 @@ def two_factor_page(secret: str, uri: str, message: str = "", *,
 zweite Faktor — ein Geheimnis, das nie bewiesen wurde, sperrt sonst nur aus.</p>
 {_meldung(message, "schlecht") if message else ""}
 <div class="card">
-<div class="qr">{bild}</div>
+<figure class="qr">{bild}<figcaption>NEO Google Ads</figcaption></figure>
 <p class="note">Google Authenticator, Aegis, 1Password, Bitwarden — jede App,
 die TOTP kann.</p>
 </div>
@@ -236,4 +236,6 @@ def change_password_page(message: str = "", *, username: str = "") -> bytes:
        extra='autocomplete="new-password" required')}
 </div>
 <button type="submit">Übernehmen</button>
-</form>""")
+</form>
+<p class="note">Angemeldet als {esc(username)} —
+<a href="/abbrechen">doch abmelden</a></p>""", schmal=True)
