@@ -223,6 +223,10 @@ label.kasten input:disabled { opacity: .5; }
    riesig und schiebt alles andere aus dem Bild. 15rem reichen jeder
    Telefonkamera aus Armlänge. */
 .qr svg { display: block; width: 15rem; max-width: 100%; height: auto; }
+ol.schritte { margin: .6rem 0 0; padding-left: 1.3rem; color: var(--fg);
+             font-size: .9rem; line-height: 1.6; }
+ol.schritte li { margin-bottom: .35rem; }
+ol.schritte li::marker { color: var(--neon-dim); font-weight: 700; }
 ol.codes { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
            gap: .45rem 1.2rem; margin: 0; padding-left: 1.4rem; }
 ol.codes li { font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
@@ -632,24 +636,43 @@ nicht zwingend das des Verwaltungskontos.</p>
 übergehen. Im Testmodus läuft die Verbindung allerdings nach sieben Tagen
 ab — für den Dauerbetrieb gehört die App auf „In Produktion“.</p>
 </div>
-<div class="card">
+<div class="card akzent">
 <h2 style="margin-top:0">Diese Rückadresse muss bei Google eingetragen sein</h2>
 <pre>{esc(redirect_uri)}</pre>
-<p class="note">Google Cloud Console → Anmeldedaten → dein OAuth-Client →
-Autorisierte Weiterleitungs-URIs. Das geht nur bei einem Client vom Typ
-<b>Webanwendung</b>. Bei einem Desktop-Client kommt stattdessen
-<code>redirect_uri_mismatch</code> — dann den Weg unten nehmen.</p>
+<p class="note" style="margin-top:0">Sie steht <b>nicht</b> in den
+Einstellungen der Google Auth Platform, sondern am OAuth-Client selbst:</p>
+<ol class="schritte">
+<li><a href="https://console.cloud.google.com/auth/clients" target="_blank"
+rel="noopener">console.cloud.google.com/auth/clients</a> — in der Konsole
+ist das <b>Google Auth Platform → Clients</b>, nicht Branding, Zielgruppe
+oder Datenzugriff.</li>
+<li>Den Client anklicken (nicht nur die Zeile markieren).</li>
+<li>Abschnitt <b>Autorisierte Weiterleitungs-URIs</b> → <b>URI
+hinzufügen</b> → Adresse von oben einfügen → speichern.</li>
+</ol>
+<p class="note"><b>Kein solcher Abschnitt da?</b> Dann ist der Client vom Typ
+<b>Desktop</b>, und der hat gar kein Feld dafür — Google nagelt ihn auf
+<code>127.0.0.1</code> fest. Für dieses Portal braucht es einen Client vom Typ
+<b>Webanwendung</b>: auf derselben Seite <b>Client erstellen</b> → Typ
+<b>Webanwendung</b> → Rückadresse eintragen → neue Kennung und neues
+Geheimnis unter
+<a href="/setup/credentials">Zugangsdaten bearbeiten</a> eintragen. Das
+Developer Token bleibt, wie es ist.</p>
+<p class="note">Änderungen an einem Client brauchen bei Google manchmal ein
+paar Minuten, bis sie greifen.</p>
 </div>
 <div class="card">
-<h2 style="margin-top:0">Desktop-Client: Adresse von Hand zurückgeben</h2>
-<p class="note">Nach der Zustimmung landet der Browser auf einer Adresse, die
-nicht lädt. Die ganze Adresszeile hier einfügen.</p>
+<h2 style="margin-top:0">Notweg für einen Desktop-Client</h2>
+<p class="note">Wer den Client nicht wechseln will: nach der Zustimmung landet
+der Browser auf einer Adresse, die nicht lädt. Die ganze Adresszeile hier
+einfügen. Der Weg funktioniert, verlangt aber bei jeder neuen Verbindung
+wieder Kopieren und Einfügen.</p>
 <form method="post" action="/setup/paste">
 <input type="text" name="pasted" placeholder="http://127.0.0.1:…/?state=…&amp;code=…"
        autocomplete="off" spellcheck="false">
 <button type="submit">Adresse auswerten</button>
 </form></div>
-<p><a href="/setup">Zurück zum Status</a></p>""")
+<p><a href="/setup">Zurück zur Übersicht</a></p>""")
 
 
 def pkce_pair() -> tuple[str, str]:
@@ -781,7 +804,7 @@ def check_page() -> bytes:
     return page("Prüfung", f"""<h1>Verbindung geprüft</h1>
 <p class="lead">Dieselben Prüfungen wie <code>google-ads-check.py</code>.</p>
 <div class="card"><table>{''.join(zeilen)}</table></div>
-<a class="button" href="/setup">Zurück zum Status</a>""")
+<a class="button" href="/setup">Zurück zur Übersicht</a>""")
 
 
 def save_credentials(form: dict) -> tuple[bool, str]:
@@ -1048,14 +1071,16 @@ Connector in claude.ai, der neu eingetragen werden muss.</p>
 <p class="note">Jetzt in einen Passwortspeicher übernehmen. Diese Seite zeigt
 es kein zweites Mal; danach steht es nur noch in
 <code>{esc(token_file)}</code> auf dem Server.</p>
-<a class="button" href="/setup">Zum Status</a></div>""")
+<a class="button" href="/setup">Zurück zur Übersicht</a></div>""")
     return page("Zugangswort", """<h1>Zugangswort wechseln</h1>
-<p class="lead">Das Wort ist zugleich das Kennwort dieser Seite und der
-Schlüssel des MCP-Endpunkts.</p>
+<p class="lead">Der Schlüssel des MCP-Endpunkts — das, was claude.ai als
+<code>Authorization: Bearer …</code> mitschickt.</p>
 <div class="card">
-<p>Ein Wechsel macht das alte Wort sofort ungültig. Der Connector in
-claude.ai trägt das alte und muss danach neu eingetragen werden — bis dahin
-antwortet der Server ihm mit einer Abweisung.</p>
+<p>Mit deiner Anmeldung an diesem Portal hat das Wort nichts zu tun. Ein
+Wechsel sperrt niemanden hier aus; er macht nur das alte Wort sofort
+ungültig. Der Connector in claude.ai trägt das alte und muss danach neu
+eingetragen werden — bis dahin antwortet der Server ihm mit einer
+Abweisung.</p>
 <form method="post" action="/setup/token">
 <button class="danger" type="submit">Neues Zugangswort erzeugen</button>
 <a class="button quiet" href="/setup">Abbrechen</a>

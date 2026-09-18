@@ -246,8 +246,15 @@ class Handler(http.server.BaseHTTPRequestHandler):
         return host if port in (None, 80, 443) else f"{host}:{port}"
 
     def _own_host(self) -> str:
-        if self.public_url:
-            return self._host_of(self.public_url)
+        """The name this request came in under, as the browser used it.
+
+        Deliberately NOT the pinned --public-url. That one exists to fix
+        the scheme for the redirect URI; using it here would mean that
+        reaching the portal under any other name — a second hostname, the
+        address itself, a tunnel — refuses every form with a message about
+        an attack. It would also buy nothing: a page on another site
+        cannot make the browser send this host as its Origin either way.
+        """
         return self._host_of(self.headers.get("X-Forwarded-Host")
                              or self.headers.get("Host") or "")
 
@@ -279,6 +286,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     and self._host_of(value) == self._own_host():
                 return "https"
         return "http"
+
+    def _pinned_host(self) -> str:
+        """The host from --public-url, when one was pinned."""
+        return self._host_of(self.public_url) if self.public_url else ""
 
     def _https(self) -> bool:
         return self._scheme() == "https"

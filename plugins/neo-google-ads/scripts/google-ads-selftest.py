@@ -1131,6 +1131,14 @@ def test_portal_door() -> None:
              handler_with(headers)._scheme())
     case("an Origin for a DIFFERENT host does not make it https",
          handler_with({"Host": "x.at", "Origin": "https://andere.at"})._scheme() == "http")
+    # Die festgenagelte Adresse darf die Herkunftspruefung nicht verengen.
+    case("a pinned address does not lock out a second hostname",
+         handler_with({"Host": "127.0.0.1:8788", "Origin": "http://127.0.0.1:8788"},
+                      public_url="https://ads.mcp.neo-digital.at")._same_origin(),
+         "pinning is for the redirect URI, not for deciding what is same-site")
+    case("and a form from elsewhere is still refused with one pinned",
+         not handler_with({"Host": "127.0.0.1:8788", "Origin": "https://boeser.example"},
+                          public_url="https://ads.mcp.neo-digital.at")._same_origin())
     case("--public-url wins over every header",
          handler_with({"Host": "x.at", "X-Forwarded-Proto": "https"},
                       public_url="http://pinned.example")._base_url()

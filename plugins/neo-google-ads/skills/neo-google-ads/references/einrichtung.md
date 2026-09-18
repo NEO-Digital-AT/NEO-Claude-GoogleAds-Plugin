@@ -10,22 +10,50 @@ aus, die kann kein Skript erzeugen:
 
 | Was | Woher | Dauer |
 | --- | --- | --- |
-| OAuth-Client (ID und Geheimnis) | Google Cloud Console, Typ „Desktop-App" | 10 Minuten |
+| OAuth-Client (ID und Geheimnis) | Google Cloud Console — Typ je nach Weg, siehe unten | 10 Minuten |
 | Developer Token | API Center eines **Manager-Kontos** | Minuten bis Tage |
 | Refresh Token | erledigt `google-ads-auth.py` im Browser | 1 Minute |
 | Manager-Konto-ID | vorhanden, wenn fremde Konten betreut werden | — |
 
 ## Schritt 1: OAuth-Client
 
-1. <https://console.cloud.google.com/apis/credentials>
+**Erst entscheiden, welcher Typ.** Das ist die Weiche, an der die meiste
+Zeit verloren geht, denn die beiden Typen können nicht dasselbe:
+
+| Weg | Client-Typ | Rückadresse |
+| --- | --- | --- |
+| Portal im Container, `/setup` im Browser | **Webanwendung** | `https://deine-adresse/setup/callback`, am Client eingetragen |
+| `google-ads-auth.py` lokal auf dem eigenen Rechner | **Desktop** | fest `127.0.0.1`, nichts einzutragen |
+
+Ein **Desktop**-Client hat überhaupt kein Feld für eine Rückadresse —
+Google nagelt ihn auf `127.0.0.1` fest. Wer das Portal benutzt und einen
+Desktop-Client hat, sucht dieses Feld vergeblich und bekommt beim
+Verbinden `redirect_uri_mismatch`. Dann gibt es zwei Auswege: einen neuen
+Client vom Typ Webanwendung anlegen (empfohlen), oder den Notweg auf der
+Verbindungsseite nehmen und die Adresse von Hand zurückgeben.
+
+Beides nebeneinander ist erlaubt: ein Projekt darf mehrere Clients haben,
+und das Developer Token hängt nicht am Client.
+
+So geht es:
+
+1. <https://console.cloud.google.com/auth/clients> — in der Konsole ist
+   das **Google Auth Platform → Clients**.
 2. Projekt anlegen (oder ein vorhandenes wählen).
-3. Unter „APIs und Dienste" die **Google Ads API** aktivieren.
-4. Zustimmungsbildschirm einrichten. Nutzertyp „Extern" genügt; solange
-   die App im Testbetrieb ist, müssen die zugreifenden Google-Konten dort
-   als Testnutzer eingetragen sein.
-5. Anmeldedaten → Anmeldedaten erstellen → OAuth-Client-ID →
-   **Desktop-App**.
-6. Client-ID und Client-Geheimnis notieren.
+3. Unter „APIs und Dienste“ die **Google Ads API** aktivieren.
+4. Zustimmungsbildschirm einrichten (jetzt „Branding“ und
+   „Zielgruppe“). Nutzertyp „Extern“ genügt; solange die App
+   im Testbetrieb ist, müssen die zugreifenden Google-Konten unter
+   „Zielgruppe“ als Testnutzer eingetragen sein.
+5. **Client erstellen** → Typ nach der Tabelle oben.
+6. Bei einer Webanwendung: **Autorisierte Weiterleitungs-URIs** → **URI
+   hinzufügen** → `https://deine-adresse/setup/callback`. Die Adresse
+   steht auch auf der Verbindungsseite des Portals zum Kopieren.
+7. Client-ID und Client-Geheimnis notieren.
+
+Die Weiterleitungs-URI steht **am Client**, nicht in den Einstellungen der
+Google Auth Platform. Wer unter Branding, Zielgruppe oder Datenzugriff
+sucht, findet sie nicht.
 
 **Das Geheimnis erscheint genau einmal.** Google speichert es gehasht und
 zeigt es nur unmittelbar nach dem Erstellen; danach stehen in der Console

@@ -21,7 +21,10 @@ Zugang bereits eingerichtet — dann nur noch Schritt 5.
 
 Frage nach, was der Selbsttest nicht wissen kann:
 
-1. Gibt es einen **OAuth-Client** (Cloud Console, Typ Desktop-App)?
+1. Gibt es einen **OAuth-Client**? Typ **Webanwendung** für das Portal im
+   Container, Typ **Desktop** für `google-ads-auth.py` auf dem eigenen
+   Rechner. Ein Desktop-Client hat kein Feld für eine Rückadresse und
+   scheitert am Portal mit `redirect_uri_mismatch`.
 2. Gibt es einen **Developer Token** — und hat er **Test-** oder
    **Basic-Zugriff**? Ein Test-Token arbeitet nur an Testkonten. Das ist
    die häufigste Ursache für „geht nicht" und kein Fehler der Werkzeuge.
