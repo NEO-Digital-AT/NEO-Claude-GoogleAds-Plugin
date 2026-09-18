@@ -135,8 +135,22 @@ def _guardrails_from_env(guardrails: dict) -> dict:
     typing it wrong, and getting that wrong is the expensive mistake this
     limit exists to catch.
     """
-    def flag(name: str, current: bool) -> bool:
+    def gesetzt(name: str) -> str | None:
+        """Der Wert einer Umgebungsvariablen, oder None, wenn sie leer ist.
+
+        Eine leere Zeile in der .env ist KEINE Angabe. Vorher zaehlte sie
+        als eine: GOOGLE_ADS_ALLOWED_CUSTOMER_IDS= ergab eine leere
+        Kontenliste, und die heisst "alle zugaenglichen" — die weiteste
+        Einstellung, die es gibt. Zugleich galt die Variable als gesetzt,
+        also sperrte die Konsole die Kaestchen, und der Betreiber konnte
+        es dort nicht mehr richtigstellen. Ein leer gelassenes Feld in
+        einer Vorlage darf nicht die gefaehrlichste Wirkung haben.
+        """
         value = os.environ.get(name)
+        return None if value is None or not value.strip() else value
+
+    def flag(name: str, current: bool) -> bool:
+        value = gesetzt(name)
         if value is None:
             return current
         return value.strip().lower() in ("1", "true", "yes", "on", "ja")
@@ -146,14 +160,14 @@ def _guardrails_from_env(guardrails: dict) -> dict:
     guardrails["log_changes"] = flag(GUARDRAIL_ENV["log_changes"],
                                      guardrails["log_changes"])
 
-    accounts = os.environ.get(GUARDRAIL_ENV["allowed_customer_ids"])
+    accounts = gesetzt(GUARDRAIL_ENV["allowed_customer_ids"])
     if accounts is not None:
         guardrails["allowed_customer_ids"] = [
             "".join(c for c in part if c.isdigit())
             for part in accounts.split(",") if part.strip()
         ]
 
-    budget = os.environ.get(GUARDRAIL_ENV["max_daily_budget_micros"])
+    budget = gesetzt(GUARDRAIL_ENV["max_daily_budget_micros"])
     if budget is not None:
         try:
             guardrails["max_daily_budget_micros"] = int(round(float(budget) * 1_000_000))
@@ -165,7 +179,7 @@ def _guardrails_from_env(guardrails: dict) -> dict:
 
     for field, caster in (("max_budget_increase_factor", float),
                           ("max_operations_per_call", int)):
-        raw = os.environ.get(GUARDRAIL_ENV[field])
+        raw = gesetzt(GUARDRAIL_ENV[field])
         if raw is not None:
             try:
                 guardrails[field] = caster(raw)

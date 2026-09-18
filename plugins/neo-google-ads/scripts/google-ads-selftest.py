@@ -273,6 +273,74 @@ def test_guardrails_from_env() -> None:
              and rails["max_daily_budget_micros"] == 0)
 
 
+def test_empty_env() -> None:
+    """Eine leer gelassene Zeile in der .env ist keine Angabe.
+
+    Sie war es: GOOGLE_ADS_ALLOWED_CUSTOMER_IDS= ergab eine leere
+    Kontenliste, und die heisst "alle zugaenglichen" — die weiteste
+    Einstellung ueberhaupt. Zugleich galt die Variable als gesetzt, also
+    sperrte die Konsole die Kaestchen und es liess sich dort nicht mehr
+    richtigstellen. Das leere Feld einer Vorlage darf nicht die
+    gefaehrlichste Wirkung haben.
+    """
+    import google_ads_setup as ui_mod
+
+    gesichert = {name: os.environ.get(name) for name in gac.GUARDRAIL_ENV.values()}
+    try:
+        for name in gac.GUARDRAIL_ENV.values():
+            os.environ.pop(name, None)
+        eigene = dict(gac.DEFAULT_GUARDRAILS,
+                      write_enabled=True,
+                      allowed_customer_ids=["5691007627", "6286913360"],
+                      max_daily_budget_micros=50_000_000,
+                      max_budget_increase_factor=2.0,
+                      max_operations_per_call=100)
+
+        os.environ[gac.GUARDRAIL_ENV["allowed_customer_ids"]] = ""
+        rails = gac._guardrails_from_env(dict(eigene))  # noqa: SLF001
+        case("AN EMPTY ACCOUNT LIST IN THE .ENV DOES NOT MEAN 'EVERY ACCOUNT'",
+             rails["allowed_customer_ids"] == ["5691007627", "6286913360"],
+             str(rails["allowed_customer_ids"]))
+        case("and it does not lock the tick boxes in the console",
+             "allowed_customer_ids" not in ui_mod.env_overrides(),
+             str(sorted(ui_mod.env_overrides())))
+
+        os.environ[gac.GUARDRAIL_ENV["allowed_customer_ids"]] = "   "
+        case("whitespace counts as empty too",
+             gac._guardrails_from_env(dict(eigene))["allowed_customer_ids"]  # noqa: SLF001
+             == ["5691007627", "6286913360"])
+
+        os.environ[gac.GUARDRAIL_ENV["allowed_customer_ids"]] = "569-100-7627"
+        rails = gac._guardrails_from_env(dict(eigene))  # noqa: SLF001
+        case("A REAL VALUE STILL WINS OVER THE FILE",
+             rails["allowed_customer_ids"] == ["5691007627"],
+             str(rails["allowed_customer_ids"]))
+        case("and then the console does lock the tick boxes",
+             "allowed_customer_ids" in ui_mod.env_overrides())
+
+        del os.environ[gac.GUARDRAIL_ENV["allowed_customer_ids"]]
+        for feld, leer in (("write_enabled", ""), ("max_daily_budget_micros", ""),
+                           ("max_budget_increase_factor", " "),
+                           ("max_operations_per_call", "")):
+            os.environ[gac.GUARDRAIL_ENV[feld]] = leer
+            rails = gac._guardrails_from_env(dict(eigene))  # noqa: SLF001
+            case(f"an empty {gac.GUARDRAIL_ENV[feld]} leaves {feld} alone",
+                 rails[feld] == eigene[feld], f"{rails[feld]} statt {eigene[feld]}")
+            case(f"and {gac.GUARDRAIL_ENV[feld]} does not count as set",
+                 feld not in ui_mod.env_overrides())
+            del os.environ[gac.GUARDRAIL_ENV[feld]]
+
+        os.environ[gac.GUARDRAIL_ENV["write_enabled"]] = "false"
+        case("an explicit false still switches writing off",
+             gac._guardrails_from_env(dict(eigene))["write_enabled"] is False)  # noqa: SLF001
+    finally:
+        for name, wert in gesichert.items():
+            if wert is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = wert
+
+
 def test_request_shape() -> None:
     """Looks at what actually goes into the request body.
 
@@ -1523,6 +1591,7 @@ def main() -> int:
     print("\nGoogle Ads tools — self test (no network, no credentials)\n")
     for group, run in (("guardrails", test_guardrails),
                        ("guardrails from env", test_guardrails_from_env),
+                       ("empty env", test_empty_env),
                        ("request shape", test_request_shape),
                        ("errors", test_errors),
                        ("shaping", test_shaping), ("reports", test_reports),

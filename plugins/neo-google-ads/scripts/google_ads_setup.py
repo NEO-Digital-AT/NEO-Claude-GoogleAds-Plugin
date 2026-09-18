@@ -1197,8 +1197,10 @@ def env_overrides() -> dict:
     so the form shows it as locked and names where it comes from instead of
     quietly losing the change.
     """
+    # Leere Variablen zaehlen nicht: sonst sperrt eine leer gelassene
+    # Zeile aus der Vorlage das Feld, ohne etwas vorzugeben.
     return {field: name for field, name in gac.GUARDRAIL_ENV.items()
-            if os.environ.get(name) is not None}
+            if (os.environ.get(name) or "").strip()}
 
 
 def guardrails_page(message: str = "") -> bytes:
