@@ -481,6 +481,8 @@ def status_page(base_url: str) -> bytes:
 <h2 style="margin-top:0">Zugangsdaten</h2>
 <table>
 <tr><th>Client-ID</th><td class="mono">{esc(config.get('client_id','') [:42])}{'…' if len(config.get('client_id','')) > 42 else ''}</td></tr>
+<tr><th>Cloud-Projekt</th><td class="mono">{esc(gac.project_number_of(config.get('client_id','')) or '—')}<br>
+<span class="note">Daran hängt die Zugriffsstufe, nicht am Developer Token.</span></td></tr>
 <tr><th>Client-Geheimnis</th><td>{have('client_secret')}</td></tr>
 <tr><th>Developer Token</th><td>{have('developer_token')}</td></tr>
 <tr><th>Refresh Token</th><td>{have('refresh_token')}</td></tr>
@@ -890,8 +892,16 @@ def diagnose_page() -> bytes:
     ohne_kopf = [r for r in lesbar if r["works_with"] == ""]
     passend = {r["works_with"] for r in lesbar if r["works_with"]}
 
+    projekt = gac.project_number_of(state["config"].get("client_id") or "")
     if not lesbar:
-        schluss = ("<b>Kein einziges Konto ist lesbar, mit keiner Kopfzeile.</b> "
+        schluss = ((f"<b>Dieser OAuth-Client gehört zum Google-Cloud-Projekt "
+                    f"<span class=\"mono\">{esc(projekt)}</span>.</b> Steht diese "
+                    f"Nummer nicht auch vor der Client-ID, mit der es früher schon "
+                    f"einmal gelesen werden konnte, ist das die Ursache — und der "
+                    f"schnellste Weg ist, den Client im <b>alten</b> Projekt neu "
+                    f"anzulegen statt Zugriff für dieses zu beantragen.<br><br>"
+                    if projekt else "")
+                   + "<b>Kein einziges Konto ist lesbar, mit keiner Kopfzeile.</b> "
                    "Dann liegt es nicht an einer fehlenden Verknüpfung — die "
                    "betrifft immer nur einzelne Konten, nie alle.<br><br>"
                    "Die wahrscheinlichste Ursache ist die <b>Zugriffsstufe des "

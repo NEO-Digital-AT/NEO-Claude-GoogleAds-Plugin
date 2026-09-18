@@ -239,6 +239,22 @@ def normalize_customer_id(customer_id: str | int) -> str:
 # The client
 # --------------------------------------------------------------------------
 
+def project_number_of(client_id: str) -> str:
+    """Die Nummer des Google-Cloud-Projekts, aus der Client-ID gelesen.
+
+    Eine OAuth-Client-ID hat die Form <Projektnummer>-<Kennung>.apps.
+    googleusercontent.com. Die Nummer davor benennt das Cloud-Projekt —
+    und damit das, woran die Zugriffsstufe haengt.
+
+    Das ist die schnellste Antwort auf die teuerste Verwechslung: einen
+    neuen Client in einem NEUEN Projekt anzulegen setzt die Stufe zurueck
+    auf Test, und dann ist kein einziges echtes Konto mehr lesbar,
+    waehrend die Kontenliste weiter erscheint.
+    """
+    kopf = (client_id or "").split("-", 1)[0].strip()
+    return kopf if kopf.isdigit() else ""
+
+
 def error_code_of(exc: "GoogleAdsError") -> str:
     """The API's own error code, e.g. authorizationError=USER_PERMISSION_DENIED.
 

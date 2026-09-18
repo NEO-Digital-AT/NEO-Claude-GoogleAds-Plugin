@@ -1256,6 +1256,18 @@ def test_permission_matrix() -> None:
     MANAGER, A, B, FREMD = "5303457641", "5691007627", "6286913360", "8323427154"
     ALLE = [FREMD, A, B, MANAGER]
 
+    # Die Projektnummer steckt in der Client-ID und benennt das, woran die
+    # Zugriffsstufe haengt. Sie abzulesen erspart den Vergleich von Hand.
+    for client_id, soll in (
+            ("918722857235-im48itrfkr8voe597isdrmc5o7rfi072.apps.googleusercontent.com",
+             "918722857235"),
+            ("123456789012-abc.apps.googleusercontent.com", "123456789012"),
+            ("keine-nummer.apps.googleusercontent.com", ""),
+            ("", "")):
+        case(f"the cloud project number is read from {client_id[:18] or 'an empty id'!r}",
+             gac.project_number_of(client_id) == soll,
+             gac.project_number_of(client_id))
+
     case("the error code is dug back out of the envelope",
          gac.error_code_of(denied()) == "authorizationError=USER_PERMISSION_DENIED",
          gac.error_code_of(denied()))
