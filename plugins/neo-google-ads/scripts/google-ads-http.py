@@ -627,7 +627,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             secret = totp.new_secret()
             store.begin_totp(connection, user["id"], secret)
             uri = totp.provisioning_uri(secret, user["username"],
-                                        f"NEO Google Ads ({self._host_name()})")
+                                        f"{setup.MARKE} ({self._host_name()})")
             self._send_html(portal.two_factor_page(secret, uri,
                                                    username=user["username"]))
             return
@@ -709,7 +709,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         ok, step = totp.check(secret, presented, last_step=-1)
         if not ok:
             uri = totp.provisioning_uri(secret, user["username"],
-                                        f"NEO Google Ads ({self._host_name()})")
+                                        f"{setup.MARKE} ({self._host_name()})")
             self._send_html(portal.two_factor_page(
                 secret, uri, "Der Code stimmt nicht. Stimmt die Uhrzeit auf dem Telefon?",
                 username=user["username"]), 400)

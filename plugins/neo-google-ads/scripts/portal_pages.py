@@ -49,7 +49,7 @@ def login_page(message: str = "", username: str = "", *, first_run: bool = False
                    'Server.</p></div>')
     return ui.page("Anmeldung", f"""
 <h1>Anmeldung</h1>
-<p class="lead">Verwaltung des Google-Ads-Zugangs</p>
+<p class="lead">Verwaltung deiner Ads-Konten</p>
 {hinweis}
 {_meldung(message, "schlecht") if message else ""}
 <form method="post" action="/anmelden">
@@ -180,7 +180,7 @@ def two_factor_page(secret: str, uri: str, message: str = "", *,
 zweite Faktor — ein Geheimnis, das nie bewiesen wurde, sperrt sonst nur aus.</p>
 {_meldung(message, "schlecht") if message else ""}
 <div class="card">
-<figure class="qr">{bild}<figcaption>NEO Google Ads</figcaption></figure>
+<figure class="qr">{bild}<figcaption>{esc(ui.MARKE)}</figcaption></figure>
 <p class="note">Google Authenticator, Aegis, 1Password, Bitwarden — jede App,
 die TOTP kann.</p>
 </div>

@@ -60,6 +60,23 @@ import google_ads_client as gac
 AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 PENDING_FILE = gac.CONFIG_FILE.parent / "pending-auth.json"
 
+# Der Name, unter dem diese Anwendung auftritt: im Seitentitel, in der
+# Kopfzeile und in der Authenticator-App.
+#
+# Er darf KEINE Google-Marke enthalten. Googles OAuth-Pruefung weist einen
+# Anwendungsnamen mit "Google" darin ab, und der Name der Seite muss zu dem
+# passen, der im Zustimmungsbildschirm eingetragen ist. Beschreibende Saetze
+# wie "Zugang zu Google Ads" sind davon nicht betroffen — nur der Name.
+#
+# Sie steht in google_ads_client.py, weil der MCP-Server denselben Namen
+# als Anzeigenamen des Connectors braucht und beide Dateien ihn teilen.
+MARKE = gac.PORTAL_NAME
+
+
+def marke_beiwort() -> str:
+    """Was neben der Wortmarke steht: der Name ohne das, was das Logo schon sagt."""
+    return MARKE[4:].strip() if MARKE.upper().startswith("NEO ") else MARKE
+
 # Das Favicon, wie geliefert: grünes Zeichen auf dem Markenviolett. Als
 # data:-URI eingebettet, damit die Seite eine Datei weniger ausliefern muss
 # und im Tab sofort steht — ein zweiter Abruf für 500 Byte lohnt nicht.
@@ -344,10 +361,10 @@ def page(title: str, body: str, *, schmal: bool = False) -> bytes:
 <meta name="color-scheme" content="dark">
 <meta name="robots" content="noindex, nofollow">
 <link rel="icon" href="{FAVICON}">
-<title>{html.escape(title)} — NEO Google Ads</title>
+<title>{html.escape(title)} — {html.escape(MARKE)}</title>
 <style>{STYLE}</style></head>
 <body{klasse}><main>
-<header class="marke">{logo_markup()}<span class="wo">Google Ads</span></header>
+<header class="marke">{logo_markup()}<span class="wo">{esc(marke_beiwort())}</span></header>
 {leiste}
 {body}</main></body></html>""").encode("utf-8")
 

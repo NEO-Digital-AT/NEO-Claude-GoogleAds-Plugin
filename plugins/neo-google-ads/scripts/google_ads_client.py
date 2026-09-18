@@ -57,6 +57,19 @@ API_HOST = "https://googleads.googleapis.com"
 TOKEN_URL = "https://oauth2.googleapis.com/token"
 OAUTH_SCOPE = "https://www.googleapis.com/auth/adwords"
 
+# Der Name, unter dem diese Anwendung auftritt: Seitentitel, Kopfzeile,
+# Authenticator-App und der Anzeigename des Connectors in claude.ai.
+#
+# Er darf KEINE Google-Marke enthalten. Googles OAuth-Pruefung weist einen
+# Anwendungsnamen mit "Google" darin ab, und der Name der Seite muss zu dem
+# passen, der im Zustimmungsbildschirm steht. Beschreibende Saetze wie
+# "Zugang zu Google Ads" sind davon nicht betroffen — nur der Name.
+#
+# Ueber GOOGLE_ADS_PORTAL_NAME aenderbar, damit der naechste Wechsel keine
+# Codeaenderung braucht. SERVER_NAME bleibt davon unberuehrt: das ist die
+# technische Kennung des MCP-Servers, keine Aufschrift.
+PORTAL_NAME = os.environ.get("GOOGLE_ADS_PORTAL_NAME") or "NEO Digital AdsManagment"
+
 CONFIG_DIR = pathlib.Path(
     os.environ.get("GOOGLE_ADS_HOME")
     or pathlib.Path.home() / ".config" / "neo-google-ads"

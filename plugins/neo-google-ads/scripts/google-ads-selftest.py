@@ -927,10 +927,10 @@ def test_two_factor() -> None:
     case("spaces and lower case in a pasted secret are tolerated",
          totp.code_at(own, step) == totp.code_at(own.lower()[:8] + " " + own[8:], step))
 
-    uri = totp.provisioning_uri(own, "erich@neo-digital.at", "NEO Google Ads")
+    uri = totp.provisioning_uri(own, "erich@neo-digital.at", "Beispielmarke")
     case("the app gets an otpauth URI with the secret and the issuer",
          uri.startswith("otpauth://totp/") and f"secret={own}" in uri
-         and "issuer=NEO" in uri, uri[:70])
+         and "issuer=Beispielmarke" in uri, uri[:70])
     case("and the account name is escaped, not left to break the URI",
          " " not in uri and "@" not in uri.split("?")[0].replace("%40", ""))
 
@@ -1159,6 +1159,34 @@ def test_portal_door() -> None:
              for bit in ("HttpOnly", "SameSite=Lax", "Secure", "abc")))
     case("and drops Secure where there is no TLS to be had",
          "Secure" not in handler_with({"Host": "x.at"})._cookie_header("abc"))
+    # Googles OAuth-Pruefung weist einen Anwendungsnamen ab, der eine
+    # Google-Marke enthaelt. Der Name stand in fuenf Dateien und kroch von
+    # dort zurueck, also wird er hier festgehalten.
+    import google_ads_setup as ui_mod
+    import portal_pages as pp
+    seite = ui_mod.page("Beispiel", "<p>x</p>").decode("utf-8")
+    titel = seite.split("<title>")[1].split("</title>")[0]
+    case("THE PAGE TITLE CARRIES NO GOOGLE TRADEMARK",
+         "google" not in titel.lower(),
+         f"<title>{titel}</title> — Google refuses an app name containing 'Google'")
+    kopf = seite.split('class="wo">')[1].split("</span>")[0]
+    case("nor does the name beside the word mark",
+         "google" not in kopf.lower(), kopf)
+    anmeldung = pp.login_page().decode("utf-8")
+    case("nor the sign-in page's own title",
+         "google" not in anmeldung.split("<title>")[1].split("</title>")[0].lower())
+    server = load_server()
+    case("nor the connector's display name in claude.ai",
+         "google" not in server.server_info()["title"].lower(),
+         server.server_info()["title"])
+    case("but the technical identifier is left alone",
+         server.server_info()["name"] == "neo-google-ads",
+         server.server_info()["name"])
+    case("and the brand is settable without touching the code",
+         gac.PORTAL_NAME == (os.environ.get("GOOGLE_ADS_PORTAL_NAME")
+                             or "NEO Digital AdsManagment"),
+         gac.PORTAL_NAME)
+
     case("signing out sends an empty cookie that expires at once",
          "Max-Age=0" in handler_with({})._cookie_header(clear=True))
 

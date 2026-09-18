@@ -38,6 +38,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from google_ads_client import (  # noqa: E402
     CHANGE_LOG,
+    PORTAL_NAME,
     Client,
     GoogleAdsError,
     load_config,
@@ -45,7 +46,7 @@ from google_ads_client import (  # noqa: E402
 )
 
 SERVER_NAME = "neo-google-ads"
-SERVER_VERSION = "2.2.0"
+SERVER_VERSION = "2.2.1"
 
 # Protocol revisions this server can answer, newest first. The 2026-07-28
 # revision replaced initialize with server/discover; the older ones are
@@ -1117,8 +1118,10 @@ HANDLERS = {
 # --------------------------------------------------------------------------
 
 def server_info() -> dict:
+    # name ist die technische Kennung und bleibt; title ist die Aufschrift
+    # in der Connector-Liste von claude.ai und traegt deshalb die Marke.
     return {"name": SERVER_NAME, "version": SERVER_VERSION,
-            "title": "NEO Google Ads"}
+            "title": PORTAL_NAME}
 
 
 def capabilities() -> dict:
