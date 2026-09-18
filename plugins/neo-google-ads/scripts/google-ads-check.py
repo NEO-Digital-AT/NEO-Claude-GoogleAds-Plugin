@@ -136,7 +136,7 @@ def diagnose_account(client: Client, customer_id: str) -> str:
     query = "SELECT customer.id, customer.descriptive_name FROM customer"
     with_header = without_header = None
     try:
-        client.search(customer_id, query, page_size=1, max_rows=1)
+        client.search(customer_id, query + " LIMIT 1", max_rows=1)
         return ""                                   # readable after all
     except GoogleAdsError as exc:
         with_header = exc
@@ -150,7 +150,7 @@ def diagnose_account(client: Client, customer_id: str) -> str:
     saved = client.config["login_customer_id"]
     client.config["login_customer_id"] = ""
     try:
-        client.search(customer_id, query, page_size=1, max_rows=1)
+        client.search(customer_id, query + " LIMIT 1", max_rows=1)
         return (f"readable WITHOUT the manager header, refused WITH it.\n"
                 f"         Account {customer_id} is not linked under manager {saved}.\n"
                 f"         Either link it (manager -> Einstellungen fuer Unterkonten ->\n"

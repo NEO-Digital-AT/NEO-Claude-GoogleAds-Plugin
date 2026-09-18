@@ -345,14 +345,22 @@ class Client:
         answer = self.call("GET", "customers:listAccessibleCustomers")
         return [name.split("/")[-1] for name in answer.get("resourceNames", [])]
 
-    def search(self, customer_id: str, query: str, *, page_size: int = 1000,
+    def search(self, customer_id: str, query: str, *,
                max_rows: int = 10000, login_customer_id: str = "") -> list[dict]:
-        """Runs a GAQL query and follows the pages until max_rows is reached."""
+        """Runs a GAQL query and follows the pages until max_rows is reached.
+
+        The request body carries the query and nothing else. pageSize was
+        removed here on purpose: the API documents it as deprecated and
+        answers PAGE_SIZE_NOT_SUPPORTED when it appears, which arrives as
+        a bare "Request contains an invalid argument" and looks like a
+        problem with the account rather than with the request. To limit a
+        result, put LIMIT in the query, which is what GAQL is for.
+        """
         customer_id = normalize_customer_id(customer_id)
         rows: list[dict] = []
         page_token = ""
         while True:
-            body: dict = {"query": query, "pageSize": min(page_size, 10000)}
+            body: dict = {"query": query}
             if page_token:
                 body["pageToken"] = page_token
             answer = self.call("POST", f"customers/{customer_id}/googleAds:search", body,
@@ -475,7 +483,7 @@ class Client:
         query = ("SELECT campaign_budget.amount_micros FROM campaign_budget "
                  f"WHERE campaign_budget.resource_name = '{resource_name}'")
         try:
-            rows = self.search(customer_id, query, page_size=1, max_rows=1)
+            rows = self.search(customer_id, query + " LIMIT 1", max_rows=1)
         except GoogleAdsError:
             return 0
         if not rows:

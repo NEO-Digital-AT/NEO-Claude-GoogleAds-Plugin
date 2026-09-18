@@ -716,8 +716,8 @@ def tool_accounts(args: dict) -> dict:
                 customer_id,
                 "SELECT customer.id, customer.descriptive_name, customer.currency_code, "
                 "customer.time_zone, customer.manager, customer.test_account, "
-                "customer.status FROM customer",
-                page_size=1, max_rows=1,
+                "customer.status FROM customer LIMIT 1",
+                max_rows=1,
             )
             if rows:
                 entry.update(flatten(rows[0]))

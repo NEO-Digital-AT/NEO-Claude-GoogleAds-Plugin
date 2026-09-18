@@ -14,6 +14,7 @@ The cases fall in seven groups:
 
     guardrails    switch off, wrong account, budget ceiling, budget jump,
                   too many operations, and the clean case that must pass
+    request shape what actually lands in the request body
     errors        Google's nested error envelope becomes one readable line
     shaping       micros to currency, nested answer to flat field names
     queries       every prepared report produces valid GAQL
@@ -262,6 +263,78 @@ def test_guardrails_from_env() -> None:
         case("without the variables the restrictive defaults stand",
              rails["write_enabled"] is False and rails["allowed_customer_ids"] == []
              and rails["max_daily_budget_micros"] == 0)
+
+
+def test_request_shape() -> None:
+    """Looks at what actually goes into the request body.
+
+    This group exists because of a bug that every other check waved
+    through: search() sent pageSize, which the API documents as removed
+    and answers with PAGE_SIZE_NOT_SUPPORTED. It arrives as a bare
+    "Request contains an invalid argument" — a message that names neither
+    the field nor the request — so it reads like a broken account. No
+    test caught it, because no test had ever looked at a request body.
+    Now one does.
+    """
+    sent = {}
+
+    def fake_call(method, path, body=None, *, login_customer_id=""):
+        sent["method"], sent["path"], sent["body"] = method, path, body
+        sent["login"] = login_customer_id
+        return {"results": [{"customer": {"id": "1"}}]}
+
+    client = make_client()
+    client.call = fake_call
+    client.search("123-456-7890", "SELECT customer.id FROM customer", max_rows=5)
+
+    case("search posts to the documented path",
+         sent["path"] == "customers/1234567890/googleAds:search", sent.get("path", ""))
+    case("search sends the query and nothing else",
+         set(sent["body"]) == {"query"}, str(sorted(sent["body"])))
+    case("search does NOT send pageSize — the API refuses it",
+         "pageSize" not in sent["body"] and "page_size" not in sent["body"],
+         str(sorted(sent["body"])))
+
+    # A second page must carry the token and still no pageSize.
+    pages = [
+        {"results": [{"customer": {"id": "1"}}], "nextPageToken": "abc"},
+        {"results": [{"customer": {"id": "2"}}]},
+    ]
+    bodies = []
+
+    def paging_call(method, path, body=None, *, login_customer_id=""):
+        bodies.append(body)
+        return pages[len(bodies) - 1]
+
+    client.call = paging_call
+    rows = client.search("1234567890", "SELECT customer.id FROM customer")
+    case("paging follows nextPageToken", len(rows) == 2, f"{len(rows)} rows")
+    case("the second page sends the token and still no pageSize",
+         set(bodies[1]) == {"query", "pageToken"} and bodies[1]["pageToken"] == "abc",
+         str(sorted(bodies[1])))
+
+    # max_rows must stop the paging, or a wide query runs until the quota does.
+    endless = {"results": [{"customer": {"id": "x"}}] * 50, "nextPageToken": "more"}
+    calls = []
+    client.call = lambda m, p, b=None, **kw: (calls.append(1), endless)[1]
+    rows = client.search("1234567890", "SELECT customer.id FROM customer", max_rows=60)
+    case("max_rows stops the paging", len(rows) == 60 and len(calls) == 2,
+         f"{len(rows)} rows in {len(calls)} calls")
+
+    # The write path must keep sending validateOnly, or a dry run is not one.
+    mutated = {}
+
+    def mutate_call(method, path, body=None, *, login_customer_id=""):
+        mutated.update({"path": path, "body": body})
+        return {"mutateOperationResponses": []}
+
+    writer = make_client(write_enabled=True)
+    writer.call = mutate_call
+    writer.mutate("1234567890", [{"campaignOperation": {"remove": "x"}}], dry_run=True)
+    case("a dry run really sets validateOnly",
+         mutated["body"].get("validateOnly") is True, str(mutated["body"].get("validateOnly")))
+    case("mutate posts to the documented path",
+         mutated["path"] == "customers/1234567890/googleAds:mutate", mutated.get("path", ""))
 
 
 # --------------------------------------------------------------------------
@@ -577,6 +650,7 @@ def main() -> int:
     print("\nGoogle Ads tools — self test (no network, no credentials)\n")
     for group, run in (("guardrails", test_guardrails),
                        ("guardrails from env", test_guardrails_from_env),
+                       ("request shape", test_request_shape),
                        ("errors", test_errors),
                        ("shaping", test_shaping), ("reports", test_reports),
                        ("protocol", test_protocol), ("http door", test_http),

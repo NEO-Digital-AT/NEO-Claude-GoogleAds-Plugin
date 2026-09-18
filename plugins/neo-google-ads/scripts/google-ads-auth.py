@@ -309,8 +309,8 @@ def verify(config: dict) -> bool:
             rows = client.search(
                 customer_id,
                 "SELECT customer.descriptive_name, customer.currency_code, "
-                "customer.manager, customer.test_account FROM customer",
-                page_size=1, max_rows=1,
+                "customer.manager, customer.test_account FROM customer LIMIT 1",
+                max_rows=1,
             )
             if rows:
                 customer = rows[0].get("customer", {})
