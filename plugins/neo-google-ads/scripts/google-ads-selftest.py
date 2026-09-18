@@ -1340,6 +1340,37 @@ def test_permission_matrix() -> None:
              gac.project_number_of(client_id) == soll,
              gac.project_number_of(client_id))
 
+    # Wenn der Code die Ursache nennt, darf die Seite nicht auf etwas
+    # anderes raten. CLOUD_PROJECT_NOT_APPROVED_FOR_PRODUCTION laesst sich
+    # durch keine Kopfzeile beheben.
+    setup_mod = load_setup()
+    with tempfile.TemporaryDirectory() as folder:
+        konfig = pathlib.Path(folder) / "config.json"
+        konfig.write_text(json.dumps({
+            "client_id": "918722857235-x.apps.googleusercontent.com",
+            "client_secret": "t", "refresh_token": "t", "developer_token": "t",
+            "api_version": "v25"}), encoding="utf-8")
+        echt_datei, gac.CONFIG_FILE = gac.CONFIG_FILE, konfig
+        echt_stand = setup_mod.load_state
+        try:
+            setup_mod.load_state = lambda: {
+                "configured": True, "connected": True, "error": "",
+                "accounts": [{"id": A, "name": "", "currency": "", "manager": False,
+                              "problem": "The caller does not have permission",
+                              "code": "authorizationError="
+                                      "CLOUD_PROJECT_NOT_APPROVED_FOR_PRODUCTION"}],
+                "guardrails": dict(gac.DEFAULT_GUARDRAILS),
+                "config": json.loads(konfig.read_text(encoding="utf-8"))}
+            seite = setup_mod.status_page("https://x.at").decode("utf-8")
+            case("AN UNAPPROVED CLOUD PROJECT IS NAMED AS SUCH",
+                 "Das ist nicht der Verwaltungskopf" in seite
+                 and "918722857235" in seite, "")
+            case("and the page does not blame the manager header instead",
+                 "scheitert meist am Verwaltungskopf" not in seite)
+        finally:
+            setup_mod.load_state = echt_stand
+            gac.CONFIG_FILE = echt_datei
+
     case("the error code is dug back out of the envelope",
          gac.error_code_of(denied()) == "authorizationError=USER_PERMISSION_DENIED",
          gac.error_code_of(denied()))

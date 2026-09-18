@@ -615,12 +615,38 @@ def status_page(base_url: str) -> bytes:
                           f'<td>{rechts}</td></tr>')
         lesbar = sum(1 for a in state["accounts"] if not a["problem"])
         nicht_lesbar = len(state["accounts"]) - lesbar
+        codes = {a.get("code", "") for a in state["accounts"] if a.get("code")}
+        projekt = gac.project_number_of(config.get("client_id", ""))
         hinweis = ""
-        if nicht_lesbar:
+        if any("CLOUD_PROJECT_NOT_APPROVED" in c for c in codes):
+            # Der Fehlercode ist eindeutig. Dann nicht auf den
+            # Verwaltungskopf raten und auch nicht zum Messen schicken:
+            # keine Kopfzeile der Welt hebt eine fehlende Freigabe auf.
+            hinweis = (f'<p class="note"><b>Das ist nicht der Verwaltungskopf.</b> '
+                       f'<code>CLOUD_PROJECT_NOT_APPROVED_FOR_PRODUCTION</code> heißt: '
+                       f'das Google-Cloud-Projekt '
+                       f'<span class="mono">{esc(projekt)}</span> darf noch nicht auf '
+                       f'echte Konten zugreifen — es steht auf Zugriffsstufe Test.</p>'
+                       f'<p class="note">Freischalten in der Google Cloud Console, in '
+                       f'genau diesem Projekt: <b>Google Ads API → Übersicht → '
+                       f'Zugriffsstufe hochstufen → Zugriff beantragen</b>. Die '
+                       f'Markenprüfung des Zustimmungsbildschirms muss vorher durch '
+                       f'sein. Google stuft oft sofort hoch, prüft sonst bis zu zehn '
+                       f'Werktage.</p>'
+                       f'<p class="note">Schneller geht es, wenn ein <b>anderes, bereits '
+                       f'freigeschaltetes Projekt</b> vorhanden ist: den OAuth-Client '
+                       f'dort anlegen und die neue Kennung hier eintragen. Dann ist '
+                       f'nichts zu beantragen.</p>'
+                       f'<div class="row">'
+                       f'<a class="button" href="/setup/credentials">Zugangsdaten '
+                       f'bearbeiten</a>'
+                       f'<a class="button quiet" href="/setup/diagnose">Trotzdem '
+                       f'messen</a></div>')
+        elif nicht_lesbar:
             hinweis = ('<p class="note">Ein Konto, das die API auflistet, aber nicht '
-                       'lesen lässt, scheitert fast immer am Verwaltungskopf — der '
-                       'Fehler nennt ihn nur nicht. Die Messung probiert jede '
-                       'Kombination durch und sagt, welche geht.</p>'
+                       'lesen lässt, scheitert meist am Verwaltungskopf — der Fehler '
+                       'nennt ihn nur nicht. Die Messung probiert jede Kombination '
+                       'durch und sagt, welche geht.</p>'
                        '<a class="button" href="/setup/diagnose">'
                        'Berechtigungen messen</a>')
         parts.append(f"""<div class="card">
@@ -995,7 +1021,23 @@ def diagnose_page() -> bytes:
     passend = {r["works_with"] for r in lesbar if r["works_with"]}
 
     projekt = gac.project_number_of(state["config"].get("client_id") or "")
-    if not lesbar:
+    projekt_gesperrt = any("CLOUD_PROJECT_NOT_APPROVED" in (r.get("code") or "")
+                           for r in matrix)
+    if projekt_gesperrt:
+        schluss = (f"<b>Es liegt nicht am Verwaltungskopf.</b> Die API antwortet mit "
+                   f"<code>CLOUD_PROJECT_NOT_APPROVED_FOR_PRODUCTION</code>: das "
+                   f"Google-Cloud-Projekt <span class=\"mono\">"
+                   f"{esc(gac.project_number_of(state['config'].get('client_id') or ''))}"
+                   f"</span> steht auf Zugriffsstufe Test und darf nur Testkonten "
+                   f"lesen. Keine Kopfzeile ändert daran etwas.<br><br>"
+                   f"Freischalten in der Cloud Console in genau diesem Projekt: "
+                   f"<b>Google Ads API → Übersicht → Zugriffsstufe hochstufen → "
+                   f"Zugriff beantragen</b>. Die Markenprüfung muss vorher durch sein. "
+                   f"Oder den OAuth-Client in einem bereits freigeschalteten Projekt "
+                   f"anlegen — das dauert Minuten statt Tage. "
+                   f"<a href=\"https://developers.google.com/google-ads/api/docs/access-levels\" "
+                   f"target=\"_blank\" rel=\"noopener\">Zugriffsstufen</a>")
+    elif not lesbar:
         schluss = ((f"<b>Dieser OAuth-Client gehört zum Google-Cloud-Projekt "
                     f"<span class=\"mono\">{esc(projekt)}</span>.</b> Steht diese "
                     f"Nummer nicht auch vor der Client-ID, mit der es früher schon "
