@@ -82,15 +82,23 @@ TOKEN_FILE = mcp.CHANGE_LOG.parent / "http-token"
 
 
 def load_token(path: pathlib.Path) -> str:
+    """Reads the token, creating one on the first start.
+
+    A container that refuses to start because nobody created a token yet
+    is a container nobody can create a token in. So the first start makes
+    one and prints it. Every later start finds it in the mounted volume
+    and leaves it alone — the password does not change under the operator
+    on each deployment.
+    """
     if not path.exists():
-        raise SystemExit(
-            f"No token at {path}.\n"
-            f"Create one:  google-ads-http.py --new-token --token-file {path}"
-        )
+        token = write_token(path)
+        print(f"No token at {path} — created one.", file=sys.stderr)
+        print(f"  token: {token}", file=sys.stderr)
+        return token
     token = path.read_text(encoding="utf-8").strip()
     if len(token) < 32:
         raise SystemExit(f"The token in {path} is shorter than 32 characters. "
-                         "Generate one with --new-token.")
+                         "Delete it to have a new one generated, or write a longer one.")
     return token
 
 
@@ -113,6 +121,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
     anthropic_only = False
     path_prefix = "/mcp"
     setup_enabled = False
+    token_path = ""
     # A reverse proxy sits on a private address: the loopback interface, or
     # a container network. Nothing on the public internet is trusted to
     # describe who it is forwarding for.
@@ -293,6 +302,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self._send_html(setup.credentials_page())
         elif path == "/setup/connect":
             self._send_html(setup.connect_page(self._base_url()))
+        elif path == "/setup/token":
+            self._send_html(setup.token_page(pathlib.Path(self.token_path)))
         elif path == "/setup/check":
             self._send_html(setup.check_page())
         elif path == "/setup/callback":
@@ -313,6 +324,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
         elif path == "/setup/paste":
             ok, message = setup.exchange_code((form.get("pasted") or [""])[0])
             self._send_html(setup.result_page(ok, message))
+        elif path == "/setup/token":
+            _, neues = setup.rotate_token(pathlib.Path(self.token_path))
+            self.__class__.token = neues
+            self.log_line("setup: access word replaced")
+            self._send_html(setup.token_page(pathlib.Path(self.token_path), neues))
         elif path == "/setup/disconnect":
             ok, message = setup.disconnect()
             self._send_html(setup.result_page(ok, message))
@@ -461,6 +477,7 @@ def main() -> int:
     Handler.anthropic_only = options.anthropic_only
     Handler.path_prefix = options.path
     Handler.setup_enabled = options.setup
+    Handler.token_path = str(token_path)
     if options.trusted_proxy:
         try:
             Handler.trusted_proxies = tuple(

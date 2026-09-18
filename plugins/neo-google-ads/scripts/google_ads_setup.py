@@ -374,8 +374,17 @@ rel="noopener">myaccount.google.com/permissions</a>.</p>
 <button class="danger" type="submit">Refresh Token löschen</button>
 </form></div>""")
 
-    parts.append(f'<p class="note">MCP-Adresse für claude.ai: '
-                 f'<code>{esc(base_url)}/mcp</code></p>')
+    parts.append(f"""<div class="card">
+<h2 style="margin-top:0">Zugang zu dieser Seite</h2>
+<table>
+<tr><th>Adresse</th><td class="mono">{esc(base_url)}/setup</td></tr>
+<tr><th>Benutzername</th><td>beliebig — geprüft wird nur das Kennwort</td></tr>
+<tr><th>Kennwort</th><td>das Zugangswort des Servers</td></tr>
+<tr><th>MCP-Adresse</th><td class="mono">{esc(base_url)}/mcp</td></tr>
+</table>
+<p class="note">Dasselbe Wort öffnet beide Türen. Ein Wechsel gilt sofort und
+für beide — der Connector in claude.ai muss danach neu eingetragen werden.</p>
+<a class="button quiet" href="/setup/token">Zugangswort wechseln</a></div>""")
     return page("Status", "".join(parts))
 
 
@@ -630,6 +639,45 @@ def save_credentials(form: dict) -> tuple[bool, str]:
                                encoding="utf-8")
     os.chmod(gac.CONFIG_FILE, 0o600)
     return True, "Gespeichert."
+
+
+def rotate_token(token_file: pathlib.Path) -> tuple[bool, str]:
+    """Replaces the access word with a fresh one.
+
+    Kept next to the other management actions because the alternative is
+    an SSH session for something the page already has the authority to do.
+    The old word stops working the moment this returns.
+    """
+    import secrets as _secrets
+    token = _secrets.token_urlsafe(48)
+    token_file.parent.mkdir(parents=True, exist_ok=True)
+    token_file.write_text(token + "\n", encoding="utf-8")
+    os.chmod(token_file, 0o600)
+    return True, token
+
+
+def token_page(token_file: pathlib.Path, neues: str = "") -> bytes:
+    if neues:
+        return page("Zugangswort", f"""<h1>Neues Zugangswort</h1>
+<div class="card akzent">
+<p>Ab sofort gilt dieses Wort. Das alte ist ungültig — auch für den
+Connector in claude.ai, der neu eingetragen werden muss.</p>
+<pre>{esc(neues)}</pre>
+<p class="note">Jetzt in einen Passwortspeicher übernehmen. Diese Seite zeigt
+es kein zweites Mal; danach steht es nur noch in
+<code>{esc(token_file)}</code> auf dem Server.</p>
+<a class="button" href="/setup">Zum Status</a></div>""")
+    return page("Zugangswort", """<h1>Zugangswort wechseln</h1>
+<p class="lead">Das Wort ist zugleich das Kennwort dieser Seite und der
+Schlüssel des MCP-Endpunkts.</p>
+<div class="card">
+<p>Ein Wechsel macht das alte Wort sofort ungültig. Der Connector in
+claude.ai trägt das alte und muss danach neu eingetragen werden — bis dahin
+antwortet der Server ihm mit einer Abweisung.</p>
+<form method="post" action="/setup/token">
+<button class="danger" type="submit">Neues Zugangswort erzeugen</button>
+<a class="button quiet" href="/setup">Abbrechen</a>
+</form></div>""")
 
 
 def disconnect() -> tuple[bool, str]:

@@ -93,6 +93,25 @@ Seite.
 2. Adresse: `https://ads.mcp.neo-digital.at/mcp`
 3. Als Kopfzeile: `Authorization: Bearer <das Zugangswort>`
 
+### Das Zugangswort
+
+Es entsteht beim **ersten** Start, liegt in `data/http-token` und bleibt
+dort. Eine Bereitstellung erzeugt **kein** neues: das Verzeichnis ist
+gemountet, der Server findet das vorhandene und lässt es in Ruhe.
+
+Wechseln lässt es sich unter **/setup → Zugangswort wechseln**. Das alte
+gilt dann sofort nicht mehr — auch für den Connector in claude.ai, der neu
+einzutragen ist.
+
+Vergessen kann man es nicht: es steht in `data/http-token` auf dem Server.
+Wer dort nicht herankommt, löscht die Datei über den Dateimanager; der
+nächste Start legt eine neue an und schreibt sie ins Protokoll.
+
+**Benutzername und Kennwort sind nicht zweierlei.** Der Browser fragt nach
+beidem, geprüft wird nur das Kennwort. Es gibt keine Benutzerkonten, keine
+E-Mail-Adresse und kein „Kennwort vergessen" — es gibt ein Wort, das den
+Server öffnet, und wer den Server verwaltet, kann es lesen und wechseln.
+
 ### Wie der Aufbau sich schützt
 
 | Riegel | Wirkung |
