@@ -117,6 +117,11 @@ Das `_amount`-Feld legt der Server dazu; in der API gibt es das nicht.
   Tage sind unvollständig.
 - **Nicht jedes Feld ist mit jedem kombinierbar.** Welche Felder
   zusammenpassen, sagt `google_ads_fields` im Feld `selectable_with`.
+- **Begrenzt wird mit `LIMIT`, nicht mit einer Seitengroesse.** Das Feld
+  `page_size` gibt es in der Anfrage nicht mehr; wer es mitschickt, bekommt
+  `PAGE_SIZE_NOT_SUPPORTED` zurueck. Das kommt als nacktes *Request contains
+  an invalid argument* an, nennt weder das Feld noch die Anfrage und sieht
+  aus wie ein kaputtes Konto.
 - **`LIMIT` begrenzt die Abfrage, `limit` das Werkzeug.** Der Server
   liefert standardmäßig 200 Zeilen und sagt, wenn er gekürzt hat.
 

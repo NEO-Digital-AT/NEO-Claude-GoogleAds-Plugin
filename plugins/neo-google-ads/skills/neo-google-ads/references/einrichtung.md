@@ -342,6 +342,7 @@ sie und braucht dann keine Datei.
 | `USER_PERMISSION_DENIED` | Kein Zugriff auf dieses Konto, oder `login_customer_id` fehlt | Manager-ID setzen |
 | Konten werden aufgelistet, aber keines ist lesbar | `login_customer_id` nennt ein Verwaltungskonto, unter dem die Konten nicht hängen | Verknüpfung nachholen (Schritt 2b) **oder** `login_customer_id` leeren. `google-ads-check.py` sagt, welches von beiden |
 | `CUSTOMER_NOT_ENABLED` | Konto stillgelegt oder ohne Zahlungsmittel | Im Ads-Konto klären |
+| *Request contains an invalid argument* bei jeder Abfrage | Die Anfrage enthält ein Feld, das die API-Fassung nicht mehr kennt | Plugin aktualisieren; die Testgruppe `request shape` prüft den Anfrageaufbau |
 | `no refresh token` beim Verbinden | Konto hatte diesem Client schon zugestimmt | Eintrag unter <https://myaccount.google.com/permissions> entfernen |
 | Nur eine Client-ID, kein Geheimnis | Google zeigt es nur einmal beim Erstellen | Client anklicken, **Geheimnis hinzufügen** |
 | Werkzeuge fehlen in Claude Code | Plugin nicht aktiv, oder `python3` nicht im Pfad | `/plugin`, dann `google-ads-mcp.py --check-config` |
