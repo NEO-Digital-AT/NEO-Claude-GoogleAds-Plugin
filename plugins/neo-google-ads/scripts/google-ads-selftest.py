@@ -533,10 +533,23 @@ def test_http() -> None:
     with socket.socket() as probe:
         probe.bind(("127.0.0.1", 0))
         port = probe.getsockname()[1]
+    folder_db = tempfile.mkdtemp()
     server = http_mod.ThreadingServer(("127.0.0.1", port), http_mod.Handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     base = f"http://127.0.0.1:{port}"
+
+    def hole_roh(pfad):
+        """Ein GET ohne Keks, ohne Token, ohne Referer — wie ein Fremder."""
+        class OhneUmleitung(urllib.request.HTTPRedirectHandler):
+            def redirect_request(self, *a, **k):
+                return None
+        oeffner = urllib.request.build_opener(OhneUmleitung())
+        try:
+            with oeffner.open(base + pfad, timeout=10) as antwort:
+                return antwort.status, antwort.read().decode("utf-8", "replace"), None
+        except urllib.error.HTTPError as exc:
+            return exc.code, exc.read().decode("utf-8", "replace"), exc.headers.get("Location")
 
     def post(payload, bearer=token, path="/mcp"):
         request = urllib.request.Request(base + path, method="POST",
@@ -618,6 +631,26 @@ def test_http() -> None:
 
         http_mod.Handler.anthropic_only = False
         http_mod.Handler.trusted_proxies = ()
+        # Die oeffentlichen Seiten, ueber die Steckdose, ohne Keks und
+        # ohne Token — so, wie Googles Pruefer sie abruft. Das Verhalten
+        # haengt an der Route, nicht am Inhalt der Seite: den Inhalt zu
+        # pruefen haette den Fehler nicht gefunden, der die Anwendung
+        # zurueckgewiesen hat.
+        http_mod.Handler.setup_enabled = True
+        http_mod.Handler.database_path = pathlib.Path(folder_db) / "portal.db"
+        status, koerper, ort = hole_roh("/")
+        case("die Startseite kommt OHNE Anmeldung", status == 200,
+             f"HTTP {status} -> {ort}")
+        status, koerper, _ = hole_roh("/")
+        case("und traegt den Namen aus dem Zustimmungsbildschirm",
+             f"<title>{gac.PORTAL_NAME}</title>" in koerper,
+             koerper.split("<title>")[1].split("</title>")[0] if "<title>" in koerper else "")
+        for pfad in ("/setup", "/konto", "/setup/diagnose"):
+            status, _, ort = hole_roh(pfad)
+            case(f"{pfad} bleibt hinter der Anmeldung",
+                 status == 303 and (ort or "").endswith("/anmelden"),
+                 f"HTTP {status} -> {ort}")
+        http_mod.Handler.setup_enabled = False
     finally:
         server.shutdown()
         server.server_close()
@@ -1068,6 +1101,18 @@ def handler_with(headers: dict, public_url: str = ""):
     return handler
 
 
+def Handler_open_paths_guard() -> set:
+    """Die Pfade, die das Portal fuer sich beansprucht.
+
+    / und /datenschutz duerfen nicht darunter sein: sie muessen ohne
+    Anmeldung erreichbar bleiben, sonst weist Googles Pruefung des
+    Brandings die Anwendung ab.
+    """
+    http_mod = load_http()
+    return {p for p in ("/", "/setup", "/konto", "/anmelden")
+            if http_mod.Handler._is_portal_path(p)}  # noqa: SLF001
+
+
 def test_portal_door() -> None:
     """Which requests the portal lets through, and how the address is read.
 
@@ -1186,6 +1231,33 @@ def test_portal_door() -> None:
          gac.PORTAL_NAME == (os.environ.get("GOOGLE_ADS_PORTAL_NAME")
                              or "NEO Digital AdsManagment"),
          gac.PORTAL_NAME)
+
+    # Googles Pruefung des Brandings kommt ohne Anmeldung an die
+    # Startseite, oder sie weist die Anwendung ab. Genau das ist passiert.
+    startseite = ui_mod.startseite("https://x.at").decode("utf-8")
+    case("THE HOME PAGE NEEDS NO SIGN-IN",
+         "/" not in Handler_open_paths_guard(),
+         "checked below by route, not by string")
+    case("the home page is titled exactly like the consent screen",
+         startseite.split("<title>")[1].split("</title>")[0] == gac.PORTAL_NAME,
+         startseite.split("<title>")[1].split("</title>")[0])
+    case("and carries that same name as its heading",
+         startseite.split("<h1>")[1].split("</h1>")[0] == gac.PORTAL_NAME)
+    fliessend = " ".join(startseite.split())
+    case("it explains what the application is for",
+         "Wozu diese Anwendung dient" in fliessend
+         and "is an internal tool operated by" in fliessend)
+    case("it names the scope it asks for",
+         gac.OAUTH_SCOPE in startseite, gac.OAUTH_SCOPE)
+    case("it names the operator", gac.PORTAL_OPERATOR in startseite)
+    case("and offers the way in at the top",
+         'href="/anmelden"' in startseite)
+    case("it links out to the imprint and the privacy notice",
+         gac.PORTAL_IMPRESSUM in startseite and gac.PORTAL_DATENSCHUTZ in startseite,
+         f"{gac.PORTAL_IMPRESSUM} / {gac.PORTAL_DATENSCHUTZ}")
+    case("neither page shows an account number or a figure",
+         not any(wort in startseite for wort in ("5691007627", "changes.jsonl",
+                                                 "refresh_token", "client_secret")))
 
     case("signing out sends an empty cookie that expires at once",
          "Max-Age=0" in handler_with({})._cookie_header(clear=True))

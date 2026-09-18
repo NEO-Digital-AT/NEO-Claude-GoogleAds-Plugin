@@ -70,6 +70,20 @@ OAUTH_SCOPE = "https://www.googleapis.com/auth/adwords"
 # technische Kennung des MCP-Servers, keine Aufschrift.
 PORTAL_NAME = os.environ.get("GOOGLE_ADS_PORTAL_NAME") or "NEO Digital AdsManagment"
 
+# Wer die Anwendung betreibt und wie man ihn erreicht. Googles Pruefung des
+# Brandings will beides auf der oeffentlichen Startseite sehen, zusammen mit
+# einer Beschreibung des Zwecks — und den Anwendungsnamen im Wortlaut des
+# Zustimmungsbildschirms.
+PORTAL_OPERATOR = os.environ.get("GOOGLE_ADS_PORTAL_OPERATOR") or "NEO Digital"
+PORTAL_CONTACT = os.environ.get("GOOGLE_ADS_PORTAL_CONTACT") or ""
+
+# Impressum und Datenschutz stehen auf der Unternehmensseite. Googles
+# Pruefung will die Adressen sehen, nicht eigene Seiten hier.
+PORTAL_IMPRESSUM = (os.environ.get("GOOGLE_ADS_PORTAL_IMPRESSUM")
+                    or "https://www.neo-digital.at/impressum")
+PORTAL_DATENSCHUTZ = (os.environ.get("GOOGLE_ADS_PORTAL_DATENSCHUTZ")
+                      or "https://www.neo-digital.at/datenschutz")
+
 CONFIG_DIR = pathlib.Path(
     os.environ.get("GOOGLE_ADS_HOME")
     or pathlib.Path.home() / ".config" / "neo-google-ads"

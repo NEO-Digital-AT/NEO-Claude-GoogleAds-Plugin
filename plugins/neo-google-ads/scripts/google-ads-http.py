@@ -384,13 +384,22 @@ class Handler(http.server.BaseHTTPRequestHandler):
                              "protocol_versions": list(mcp.PROTOCOL_VERSIONS)})
             return
 
+        # Die oeffentlichen Seiten zuerst, ohne jede Anmeldung. Googles
+        # Pruefung des Brandings kommt sonst nicht an die Startseite und
+        # weist die Anwendung ab — genau das ist passiert.
+        if self.setup_enabled and path == "/":
+            self.log_line("public: /")
+            try:
+                self._send_html(setup.startseite(self._base_url()))
+            except Exception as exc:  # noqa: BLE001
+                print(traceback.format_exc(), file=sys.stderr)
+                self._send_html(setup.result_page(False, f"{type(exc).__name__}: {exc}"), 500)
+            return
+
         if self.setup_enabled and self._is_portal_path(path):
             self._portal_request(path, "GET")
             return
 
-        if path == "/" and self.setup_enabled:
-            self._redirect("/setup")
-            return
         self._send(404, {"error": "not found"})
 
     # -- portal routing ----------------------------------------------------
