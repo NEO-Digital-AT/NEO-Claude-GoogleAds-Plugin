@@ -65,6 +65,23 @@ curl https://ads.mcp.neo-digital.at/health
 Antwortet `{"status": "ok", ...}`, ist alles bereit. Der Pfad verrät nichts
 über die Konten, nur dass ein Server da ist.
 
+### Die Oberfläche
+
+Unter `/setup` liegt eine kleine Verwaltung: Status der Verbindung, die
+Konten mit Namen und Währung, die Zugriffsstufe des Developer Tokens, die
+Schutzgrenzen, die letzten Einträge des Änderungsprotokolls. Dort werden
+die Zugangsdaten eingetragen, die Verbindung hergestellt und wieder
+getrennt.
+
+Angemeldet wird mit demselben Zugangswort wie der MCP-Endpunkt: der
+Browser fragt nach Benutzername und Kennwort, der Name ist beliebig, das
+Kennwort ist das Wort. Kein zweites Geheimnis.
+
+**Eigenes Logo:** eine Datei `logo.svg` in das Datenverzeichnis legen
+(`deploy/data/logo.svg`), dann steht sie statt der eingebauten Wortmarke im
+Kopf. Nimmt das SVG `fill="currentColor"`, übernimmt es die Akzentfarbe der
+Seite.
+
 ### In claude.ai eintragen
 
 1. **Einstellungen → Connectors → Benutzerdefinierten Connector hinzufügen**

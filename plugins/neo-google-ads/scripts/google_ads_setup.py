@@ -45,64 +45,132 @@ import google_ads_client as gac
 AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 PENDING_FILE = gac.CONFIG_FILE.parent / "pending-auth.json"
 
+# The word mark, drawn as paths so it needs no font and no second file.
+# It takes its colour from the surrounding text, so one variable changes
+# the whole page. To use a real logo instead, drop an SVG at
+# /data/logo.svg — it is served in place of this one.
+LOGO = """<svg viewBox="0 0 132 40" role="img" aria-label="NEO Digital"
+  fill="currentColor" xmlns="http://www.w3.org/2000/svg">
+<path d="M0 40V0h7.2l17.4 26.6V0h6.6v40h-7.2L6.6 13.4V40H0z"/>
+<path d="M40 40V0h25.6v6.4H46.6v9.4h17.2v6.4H46.6v11.4h19.4V40H40z"/>
+<path d="M92.4 40c-11 0-19.4-8.6-19.4-20S81.4 0 92.4 0s19.4 8.6 19.4 20-8.4 20-19.4 20zm0-6.6c7.2 0 12.6-5.6 12.6-13.4S99.6 6.6 92.4 6.6 79.8 12.2 79.8 20s5.4 13.4 12.6 13.4z"/>
+<rect x="120" y="30" width="10" height="10" rx="2"/>
+</svg>"""
+
 STYLE = """
+/* Ein Farbschema, dunkel. Kein prefers-color-scheme: die Seite ist dunkel,
+   überall. Jeder Wert unten ist mit dem Kontrastrechner aus neo-design
+   gemessen; die schwächste Paarung liegt bei 5,7:1 und damit über AA. */
 :root {
-  --bg: #fbfbfa; --fg: #1a1a18; --muted: #6b6b66; --line: #e3e3df;
-  --card: #ffffff; --ok: #1a7f4b; --warn: #a65d00; --bad: #b3261e;
-  --accent: #2c5aa0;
-}
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #17171a; --fg: #e8e8e4; --muted: #9a9a94; --line: #2e2e33;
-    --card: #1f1f23; --ok: #4ac47f; --warn: #e0a34a; --bad: #f2776b;
-    --accent: #7aa7e8;
-  }
+  --bg:      #0B0F0B;   /* Grund                                        */
+  --card:    #141814;   /* Karten, 1 Stufe heller                       */
+  --line:    #242C24;   /* Rahmen, nur Fläche — kein Text darauf        */
+  --fg:      #E8EDE8;   /* Fließtext            16,3:1 auf --bg         */
+  --muted:   #A3ADA3;   /* Nebentext             7,7:1 auf --card       */
+  --neon:    #39FF14;   /* Akzent               13,2:1 auf --card       */
+  --neon-dim:#2BC410;   /* Akzent auf Flächen, wo Neon zu laut wäre     */
+  --warn:    #FFB454;   /* Hinweis              10,2:1 auf --card       */
+  --bad:     #FF6B5C;   /* Befund                6,4:1 auf --card       */
 }
 * { box-sizing: border-box; }
+html { color-scheme: dark; }
 body { margin: 0; background: var(--bg); color: var(--fg);
-  font: 16px/1.55 system-ui, -apple-system, "Segoe UI", sans-serif; }
-main { max-width: 52rem; margin: 0 auto; padding: 2rem 1rem 4rem; }
-h1 { font-size: 1.5rem; margin: 0 0 .25rem; }
-h2 { font-size: 1.1rem; margin: 2rem 0 .75rem; }
-p.lead { color: var(--muted); margin: 0 0 2rem; }
+  font: 16px/1.55 system-ui, -apple-system, "Segoe UI", sans-serif;
+  -webkit-font-smoothing: antialiased; }
+main { max-width: 54rem; margin: 0 auto; padding: 2.5rem 1rem 5rem; }
+
+header.marke { display: flex; align-items: center; gap: .9rem;
+  padding-bottom: 1.5rem; margin-bottom: 2rem;
+  border-bottom: 1px solid var(--line); }
+header.marke svg { height: 1.55rem; width: auto; color: var(--neon);
+  filter: drop-shadow(0 0 14px color-mix(in srgb, var(--neon) 45%, transparent)); }
+header.marke .wo { margin-left: auto; color: var(--muted); font-size: .82rem;
+  letter-spacing: .08em; text-transform: uppercase; }
+
+h1 { font-size: 1.6rem; margin: 0 0 .3rem; letter-spacing: -.01em; }
+h2 { font-size: 1.05rem; margin: 0 0 .9rem; letter-spacing: .01em; }
+p.lead { color: var(--muted); margin: 0 0 2rem; max-width: 42rem; }
+
 .card { background: var(--card); border: 1px solid var(--line);
-  border-radius: .6rem; padding: 1.25rem; margin-bottom: 1rem; }
+  border-radius: .7rem; padding: 1.35rem; margin-bottom: 1rem; }
+.card.akzent { border-color: color-mix(in srgb, var(--neon) 35%, var(--line)); }
+
 table { width: 100%; border-collapse: collapse; font-size: .94rem; }
-th, td { text-align: left; padding: .5rem .6rem; border-bottom: 1px solid var(--line);
-  vertical-align: top; }
-th { font-weight: 600; color: var(--muted); font-size: .85rem;
-  text-transform: uppercase; letter-spacing: .03em; }
-tr:last-child td { border-bottom: none; }
-code, .mono { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-  font-size: .9em; }
-.state { display: inline-block; padding: .1rem .5rem; border-radius: 1rem;
-  font-size: .8rem; font-weight: 600; }
-.state.ok { background: color-mix(in srgb, var(--ok) 15%, transparent); color: var(--ok); }
-.state.warn { background: color-mix(in srgb, var(--warn) 15%, transparent); color: var(--warn); }
-.state.bad { background: color-mix(in srgb, var(--bad) 15%, transparent); color: var(--bad); }
-label { display: block; margin: 1rem 0 .25rem; font-weight: 600; font-size: .92rem; }
+th, td { text-align: left; padding: .6rem .7rem; vertical-align: top;
+  border-bottom: 1px solid var(--line); }
+th { font-weight: 600; color: var(--muted); font-size: .78rem;
+  text-transform: uppercase; letter-spacing: .06em; white-space: nowrap; }
+tr:last-child th, tr:last-child td { border-bottom: none; }
+
+code, .mono, pre { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
+code, .mono { font-size: .89em; color: var(--neon); }
+pre { background: var(--bg); border: 1px solid var(--line); border-radius: .45rem;
+  padding: .9rem; overflow-x: auto; font-size: .85rem; margin: 0;
+  color: var(--fg); white-space: pre-wrap; word-break: break-all; }
+
+.state { display: inline-block; padding: .12rem .6rem; border-radius: 1rem;
+  font-size: .76rem; font-weight: 700; letter-spacing: .04em;
+  text-transform: uppercase; vertical-align: middle; }
+.state.ok   { background: color-mix(in srgb, var(--neon) 16%, transparent);
+              color: var(--neon); }
+.state.warn { background: color-mix(in srgb, var(--warn) 16%, transparent);
+              color: var(--warn); }
+.state.bad  { background: color-mix(in srgb, var(--bad) 16%, transparent);
+              color: var(--bad); }
+
+label { display: block; margin: 1.35rem 0 .3rem; font-weight: 600; font-size: .92rem; }
+label:first-child { margin-top: 0; }
 label span { display: block; font-weight: 400; color: var(--muted);
-  font-size: .85rem; margin-top: .15rem; }
-input[type=text], input[type=password] { width: 100%; padding: .55rem .7rem;
-  border: 1px solid var(--line); border-radius: .4rem; background: var(--bg);
-  color: var(--fg); font-family: ui-monospace, Menlo, monospace; font-size: .9rem; }
-button, .button { display: inline-block; padding: .55rem 1.1rem; border-radius: .4rem;
-  border: 1px solid transparent; background: var(--accent); color: #fff;
-  font: inherit; font-weight: 600; font-size: .94rem; cursor: pointer;
-  text-decoration: none; margin-top: 1.25rem; }
+  font-size: .85rem; margin-top: .2rem; line-height: 1.45; }
+input[type=text], input[type=password] { width: 100%; padding: .6rem .75rem;
+  margin-top: .45rem; border: 1px solid var(--line); border-radius: .45rem;
+  background: var(--bg); color: var(--fg);
+  font-family: ui-monospace, Menlo, monospace; font-size: .9rem; }
+input:focus-visible { outline: 2px solid var(--neon); outline-offset: 1px;
+  border-color: transparent; }
+
+button, .button { display: inline-block; padding: .6rem 1.2rem; border-radius: .45rem;
+  border: 1px solid transparent; background: var(--neon); color: #07120A;
+  font: inherit; font-weight: 700; font-size: .93rem; cursor: pointer;
+  text-decoration: none; margin-top: 1.4rem; }
+button:hover, .button:hover { background: #55FF38; }
+button:focus-visible, .button:focus-visible { outline: 2px solid var(--fg);
+  outline-offset: 2px; }
 button.quiet, .button.quiet { background: transparent; color: var(--fg);
   border-color: var(--line); }
-button.danger { background: var(--bad); }
-pre { background: var(--bg); border: 1px solid var(--line); border-radius: .4rem;
-  padding: .9rem; overflow-x: auto; font-size: .86rem; margin: 0; }
-.row { display: flex; gap: .6rem; flex-wrap: wrap; align-items: center; }
-.note { color: var(--muted); font-size: .88rem; margin-top: .75rem; }
-a { color: var(--accent); }
+button.quiet:hover, .button.quiet:hover { border-color: var(--neon);
+  color: var(--neon); }
+button.danger { background: transparent; color: var(--bad);
+  border-color: color-mix(in srgb, var(--bad) 45%, transparent); }
+button.danger:hover { background: color-mix(in srgb, var(--bad) 14%, transparent); }
+
+.row { display: flex; gap: .7rem; flex-wrap: wrap; align-items: center; }
+.note { color: var(--muted); font-size: .87rem; margin-top: .8rem; line-height: 1.5; }
+a { color: var(--neon); text-underline-offset: .2em; }
+a:hover { color: #7CFF5C; }
+
 @media (max-width: 34rem) {
-  main { padding: 1.25rem .8rem 3rem; }
-  th, td { padding: .45rem .35rem; font-size: .88rem; }
+  main { padding: 1.5rem .85rem 3.5rem; }
+  header.marke { gap: .7rem; }
+  header.marke .wo { display: none; }
+  th, td { padding: .5rem .35rem; font-size: .88rem; }
+  th { font-size: .72rem; }
+  table, tbody, tr, th, td { display: block; }
+  th { border: none; padding-bottom: .15rem; }
+  td { padding-top: 0; padding-bottom: .8rem; }
 }
 """
+
+
+def logo_markup() -> str:
+    """The built-in word mark, or the operator's own file if one is there."""
+    eigen = gac.CONFIG_FILE.parent / "logo.svg"
+    if eigen.exists():
+        try:
+            return eigen.read_text(encoding="utf-8")
+        except OSError:
+            pass
+    return LOGO
 
 
 def page(title: str, body: str) -> bytes:
@@ -110,10 +178,13 @@ def page(title: str, body: str) -> bytes:
     return (f"""<!doctype html>
 <html lang="de"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
 <meta name="robots" content="noindex, nofollow">
 <title>{html.escape(title)} — NEO Google Ads</title>
 <style>{STYLE}</style></head>
-<body><main>{body}</main></body></html>""").encode("utf-8")
+<body><main>
+<header class="marke">{logo_markup()}<span class="wo">Google Ads</span></header>
+{body}</main></body></html>""").encode("utf-8")
 
 
 def esc(value) -> str:
@@ -281,7 +352,7 @@ Gespräch.</p></div>""")
         for entry in changes:
             art = "Trockenlauf" if entry.get("dry_run") else "<b>scharf</b>"
             zeilen.append(
-                f'<tr><th class="mono">{esc(entry.get("time","")[:16])}</th>'
+                f'<tr><th class="mono">{esc(entry.get("time","")[:16].replace("T", " "))}</th>'
                 f'<td>{art} · {esc(entry.get("customer_id"))} · '
                 f'{esc(entry.get("operation_count"))} Operationen · '
                 f'{esc(entry.get("result"))}<br>'
