@@ -12,11 +12,15 @@ __pycache__/
 # Anfang würde das Plugin-Verzeichnis gleichen Namens mitnehmen.
 /config.json
 /changes.jsonl
+/portal.db
+/portal.db-wal
+/portal.db-shm
 /neo-google-ads/
 
 # Was der Docker-Aufbau auf dem Server erzeugt. Die .env enthält Refresh
-# Token, Client-Geheimnis und Developer Token; data/ das Zugangswort und
-# das Änderungsprotokoll.
+# Token, Client-Geheimnis und Developer Token — und das Startkennwort des
+# Portals; data/ das Zugangswort, das Änderungsprotokoll und portal.db mit
+# den Konten, Kennwort-Prüfsummen und Zwei-Faktor-Geheimnissen.
 /deploy/.env
 /deploy/data/
 

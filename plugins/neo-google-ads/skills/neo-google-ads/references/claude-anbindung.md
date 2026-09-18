@@ -32,9 +32,10 @@ zeigt. Caddy holt das Zertifikat erst, wenn die Adresse aufgelöst wird.
 git clone https://github.com/NEO-Digital-AT/NEO-Claude-GoogleAds-Plugin
 cd NEO-Claude-GoogleAds-Plugin/deploy
 
-# 2. Zugangsdaten und Grenzen eintragen
+# 2. Zugangsdaten, Grenzen und das erste Portal-Konto eintragen
 cp .env.example .env
-nano .env                 # der Block aus: google-ads-auth.py --env
+nano .env                 # INIT_USER und INIT_PASS setzen; die Google-Daten
+                          # entweder hier oder später im Portal
 chmod 600 .env
 
 # 3. Datenverzeichnis anlegen. Der Container läuft als UID 10001 und
@@ -49,8 +50,9 @@ docker compose up -d --build
 docker compose logs -f google-ads-mcp
 ```
 
-Beim ersten Start erzeugt der Server ein Zugangswort in `data/http-token`,
-falls keines da ist. **Über Plesk steht es am Ende des
+Beim ersten Start legt der Server das Portal-Konto aus `INIT_USER` und
+`INIT_PASS` an und erzeugt ein Zugangswort in `data/http-token`, falls
+keines da ist. Das Zugangswort ist für claude.ai, nicht für die Anmeldung. **Über Plesk steht es am Ende des
 Bereitstellungsprotokolls**, zusammen mit der Adresse der Verwaltung und
 der MCP-Adresse — es dafür über SSH zu holen ist ein Schritt, den niemand
 gehen sollte: wer das Protokoll lesen kann, erreicht den Server ohnehin.
@@ -107,14 +109,68 @@ Zwei Dinge macht die Seite bewusst nicht:
   berechtigten Nummern an und lässt die Berechtigung beim Speichern
   unberührt.
 
-Angemeldet wird mit demselben Zugangswort wie der MCP-Endpunkt: der
-Browser fragt nach Benutzername und Kennwort, der Name ist beliebig, das
-Kennwort ist das Wort. Kein zweites Geheimnis.
+### Anmeldung, Konto und zweiter Faktor
 
-**Eigenes Logo:** eine Datei `logo.svg` in das Datenverzeichnis legen
-(`deploy/data/logo.svg`), dann steht sie statt der eingebauten Wortmarke im
-Kopf. Nimmt das SVG `fill="currentColor"`, übernimmt es die Akzentfarbe der
-Seite.
+Das Portal hat eigene Benutzerkonten. Sie liegen in `data/portal.db`
+(SQLite), nicht in der `.env`.
+
+**Das erste Konto** legt der Container beim allerersten Start an, aus
+`INIT_USER` und `INIT_PASS` in der `.env`. Danach werden die beiden Zeilen
+nicht mehr gelesen — ein vorhandenes Konto wird nie überschrieben oder
+wiederhergestellt. Weil das Kennwort dort im Klartext steht, verlangt das
+Portal bei der ersten Anmeldung sofort ein neues und zeigt vorher nichts
+anderes an. Danach können beide Zeilen aus der `.env` verschwinden.
+
+Fehlen sie, legt der erste Start ein Konto `admin` mit einem zufälligen
+Kennwort an und schreibt es ins Bereitstellungsprotokoll.
+
+**Unter /konto** lässt sich alles ändern, was zum Konto gehört:
+Benutzername, E-Mail, Kennwort. Ein Kennwortwechsel beendet auf Wunsch
+alle anderen Sitzungen; der Browser, in dem gewechselt wurde, bleibt
+angemeldet. Darunter stehen die angemeldeten Browser mit Zeitpunkt und
+Adresse, samt Schalter, alle anderen abzumelden.
+
+**Zwei-Faktor** wird dort eingeschaltet: QR-Code scannen, einen Code
+eingeben, fertig. Erst der bestätigte Code schaltet ihn scharf — ein
+Geheimnis, das nie bewiesen wurde, sperrt sonst nur aus. Danach erscheinen
+einmalig zehn Wiederherstellungscodes. Jeder gilt genau einmal und ersetzt
+den Code aus der App.
+
+Der QR-Code wird auf dem Server gezeichnet, ohne Fremdbibliothek und ohne
+externen Dienst: das Geheimnis verlässt die Maschine nicht. Wer keine
+Kamera hat, tippt den Schlüssel ab — er steht daneben.
+
+Es gilt jede App, die TOTP kann: Google Authenticator, Aegis, 1Password,
+Bitwarden.
+
+**Ein Code gilt einmal.** Wer sich anmeldet und dreißig Sekunden später
+noch einmal, braucht den nächsten Code. Das ist kein Fehler, sondern der
+Schutz davor, dass ein abgefangener Code ein zweites Mal wirkt.
+
+**Nach acht Fehlversuchen** ist fünfzehn Minuten Ruhe, gezählt nach Adresse
+und nach Benutzername.
+
+### Ausgesperrt
+
+Es gibt keinen Versand per E-Mail und kein „Kennwort vergessen“ im
+Browser. Dieser Server verschickt nichts, und ein Rücksetzlink im Postfach
+wäre ein weiterer Weg hinein. Wer an den Server kommt, kommt an die
+Datenbank — dort wird zurückgesetzt:
+
+```bash
+cd /var/www/vhosts/ads.mcp.neo-digital.at/git/ads.mcp/deploy
+docker compose -f docker-compose.plesk.yml exec google-ads-mcp \
+    python3 /app/scripts/google-ads-http.py --list-users
+```
+
+| Befehl | Wofür |
+| --- | --- |
+| `--list-users` | Welche Konten es gibt, ob 2FA an ist, letzte Anmeldung |
+| `--add-user NAME` | Ein weiteres Konto anlegen, fragt nach dem Kennwort |
+| `--set-password NAME` | Kennwort setzen, beendet alle Sitzungen, hebt die Sperre auf |
+| `--disable-2fa NAME` | Zweiten Faktor abschalten — für das verlorene Telefon |
+
+Alle vier fragen Kennwörter verdeckt ab und schreiben sie nirgends hin.
 
 ### In claude.ai eintragen
 
@@ -122,33 +178,40 @@ Seite.
 2. Adresse: `https://ads.mcp.neo-digital.at/mcp`
 3. Als Kopfzeile: `Authorization: Bearer <das Zugangswort>`
 
-### Das Zugangswort
+Das Zugangswort entsteht beim **ersten** Start, liegt in `data/http-token`
+und bleibt dort. Eine Bereitstellung erzeugt **kein** neues: das
+Verzeichnis ist gemountet, der Server findet das vorhandene und lässt es in
+Ruhe.
 
-Es entsteht beim **ersten** Start, liegt in `data/http-token` und bleibt
-dort. Eine Bereitstellung erzeugt **kein** neues: das Verzeichnis ist
-gemountet, der Server findet das vorhandene und lässt es in Ruhe.
-
-Wechseln lässt es sich unter **/setup → Zugangswort wechseln**. Das alte
-gilt dann sofort nicht mehr — auch für den Connector in claude.ai, der neu
-einzutragen ist.
+Wechseln lässt es sich im Portal unter **Übersicht → Zugangswort für
+claude.ai wechseln**. Das alte gilt dann sofort nicht mehr, und der
+Connector ist neu einzutragen. Die Portal-Konten bleiben davon unberührt.
 
 Vergessen kann man es nicht: es steht in `data/http-token` auf dem Server.
-Wer dort nicht herankommt, löscht die Datei über den Dateimanager; der
-nächste Start legt eine neue an und schreibt sie ins Protokoll.
 
-**Benutzername und Kennwort sind nicht zweierlei.** Der Browser fragt nach
-beidem, geprüft wird nur das Kennwort. Es gibt keine Benutzerkonten, keine
-E-Mail-Adresse und kein „Kennwort vergessen“ — es gibt ein Wort, das den
-Server öffnet, und wer den Server verwaltet, kann es lesen und wechseln.
+### Eigenes Logo
 
-**Zwei Faktoren kann dieser Server nicht**, und er soll es auch nicht: ein
-zweiter Faktor gehört vor die Tür, nicht hinter sie. Wer die Konsole
-zusätzlich absichern will, setzt das im Reverse Proxy — Plesk kann
-IP-Beschränkung und eigenen Passwortschutz auf den Pfad `/setup`, und wer
-mehr will, stellt einen Identitätsanbieter davor (Authelia, Authentik,
-Cloudflare Access). Der MCP-Pfad `/mcp` bleibt davon frei: claude.ai kann
-keinen zweiten Faktor eingeben. Genau deshalb sind die Schutzgrenzen dort,
-wo sie sind — im Werkzeug, nicht in der Anmeldung.
+Eine Datei `logo.svg` in das Datenverzeichnis legen
+(`deploy/data/logo.svg`), dann steht sie statt der eingebauten Wortmarke im
+Kopf. Nimmt das SVG `fill="currentColor"`, übernimmt es die Akzentfarbe der
+Seite.
+
+### Zwei Türen, zwei Schlüssel
+
+| Tür | Wer | Womit |
+| --- | --- | --- |
+| `/anmelden` | ein Mensch | Benutzerkonto, Kennwort, wahlweise zweiter Faktor |
+| `/mcp` | claude.ai | ein festes Zugangswort als `Authorization: Bearer` |
+
+Das ist Absicht. claude.ai kann kein Formular ausfüllen und keinen Code aus
+einer App eingeben — der Connector braucht ein Wort, das bleibt. Ein Mensch
+kann beides, und soll es auch. Keiner der beiden Schlüssel öffnet die
+andere Tür: ein Wechsel des Zugangsworts rührt die Konten nicht an, ein
+Kennwortwechsel stört den Connector nicht.
+
+Deshalb gilt `--anthropic-only` auch nur für `/mcp`. Es würde sonst den
+Betreiber vom eigenen Portal aussperren, weil der nicht aus Anthropics
+Adressbereich kommt.
 
 ### Wie der Aufbau sich schützt
 
@@ -240,11 +303,17 @@ Bereitstellung heißt damit: der Server läuft wirklich.
 
 ### Sichern
 
-Zwei Dinge im `data/`-Verzeichnis sind es wert:
+Drei Dinge im `data/`-Verzeichnis sind es wert:
 
 - `config.json` bzw. die `.env` — sonst ist die Einrichtung erneut fällig.
+- `portal.db` — die Konten samt Zwei-Faktor. Ohne sie ist der erste
+  Start wieder der erste Start: das Konto käme erneut aus `INIT_USER`,
+  und jeder zweite Faktor wäre neu einzurichten.
 - `changes.jsonl` — das Änderungsprotokoll. Es ist die Antwort auf „wer
   hat das geändert und warum", und ein Container ist schnell neu gebaut.
+
+`portal.db` enthält Kennwort-Prüfsummen und die Zwei-Faktor-Geheimnisse.
+Eine Sicherung davon ist so schützenswert wie die `.env`.
 
 ### Aktualisieren
 

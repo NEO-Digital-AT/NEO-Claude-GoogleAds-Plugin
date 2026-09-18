@@ -10,7 +10,7 @@ That distinction matters. A guardrail that has never been shown to refuse
 anything is a comment, not a guardrail — and the thing it is supposed to
 stop is a five-figure invoice.
 
-The cases fall in ten groups:
+The cases fall in thirteen groups:
 
     guardrails    switch off, wrong account, budget ceiling, budget jump,
                   too many operations, and the clean case that must pass
@@ -21,6 +21,9 @@ The cases fall in ten groups:
     protocol      the MCP handshake, both generations, and tools/list
     http door     a real server on a real port: token, address filter, paths
     console       the guardrails page edits what the server really reads
+    qr code       the codes an authenticator app has to be able to scan
+    two factor    RFC 6238, and that a code cannot be used twice
+    portal        accounts, sessions, the lockout, recovery codes
 
     google-ads-selftest.py
     google-ads-selftest.py --verbose
@@ -30,6 +33,8 @@ Exit code 0 when every case passed, 1 when one failed.
 from __future__ import annotations
 
 import argparse
+import base64
+import hashlib
 import json
 import os
 import pathlib
@@ -805,6 +810,239 @@ def test_console() -> None:
          "ten digits" in meldung, meldung[:80])
 
 
+# --------------------------------------------------------------------------
+# 11. QR code
+# --------------------------------------------------------------------------
+
+# Digests of matrices that were checked module for module against an
+# independent encoder (segno) while this was written. They are here so a
+# later change to the encoder cannot quietly produce a code that no longer
+# scans: the comparison needs no dependency, only these numbers.
+QR_FIXTURES = (
+    (b"NEO", 21, "8919919fed9f23a9ecf3af5fd8257d38"),
+    (b"otpauth://totp/NEO:erich?secret=JBSWY3DPEHPK3PXP&issuer=NEO",
+     33, "0777fe2d9f086b20f5236117fc67efea"),
+    (b"otpauth://totp/NEO%20Google%20Ads%20(ads.mcp.neo-digital.at):erich.nigg"
+     b"%40neo-digital.at?secret=ONSWG4TFOQYTEMZUGU3DOOBZGI2DIMBR"
+     b"&issuer=NEO%20Google%20Ads&algorithm=SHA1&digits=6&period=30",
+     57, "5d672866c38b7fed0795e757bfca6a70"),
+    (bytes(range(256))[:200], 57, "d96588ce64381c2ccd60872f0f2b13e3"),
+)
+
+
+def test_qr() -> None:
+    """A QR code nobody scanned is a picture. These cases are the scanner."""
+    import portal_qr as qr
+
+    for payload, size, digest in QR_FIXTURES:
+        grid = qr.matrix(payload)
+        got = hashlib.sha256(b"".join(bytes(row) for row in grid)).hexdigest()[:32]
+        case(f"the code for {len(payload)} bytes is the one that was verified",
+             len(grid) == size and got == digest, f"{len(grid)}x{len(grid)} {got}")
+
+    grid = qr.matrix(b"NEO")
+    size = len(grid)
+    finder = [[1, 1, 1, 1, 1, 1, 1], [1, 0, 0, 0, 0, 0, 1], [1, 0, 1, 1, 1, 0, 1],
+              [1, 0, 1, 1, 1, 0, 1], [1, 0, 1, 1, 1, 0, 1], [1, 0, 0, 0, 0, 0, 1],
+              [1, 1, 1, 1, 1, 1, 1]]
+    corners = all(
+        [row[left:left + 7] for row in grid[top:top + 7]] == finder
+        for top, left in ((0, 0), (0, size - 7), (size - 7, 0)))
+    case("all three finder patterns are where a scanner looks", corners)
+    case("the timing patterns alternate",
+         all(grid[6][i] == (1 if i % 2 == 0 else 0) for i in range(8, size - 8))
+         and all(grid[i][6] == (1 if i % 2 == 0 else 0) for i in range(8, size - 8)))
+    case("the module that must always be dark is dark", grid[size - 8][8] == 1)
+
+    # The format block must read back as level M and the mask actually used.
+    read = 0
+    for i in range(7):
+        read = (read << 1) | grid[size - 1 - i][8]
+    for i in range(8):
+        read = (read << 1) | grid[8][size - 8 + i]
+    unmasked = read ^ 0b101010000010010
+    level, mask = unmasked >> 13, (unmasked >> 10) & 0b111
+    case("the format block says error level M", level == qr.EC_INDICATOR_M, bin(unmasked))
+    case("and names a mask that exists", 0 <= mask <= 7, str(mask))
+    clean = qr.matrix(b"NEO")
+    for row in range(size):
+        for col in range(size):
+            pass
+    case("the same input gives the same code twice", clean == grid)
+
+    case("a payload too large is refused, not silently cut",
+         _refuses(lambda: qr.matrix(b"x" * 400), ValueError))
+    biggest = qr._capacity(12)
+    case("the largest payload that fits still produces a code",
+         len(qr.matrix(b"x" * biggest)) == 12 * 4 + 17)
+    svg = qr.svg(qr.matrix(b"NEO"))
+    case("the drawing is one self-contained svg element",
+         svg.startswith("<svg") and svg.endswith("</svg>") and "http" not in svg.split(">")[1],
+         svg[:60])
+
+
+def _refuses(action, kind) -> bool:
+    try:
+        action()
+    except kind:
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+    return False
+
+
+# --------------------------------------------------------------------------
+# 12. Two factor
+# --------------------------------------------------------------------------
+
+def test_two_factor() -> None:
+    """RFC 6238, and the two rules that keep a valid code from being reused."""
+    import portal_totp as totp
+
+    # RFC 6238, appendix B. The published vectors use eight digits.
+    secret = base64.b32encode(b"12345678901234567890").decode()
+    for unix_time, expected in ((59, "94287082"), (1111111109, "07081804"),
+                                (1111111111, "14050471"), (1234567890, "89005924"),
+                                (2000000000, "69279037"), (20000000000, "65353130")):
+        case(f"RFC 6238 vector at T={unix_time}",
+             totp.code_at(secret, unix_time // totp.STEP, digits=8) == expected,
+             totp.code_at(secret, unix_time // totp.STEP, digits=8))
+
+    own = totp.new_secret()
+    step = totp.current_step()
+    ok, used = totp.check(own, totp.code_at(own, step))
+    case("a fresh code is accepted", ok and used == step)
+    ok, _ = totp.check(own, totp.code_at(own, step), last_step=used)
+    case("THE SAME CODE IS NOT ACCEPTED TWICE", not ok)
+    ok, _ = totp.check(own, totp.code_at(own, step - 1))
+    case("a code from one step ago still works, for a slow phone", ok)
+    ok, _ = totp.check(own, totp.code_at(own, step - 5))
+    case("a code from five steps ago does not", not ok)
+    ok, _ = totp.check(own, "000000", last_step=-1)
+    case("a wrong code is refused", not ok)
+    ok, _ = totp.check(own, "12345")
+    case("a code of the wrong length is refused", not ok)
+    case("spaces and lower case in a pasted secret are tolerated",
+         totp.code_at(own, step) == totp.code_at(own.lower()[:8] + " " + own[8:], step))
+
+    uri = totp.provisioning_uri(own, "erich@neo-digital.at", "NEO Google Ads")
+    case("the app gets an otpauth URI with the secret and the issuer",
+         uri.startswith("otpauth://totp/") and f"secret={own}" in uri
+         and "issuer=NEO" in uri, uri[:70])
+    case("and the account name is escaped, not left to break the URI",
+         " " not in uri and "@" not in uri.split("?")[0].replace("%40", ""))
+
+    codes = totp.recovery_codes(10)
+    case("ten recovery codes, all different", len(set(codes)) == 10)
+    case("and none of them contains a character you could misread",
+         not any(set(code) & set("ilo01") for code in codes), str(codes[:2]))
+
+
+# --------------------------------------------------------------------------
+# 13. Portal accounts
+# --------------------------------------------------------------------------
+
+def test_portal() -> None:
+    """Accounts, sessions and the lockout — against a real database file."""
+    import portal_store as store
+    import portal_totp as totp
+
+    with tempfile.TemporaryDirectory() as folder:
+        database = pathlib.Path(folder) / "portal.db"
+        with store.open_database(database) as db:
+            case("a fresh database has no accounts", store.count_users(db) == 0)
+            user_id = store.create_user(db, "erich", "Donau-Dampfschiff-2026!",
+                                        email="erich@neo-digital.at", must_change=True)
+            user = store.user_by_id(db, user_id)
+            case("the password is not stored as it was typed",
+                 "Donau" not in user["password_hash"]
+                 and user["password_hash"].startswith("scrypt$"),
+                 user["password_hash"][:20])
+            case("the right password verifies",
+                 store.verify_password(user["password_hash"], "Donau-Dampfschiff-2026!"))
+            case("a wrong one does not",
+                 not store.verify_password(user["password_hash"], "Donau-Dampfschiff-2025!"))
+            case("two accounts with the same password get different hashes",
+                 store.hash_password("gleiches Kennwort")
+                 != store.hash_password("gleiches Kennwort"))
+            case("the name is matched without regard to case",
+                 store.find_user(db, "ERICH")["id"] == user_id)
+            case("a short password is refused", bool(store.password_complaint("kurz")))
+            case("a long one is not", not store.password_complaint("Donau-Dampfschiff-2026!"))
+
+            # Sessions
+            token = store.start_session(db, user_id, address="127.0.0.1", agent="Prüfung")
+            row = store.read_session(db, token)
+            case("a session can be read back", row is not None and row["user_id"] == user_id)
+            case("THE COOKIE ITSELF IS NOT IN THE DATABASE",
+                 db.execute("SELECT COUNT(*) AS n FROM sessions WHERE token_hash = ?",
+                            (token,)).fetchone()["n"] == 0)
+            case("an unknown cookie opens nothing", store.read_session(db, "erfunden") is None)
+            case("an empty cookie opens nothing", store.read_session(db, "") is None)
+            second = store.start_session(db, user_id, address="10.0.0.9")
+            ended = store.end_all_sessions(db, user_id, except_token=token)
+            case("ending the other sessions keeps this browser signed in",
+                 ended == 1 and store.read_session(db, token) is not None
+                 and store.read_session(db, second) is None)
+            store.end_session(db, token)
+            case("signing out really removes the session",
+                 store.read_session(db, token) is None)
+            expired = store.start_session(db, user_id)
+            db.execute("UPDATE sessions SET expires = '2020-01-01T00:00:00+00:00'"
+                       " WHERE user_id = ?", (user_id,))
+            case("an expired session is refused and swept away",
+                 store.read_session(db, expired) is None)
+
+            # Lockout
+            case("no lockout to begin with", store.locked_out(db, "1.2.3.4", "erich") == 0)
+            for _ in range(store.LOCKOUT_TRIES):
+                store.record_attempt(db, "1.2.3.4", "erich")
+            case("the lockout bites after the set number of tries",
+                 store.locked_out(db, "1.2.3.4", "erich") > 0)
+            case("it also bites the same name from another address",
+                 store.locked_out(db, "9.9.9.9", "erich") > 0)
+            case("an unrelated name from an unrelated address still gets in",
+                 store.locked_out(db, "9.9.9.9", "andere") == 0)
+            store.lift_lockout(db)
+            case("the server-side reset lifts it",
+                 store.locked_out(db, "1.2.3.4", "erich") == 0)
+
+            # Second factor
+            secret = totp.new_secret()
+            store.begin_totp(db, user_id, secret)
+            case("an unconfirmed secret does not count as two factor",
+                 store.user_by_id(db, user_id)["totp_confirmed"] == 0)
+            codes = totp.recovery_codes(store.RECOVERY_COUNT)
+            store.confirm_totp(db, user_id, totp.current_step(), codes)
+            case("confirming switches it on",
+                 store.user_by_id(db, user_id)["totp_confirmed"] == 1)
+            case("and leaves ten recovery codes",
+                 store.recovery_left(db, user_id) == store.RECOVERY_COUNT)
+            case("the recovery codes are hashed, not kept as text",
+                 db.execute("SELECT COUNT(*) AS n FROM recovery_codes WHERE code_hash = ?",
+                            (codes[0],)).fetchone()["n"] == 0)
+            case("a recovery code works", store.spend_recovery_code(db, user_id, codes[0]))
+            case("THE SAME ONE DOES NOT WORK TWICE",
+                 not store.spend_recovery_code(db, user_id, codes[0]))
+            case("and one that was never issued does not work",
+                 not store.spend_recovery_code(db, user_id, "abcde-fghij"))
+            case("nine are left", store.recovery_left(db, user_id) == store.RECOVERY_COUNT - 1)
+            store.disable_totp(db, user_id)
+            case("switching it off clears the secret and the codes",
+                 store.user_by_id(db, user_id)["totp_secret"] == ""
+                 and store.recovery_left(db, user_id) == 0)
+
+            store.set_password(db, user_id, "Ein-ganz-neues-2026!")
+            case("changing the password clears the forced change",
+                 store.user_by_id(db, user_id)["must_change"] == 0)
+            store.log_event(db, "self test", username="erich", address="127.0.0.1")
+            case("events are written and read back",
+                 store.recent_events(db)[0]["what"] == "self test")
+
+        mode = database.stat().st_mode & 0o777
+        case("the database is readable by its owner only", mode == 0o600, oct(mode))
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Prove the Google Ads guardrails hold.")
     parser.add_argument("--verbose", action="store_true", help="show the detail of every case")
@@ -818,7 +1056,9 @@ def main() -> int:
                        ("shaping", test_shaping), ("reports", test_reports),
                        ("protocol", test_protocol), ("http door", test_http),
                        ("change log", test_change_log),
-                       ("management console", test_console)):
+                       ("management console", test_console),
+                       ("qr code", test_qr), ("two factor", test_two_factor),
+                       ("portal accounts", test_portal)):
         start = len(RESULTS)
         run()
         failed = sum(1 for _, ok, _ in RESULTS[start:] if not ok)

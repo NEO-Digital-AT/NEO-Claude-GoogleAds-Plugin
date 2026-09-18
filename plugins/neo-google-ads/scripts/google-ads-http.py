@@ -11,11 +11,22 @@ Nothing about the tools changes. The guardrails, the dry runs and the
 change log are the ones in google_ads_client.py, because this is the same
 code with a different door.
 
-THE DOOR IS ON THE INTERNET, so it is locked three ways:
+THERE ARE TWO DOORS ON THE INTERNET, and they are locked differently
+because the two callers can do different things.
 
-    Bearer token    a shared secret, compared in constant time
-    Address filter  optionally only Anthropic's published egress range
-    Body limit      a request larger than the limit is refused unread
+    /mcp      for claude.ai. A bearer token compared in constant time,
+              optionally only from Anthropic's published egress range, and
+              a body limit that refuses an oversized request unread. No
+              sign-in form: a connector cannot fill one in.
+
+    /setup    for a person. A portal account with a password, an optional
+              second factor, a session cookie that is HttpOnly and
+              SameSite, a lockout after repeated failures, and a refusal
+              of any form that did not come from this server. See
+              portal_store.py.
+
+Neither key opens the other door. Changing the bearer token does not touch
+the accounts, and changing a password does not disturb the connector.
 
 The address filter reads X-Forwarded-For only when the connection itself
 comes from a trusted proxy address — otherwise anyone could claim to be
@@ -38,11 +49,11 @@ No dependencies beyond the standard library.
 from __future__ import annotations
 
 import argparse
-import base64
-import binascii
 import contextlib
 import datetime
+import getpass
 import hmac
+import http.cookies
 import http.server
 import ipaddress
 import json
@@ -71,6 +82,9 @@ def load_mcp():
 
 mcp = load_mcp()
 import google_ads_setup as setup  # noqa: E402
+import portal_pages as portal  # noqa: E402
+import portal_store as store  # noqa: E402
+import portal_totp as totp  # noqa: E402
 
 # Anthropic publishes the range its servers call out from. Restricting to it
 # turns a guessed token into a useless one, because the guess has to come
@@ -122,6 +136,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
     path_prefix = "/mcp"
     setup_enabled = False
     token_path = ""
+    database_path = None
     # A reverse proxy sits on a private address: the loopback interface, or
     # a container network. Nothing on the public internet is trusted to
     # describe who it is forwarding for.
@@ -178,9 +193,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def _authorized(self) -> bool:
         """Address first, then token — both in constant time where it matters.
 
-        Only the MCP endpoint goes through here. The management pages use
-        Basic auth instead, because the person opening them sits at a desk,
-        not in Anthropic's network.
+        Only the MCP endpoint goes through here. The portal pages have
+        their own sign-in and deliberately skip the address filter: the
+        person opening them sits at a desk, not in Anthropic's network,
+        and --anthropic-only would lock them out of their own server.
         """
         if self.anthropic_only:
             address = self._client_ip()
@@ -196,32 +212,54 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return False
         return True
 
-    def _basic_authorized(self) -> bool:
-        """The same token, offered the way a browser can present it.
+    # -- the portal's own sign-in ------------------------------------------
 
-        A browser cannot send a bearer header on a plain navigation, but it
-        can do Basic auth. Any user name, the token as the password: one
-        secret for both doors instead of a second one to keep.
-        """
-        header = self.headers.get("Authorization", "")
-        if not header.lower().startswith("basic "):
-            return False
+    def _session_token(self) -> str:
+        jar = http.cookies.SimpleCookie()
         try:
-            decoded = base64.b64decode(header[6:].strip()).decode("utf-8", "replace")
-        except (ValueError, binascii.Error):
-            return False
-        _, _, presented = decoded.partition(":")
-        return bool(presented) and hmac.compare_digest(presented, self.token)
+            jar.load(self.headers.get("Cookie", ""))
+        except http.cookies.CookieError:
+            return ""
+        biscuit = jar.get(store.SESSION_COOKIE)
+        return biscuit.value if biscuit else ""
 
-    def _ask_for_login(self):
-        body = (b"<!doctype html><meta charset=utf-8><title>Anmeldung</title>"
-                b"<p>Benutzername beliebig, Kennwort ist das Zugangswort des Servers.")
-        self.send_response(401)
-        self.send_header("WWW-Authenticate", 'Basic realm="NEO Google Ads"')
-        self.send_header("Content-Type", "text/html; charset=utf-8")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
+    def _cookie_header(self, token: str = "", *, clear: bool = False) -> str:
+        """HttpOnly so no script can read it, Lax so Google may redirect back."""
+        secure = "; Secure" if self._https() else ""
+        if clear:
+            return (f"{store.SESSION_COOKIE}=; Path=/; Max-Age=0; HttpOnly; "
+                    f"SameSite=Lax{secure}")
+        return (f"{store.SESSION_COOKIE}={token}; Path=/; "
+                f"Max-Age={store.SESSION_HOURS * 3600}; HttpOnly; SameSite=Lax{secure}")
+
+    def _https(self) -> bool:
+        return (self.headers.get("X-Forwarded-Proto") or "").lower() == "https" \
+            or isinstance(getattr(self.connection, "context", None), ssl.SSLContext)
+
+    def _same_origin(self) -> bool:
+        """A cross-site POST is refused outright.
+
+        SameSite=Lax already stops the cookie riding along on one, and this
+        is the second lock: a form that did not come from this server has
+        no business changing a budget ceiling.
+        """
+        origin = self.headers.get("Origin")
+        if origin:
+            return origin.rstrip("/") == self._base_url().rstrip("/")
+        referer = self.headers.get("Referer")
+        if referer:
+            return referer.startswith(self._base_url().rstrip("/") + "/")
+        return False        # Neither header: not a browser form. Refuse.
+
+    def _signed_in(self, connection):
+        """(user, session) when signed in and past the second factor."""
+        row = store.read_session(connection, self._session_token())
+        if row is None:
+            return None, None
+        user = store.user_by_id(connection, row["user_id"])
+        if user is None:
+            return None, None
+        return user, row
 
     def _base_url(self) -> str:
         """The address a browser reached this server on, as Google must see it."""
@@ -239,9 +277,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def _redirect(self, where: str):
+    def _redirect(self, where: str, *, cookie: str = ""):
         self.send_response(303)
         self.send_header("Location", where)
+        if cookie:
+            self.send_header("Set-Cookie", cookie)
         self.send_header("Content-Length", "0")
         self.end_headers()
 
@@ -277,23 +317,334 @@ class Handler(http.server.BaseHTTPRequestHandler):
                              "protocol_versions": list(mcp.PROTOCOL_VERSIONS)})
             return
 
-        if self.setup_enabled and path.startswith("/setup"):
-            if not self._basic_authorized():
-                self.log_line(f"setup: refused {path}")
-                self._ask_for_login()
-                return
-            self.log_line(f"setup: {path}")
-            try:
-                self._setup_get(path)
-            except Exception as exc:  # noqa: BLE001
-                print(traceback.format_exc(), file=sys.stderr)
-                self._send_html(setup.result_page(False, f"{type(exc).__name__}: {exc}"), 500)
+        if self.setup_enabled and self._is_portal_path(path):
+            self._portal_request(path, "GET")
             return
 
         if path == "/" and self.setup_enabled:
             self._redirect("/setup")
             return
         self._send(404, {"error": "not found"})
+
+    # -- portal routing ----------------------------------------------------
+
+    OPEN_PATHS = ("/anmelden", "/anmelden/code", "/abbrechen")
+
+    @staticmethod
+    def _is_portal_path(path: str) -> bool:
+        return (path.startswith("/setup") or path.startswith("/konto")
+                or path in Handler.OPEN_PATHS or path == "/abmelden")
+
+    def _portal_request(self, path: str, verb: str) -> None:
+        """Every page behind the sign-in goes through here, in one place."""
+        if verb == "POST" and not self._same_origin():
+            self.log_line(f"portal: cross-site POST refused for {path}")
+            self._send_html(setup.result_page(
+                False, "Dieses Formular kam nicht von dieser Seite."), 403)
+            return
+        try:
+            with store.open_database(self.database_path) as connection:
+                user, session = self._signed_in(connection)
+                if user is not None and session["stage"] != "full":
+                    # Password accepted, second factor still outstanding.
+                    if path in ("/anmelden/code", "/abbrechen"):
+                        self._portal_open(connection, path, verb, user, session)
+                        return
+                    self._redirect("/anmelden/code")
+                    return
+                if user is None:
+                    if path in self.OPEN_PATHS:
+                        self._portal_open(connection, path, verb, None, None)
+                        return
+                    self._redirect("/anmelden")
+                    return
+                if user["must_change"] and path not in ("/konto/kennwort", "/abmelden"):
+                    self._send_html(portal.change_password_page(username=user["username"]))
+                    return
+                setup.set_viewer(user["username"],
+                                 two_factor=bool(user["totp_confirmed"]))
+                self.log_line(f"portal: {verb} {path} as {user['username']}")
+                self._portal_closed(connection, path, verb, user, session)
+        except Exception as exc:  # noqa: BLE001
+            print(traceback.format_exc(), file=sys.stderr)
+            self._send_html(setup.result_page(False, f"{type(exc).__name__}: {exc}"), 500)
+
+    def _portal_open(self, connection, path, verb, user, session) -> None:
+        """The pages a stranger may see: sign in, and the second factor."""
+        address = str(self._client_ip() or "")
+        if path == "/abbrechen":
+            if session is not None:
+                store.end_session(connection, self._session_token())
+            self._redirect("/anmelden", cookie=self._cookie_header(clear=True))
+            return
+        if path == "/anmelden" and verb == "GET":
+            self._send_html(portal.login_page(
+                first_run=store.count_users(connection) == 0))
+            return
+        if path == "/anmelden" and verb == "POST":
+            self._sign_in(connection, address)
+            return
+        if path == "/anmelden/code" and verb == "GET":
+            self._send_html(portal.second_factor_page(
+                name=user["username"] if user else ""))
+            return
+        if path == "/anmelden/code" and verb == "POST":
+            self._second_factor(connection, user, address)
+            return
+        self._redirect("/anmelden")
+
+    def _sign_in(self, connection, address: str) -> None:
+        form = self._read_form()
+        name = (form.get("benutzer") or [""])[0].strip()
+        password = (form.get("kennwort") or [""])[0]
+        store.sweep(connection)
+
+        warten = store.locked_out(connection, address, name)
+        if warten:
+            self.log_line(f"portal: locked out {name or '(no name)'} from {address}")
+            self._send_html(portal.login_page(
+                f"Zu viele Fehlversuche. Noch {warten} Minuten warten.", name), 429)
+            return
+
+        user = store.find_user(connection, name)
+        if user is None and "@" in name:
+            user = connection.execute(
+                "SELECT * FROM users WHERE email = ? COLLATE NOCASE", (name,)).fetchone()
+        # The same answer either way: a wrong name and a wrong password must
+        # not be distinguishable, or the form becomes a name directory.
+        if user is None or not store.verify_password(user["password_hash"], password):
+            store.record_attempt(connection, address, name)
+            store.log_event(connection, "sign-in refused", username=name, address=address)
+            self.log_line(f"portal: sign-in refused for {name or '(no name)'}")
+            self._send_html(portal.login_page(
+                "Benutzername oder Kennwort stimmt nicht.", name), 401)
+            return
+
+        store.clear_attempts(connection, address, name)
+        zwei = bool(user["totp_confirmed"])
+        token = store.start_session(connection, user["id"], address=address,
+                                    agent=self.headers.get("User-Agent", ""),
+                                    stage="totp" if zwei else "full")
+        if zwei:
+            store.log_event(connection, "password accepted, second factor pending",
+                            username=user["username"], address=address)
+            self._redirect("/anmelden/code", cookie=self._cookie_header(token))
+            return
+        store.note_login(connection, user["id"], address)
+        store.log_event(connection, "signed in", username=user["username"], address=address)
+        self.log_line(f"portal: {user['username']} signed in")
+        self._redirect("/konto" if user["must_change"] else "/setup",
+                       cookie=self._cookie_header(token))
+
+    def _second_factor(self, connection, user, address: str) -> None:
+        if user is None:
+            self._redirect("/anmelden")
+            return
+        presented = (self._read_form().get("code") or [""])[0]
+        warten = store.locked_out(connection, address, user["username"])
+        if warten:
+            self._send_html(portal.second_factor_page(
+                f"Zu viele Fehlversuche. Noch {warten} Minuten warten.",
+                name=user["username"]), 429)
+            return
+
+        ok, step = totp.check(user["totp_secret"], presented,
+                              last_step=user["totp_last_step"])
+        if ok:
+            store.note_totp_step(connection, user["id"], step)
+        elif store.spend_recovery_code(connection, user["id"], presented):
+            ok = True
+            store.log_event(connection, "recovery code used",
+                            username=user["username"], address=address,
+                            detail=f"{store.recovery_left(connection, user['id'])} left")
+            self.log_line(f"portal: {user['username']} used a recovery code")
+        if not ok:
+            store.record_attempt(connection, address, user["username"])
+            store.log_event(connection, "second factor refused",
+                            username=user["username"], address=address)
+            self._send_html(portal.second_factor_page(
+                "Der Code stimmt nicht — oder er wurde schon verwendet.",
+                name=user["username"]), 401)
+            return
+
+        store.clear_attempts(connection, address, user["username"])
+        store.promote_session(connection, self._session_token())
+        store.note_login(connection, user["id"], address)
+        store.log_event(connection, "signed in with second factor",
+                        username=user["username"], address=address)
+        self.log_line(f"portal: {user['username']} signed in (2FA)")
+        self._redirect("/setup")
+
+    def _portal_closed(self, connection, path, verb, user, session) -> None:
+        """Everything that needs a signed-in person."""
+        address = str(self._client_ip() or "")
+        if path == "/abmelden":
+            store.end_session(connection, self._session_token())
+            store.log_event(connection, "signed out", username=user["username"],
+                            address=address)
+            self._redirect("/anmelden", cookie=self._cookie_header(clear=True))
+            return
+        if path.startswith("/konto"):
+            self._account(connection, path, verb, user, session, address)
+            return
+        if verb == "GET":
+            self._setup_get(path)
+        else:
+            self._setup_post(path)
+
+    # -- the account pages -------------------------------------------------
+
+    def _account(self, connection, path, verb, user, session, address) -> None:
+        def zeigen(message="", trouble=""):
+            frisch = store.user_by_id(connection, user["id"])
+            self._send_html(portal.account_page(
+                frisch, store.sessions_for(connection, user["id"]),
+                recovery_left=store.recovery_left(connection, user["id"]),
+                message=message, trouble=trouble,
+                current_token_hash=session["token_hash"]))
+
+        if path == "/konto" and verb == "GET":
+            zeigen()
+            return
+
+        form = self._read_form() if verb == "POST" else {}
+
+        if path == "/konto/name" and verb == "POST":
+            name = (form.get("benutzer") or [""])[0].strip()
+            email = (form.get("email") or [""])[0].strip()
+            if not name:
+                zeigen(trouble="Ein Benutzername muss dastehen.")
+                return
+            andere = store.find_user(connection, name)
+            if andere is not None and andere["id"] != user["id"]:
+                zeigen(trouble="Diesen Benutzernamen gibt es schon.")
+                return
+            store.set_identity(connection, user["id"], name, email)
+            store.log_event(connection, "name or e-mail changed",
+                            username=name, address=address,
+                            detail=f"was {user['username']}")
+            self.log_line(f"portal: {user['username']} is now {name}")
+            zeigen("Gespeichert.")
+            return
+
+        if path == "/konto/kennwort" and verb == "POST":
+            self._change_password(connection, user, form, address, zeigen)
+            return
+
+        if path == "/konto/sitzungen" and verb == "POST":
+            beendet = store.end_all_sessions(connection, user["id"],
+                                             except_token=self._session_token())
+            store.log_event(connection, "other sessions ended",
+                            username=user["username"], address=address,
+                            detail=f"{beendet}")
+            zeigen(f"{beendet} andere Sitzung(en) beendet."
+                   if beendet else "Es gab keine anderen Sitzungen.")
+            return
+
+        if path == "/konto/2fa" and verb == "GET":
+            if user["totp_confirmed"]:
+                zeigen(trouble="Zwei-Faktor ist bereits eingeschaltet.")
+                return
+            secret = totp.new_secret()
+            store.begin_totp(connection, user["id"], secret)
+            uri = totp.provisioning_uri(secret, user["username"],
+                                        f"NEO Google Ads ({self._host_name()})")
+            self._send_html(portal.two_factor_page(secret, uri,
+                                                   username=user["username"]))
+            return
+
+        if path == "/konto/2fa" and verb == "POST":
+            self._confirm_two_factor(connection, user, form, address, zeigen)
+            return
+
+        if path == "/konto/2fa/aus" and verb == "POST":
+            store.disable_totp(connection, user["id"])
+            store.log_event(connection, "second factor switched off",
+                            username=user["username"], address=address)
+            self.log_line(f"portal: {user['username']} switched 2FA off")
+            zeigen("Zwei-Faktor ist aus. Das Kennwort allein öffnet diese Seite jetzt.")
+            return
+
+        if path == "/konto/2fa/neu" and verb == "POST":
+            if not user["totp_confirmed"]:
+                zeigen(trouble="Zwei-Faktor ist nicht eingeschaltet.")
+                return
+            codes = totp.recovery_codes(store.RECOVERY_COUNT)
+            store.confirm_totp(connection, user["id"], user["totp_last_step"], codes)
+            store.log_event(connection, "recovery codes replaced",
+                            username=user["username"], address=address)
+            self._send_html(portal.recovery_page(codes, username=user["username"],
+                                                 neu=True))
+            return
+
+        self._send_html(setup.result_page(False, "Diese Seite gibt es nicht."), 404)
+
+    def _change_password(self, connection, user, form, address, zeigen) -> None:
+        neu = (form.get("neu") or [""])[0]
+        wieder = (form.get("wieder") or [""])[0]
+        erzwungen = bool(user["must_change"])
+
+        def klagen(text):
+            if erzwungen:
+                self._send_html(portal.change_password_page(text,
+                                                            username=user["username"]))
+            else:
+                zeigen(trouble=text)
+
+        # A forced first change has no old password to give: the one from
+        # the .env is what just got the person in here.
+        if not erzwungen:
+            alt = (form.get("alt") or [""])[0]
+            if not store.verify_password(user["password_hash"], alt):
+                store.record_attempt(connection, address, user["username"])
+                klagen("Das bisherige Kennwort stimmt nicht.")
+                return
+        if neu != wieder:
+            klagen("Die beiden Eingaben sind nicht gleich.")
+            return
+        klage = store.password_complaint(neu)
+        if klage:
+            klagen(klage)
+            return
+
+        store.set_password(connection, user["id"], neu)
+        beendet = 0
+        if erzwungen or (form.get("alle_abmelden") or [""])[0]:
+            beendet = store.end_all_sessions(connection, user["id"],
+                                             except_token=self._session_token())
+        store.log_event(connection, "password changed", username=user["username"],
+                        address=address, detail=f"{beendet} other sessions ended")
+        self.log_line(f"portal: {user['username']} changed the password")
+        if erzwungen:
+            self._redirect("/setup")
+            return
+        zeigen("Kennwort geändert."
+               + (f" {beendet} andere Sitzung(en) beendet." if beendet else ""))
+
+    def _confirm_two_factor(self, connection, user, form, address, zeigen) -> None:
+        secret = user["totp_secret"]
+        if not secret:
+            zeigen(trouble="Die Einrichtung ist abgelaufen. Bitte neu beginnen.")
+            return
+        presented = (form.get("code") or [""])[0]
+        ok, step = totp.check(secret, presented, last_step=-1)
+        if not ok:
+            uri = totp.provisioning_uri(secret, user["username"],
+                                        f"NEO Google Ads ({self._host_name()})")
+            self._send_html(portal.two_factor_page(
+                secret, uri, "Der Code stimmt nicht. Stimmt die Uhrzeit auf dem Telefon?",
+                username=user["username"]), 400)
+            return
+        codes = totp.recovery_codes(store.RECOVERY_COUNT)
+        store.confirm_totp(connection, user["id"], step, codes)
+        store.log_event(connection, "second factor switched on",
+                        username=user["username"], address=address)
+        self.log_line(f"portal: {user['username']} switched 2FA on")
+        self._send_html(portal.recovery_page(codes, username=user["username"]))
+
+    def _host_name(self) -> str:
+        return (self.headers.get("X-Forwarded-Host")
+                or self.headers.get("Host") or "neo-google-ads").split(":")[0]
 
     def _setup_get(self, path: str):
         if path == "/setup":
@@ -346,17 +697,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
     def do_POST(self):  # noqa: N802
         path = urllib.parse.urlparse(self.path).path.rstrip("/") or "/"
-        if self.setup_enabled and path.startswith("/setup"):
-            if not self._basic_authorized():
-                self.log_line(f"setup: refused POST {path}")
-                self._ask_for_login()
-                return
-            self.log_line(f"setup: POST {path}")
-            try:
-                self._setup_post(path)
-            except Exception as exc:  # noqa: BLE001
-                print(traceback.format_exc(), file=sys.stderr)
-                self._send_html(setup.result_page(False, f"{type(exc).__name__}: {exc}"), 500)
+        if self.setup_enabled and self._is_portal_path(path):
+            self._portal_request(path, "POST")
             return
 
         if self.path.rstrip("/") not in (self.path_prefix.rstrip("/"), ""):
@@ -427,6 +769,115 @@ class Handler(http.server.BaseHTTPRequestHandler):
         return {"jsonrpc": "2.0", "id": request_id, "result": result}
 
 
+def seed_first_account(database: pathlib.Path) -> None:
+    """Creates the very first account, so the door has a key on day one.
+
+    INIT_USER and INIT_PASS in the .env are read once: the moment an
+    account exists, they are ignored, so leaving them in the file does not
+    quietly reset anything or recreate a user that was deliberately
+    renamed. They do sit in the .env in clear text, which is why the
+    account is marked must_change and the portal insists on a new password
+    before it shows anything else.
+
+    Without them, the first start writes a random password to the log —
+    the same reasoning as the bearer token: a container nobody can sign
+    into is a container nobody can configure.
+    """
+    with store.open_database(database) as connection:
+        if store.count_users(connection):
+            return
+        name = (os.environ.get("INIT_USER") or "").strip()
+        password = os.environ.get("INIT_PASS") or ""
+        if name and password:
+            klage = store.password_complaint(password)
+            store.create_user(connection, name, password, email=name if "@" in name else "",
+                              must_change=True)
+            store.log_event(connection, "first account created from INIT_USER")
+            print(f"First account created from INIT_USER: {name}", file=sys.stderr)
+            if klage:
+                print(f"  note: {klage} You will be asked to change it.", file=sys.stderr)
+            print("  Remove INIT_USER and INIT_PASS from the .env once you are in.",
+                  file=sys.stderr)
+            return
+        password = secrets.token_urlsafe(18)
+        store.create_user(connection, "admin", password, must_change=True)
+        store.log_event(connection, "first account created with a generated password")
+        print("No account yet, and no INIT_USER/INIT_PASS — created one:", file=sys.stderr)
+        print(f"  user:     admin\n  password: {password}", file=sys.stderr)
+        print("  It must be changed at the first sign-in.", file=sys.stderr)
+
+
+def account_command(options, database: pathlib.Path) -> int | None:
+    """The commands for the day the browser cannot help: run on the server.
+
+    There is no password reset by e-mail, and that is deliberate. This
+    server sends no mail, and a reset link that arrives in an inbox is one
+    more way in. Whoever can run these commands already has the database.
+    """
+    if options.list_users:
+        with store.open_database(database) as connection:
+            rows = connection.execute(
+                "SELECT username, email, totp_confirmed, must_change, last_login,"
+                " last_address FROM users ORDER BY username").fetchall()
+        if not rows:
+            print("No accounts yet.")
+            return 0
+        print(f"{'user':<28} {'2FA':<5} {'change':<7} {'last sign-in':<20} e-mail")
+        for row in rows:
+            print(f"{row['username']:<28} {'yes' if row['totp_confirmed'] else 'no':<5} "
+                  f"{'yes' if row['must_change'] else 'no':<7} "
+                  f"{(row['last_login'] or '-')[:19]:<20} {row['email']}")
+        return 0
+
+    name = options.set_password or options.disable_2fa or options.add_user
+    if not name:
+        return None
+    with store.open_database(database) as connection:
+        user = store.find_user(connection, name)
+        if options.add_user:
+            if user is not None:
+                print(f"{name} already exists.", file=sys.stderr)
+                return 1
+            password = getpass.getpass(f"New password for {name}: ")
+            if password != getpass.getpass("Again: "):
+                print("The two entries differ.", file=sys.stderr)
+                return 1
+            klage = store.password_complaint(password)
+            if klage:
+                print(klage, file=sys.stderr)
+                return 1
+            store.create_user(connection, name, password)
+            store.log_event(connection, "account created on the server", username=name)
+            print(f"{name} created.")
+            return 0
+        if user is None:
+            print(f"No account named {name}.", file=sys.stderr)
+            return 1
+        if options.disable_2fa:
+            store.disable_totp(connection, user["id"])
+            store.end_all_sessions(connection, user["id"])
+            store.lift_lockout(connection)
+            store.log_event(connection, "second factor switched off on the server",
+                            username=name)
+            print(f"Second factor switched off for {name}, all sessions ended, "
+                  "lockout lifted.")
+            return 0
+        password = getpass.getpass(f"New password for {name}: ")
+        if password != getpass.getpass("Again: "):
+            print("The two entries differ.", file=sys.stderr)
+            return 1
+        klage = store.password_complaint(password)
+        if klage:
+            print(klage, file=sys.stderr)
+            return 1
+        store.set_password(connection, user["id"], password)
+        ended = store.end_all_sessions(connection, user["id"])
+        store.lift_lockout(connection)
+        store.log_event(connection, "password set on the server", username=name)
+        print(f"Password set for {name}. {ended} session(s) ended, lockout lifted.")
+        return 0
+
+
 class ThreadingServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
     daemon_threads = True
     allow_reuse_address = True
@@ -446,8 +897,18 @@ def main() -> int:
     parser.add_argument("--anthropic-only", action="store_true",
                         help="refuse callers outside Anthropic's published egress range")
     parser.add_argument("--setup", action="store_true",
-                        help=("serve the management pages at /setup, behind the same "
-                              "token as Basic auth (any user name, token as password)"))
+                        help=("serve the management portal: sign-in, account, two "
+                              "factor and the Google pages at /setup"))
+    parser.add_argument("--database", default=None, metavar="FILE",
+                        help="the portal's SQLite file (default: next to the config)")
+    parser.add_argument("--list-users", action="store_true",
+                        help="list the portal accounts and exit")
+    parser.add_argument("--add-user", metavar="NAME",
+                        help="create a portal account, asking for the password")
+    parser.add_argument("--set-password", metavar="NAME",
+                        help="set an account's password and end its sessions")
+    parser.add_argument("--disable-2fa", metavar="NAME",
+                        help="switch an account's second factor off, for a lost phone")
     parser.add_argument("--trusted-proxy", action="append", default=[], metavar="CIDR",
                         help=("address or network whose X-Forwarded-For header is believed. "
                               "Repeatable. Defaults to the loopback and private ranges, "
@@ -455,6 +916,12 @@ def main() -> int:
     parser.add_argument("--tls-cert", help="certificate file, if no reverse proxy terminates TLS")
     parser.add_argument("--tls-key", help="private key file, with --tls-cert")
     options = parser.parse_args()
+
+    database = pathlib.Path(options.database).expanduser() if options.database \
+        else store.database_path(mcp.CHANGE_LOG.parent)
+    handled = account_command(options, database)
+    if handled is not None:
+        return handled
 
     token_path = pathlib.Path(options.token_file).expanduser()
     if options.new_token:
@@ -482,6 +949,9 @@ def main() -> int:
         print("The MCP endpoint answers with an error until that is fixed at /setup.",
               file=sys.stderr)
 
+    if options.setup:
+        seed_first_account(database)
+    Handler.database_path = database
     Handler.token = load_token(token_path)
     Handler.anthropic_only = options.anthropic_only
     Handler.path_prefix = options.path
@@ -517,8 +987,9 @@ def main() -> int:
           file=sys.stderr)
     print("  health:     GET /health", file=sys.stderr)
     if options.setup:
-        print(f"  setup:      GET {options.path.rsplit('/', 1)[0]}/setup "
-              "(Basic auth: any user, token as password)", file=sys.stderr)
+        print(f"  portal:     GET /anmelden  (accounts in {database})", file=sys.stderr)
+        print("  recovery:   --list-users, --set-password NAME, --disable-2fa NAME",
+              file=sys.stderr)
     with contextlib.suppress(KeyboardInterrupt):
         server.serve_forever()
     server.server_close()

@@ -1,0 +1,387 @@
+#!/usr/bin/env python3
+"""The portal's own database: accounts, sessions, two factor, audit trail.
+
+Until now the management pages were guarded by the same bearer token the
+MCP endpoint uses, offered as HTTP Basic auth. That is fine for a door
+only one person ever opens, and wrong for everything that comes after:
+there is nobody to name in an audit line, no second factor to add, no way
+to change a user name, and no way to end one browser's session without
+locking out the connector as well.
+
+So the portal gets accounts, and they live in SQLite — one file next to
+the configuration, no server, no dependency.
+
+    users            name, e-mail, password, the two-factor secret
+    recovery_codes   ten one-shot codes for the day the phone is gone
+    sessions         one row per signed-in browser, revocable
+    events           who did what, when, from where
+    attempts         failed sign-ins, for the lockout
+
+WHAT IS STORED AND WHAT IS NOT: passwords go through scrypt with a random
+salt per account; recovery codes are hashed the same way; session cookies
+are random and only their hash is kept, so the table cannot be turned back
+into a working cookie. The two-factor secret is the one value that has to
+be kept as it is, because the algorithm needs it — which is why the file
+is 0600 and the container mounts it as private data.
+
+The bearer token stays exactly where it was. claude.ai cannot fill in a
+sign-in form, so the MCP endpoint keeps its own key, and the two doors are
+now genuinely separate.
+"""
+from __future__ import annotations
+
+import base64
+import contextlib
+import datetime
+import hashlib
+import hmac
+import os
+import pathlib
+import secrets
+import sqlite3
+
+SCHEMA_VERSION = 1
+SESSION_HOURS = 12
+SESSION_COOKIE = "neo_portal"
+MIN_PASSWORD = 12
+LOCKOUT_TRIES = 8
+LOCKOUT_MINUTES = 15
+RECOVERY_COUNT = 10
+
+# scrypt parameters. 2**15 keeps a single check near a tenth of a second on
+# a small VPS, which is slow for an attacker and unnoticeable for a person.
+SCRYPT_N = 1 << 15
+SCRYPT_R = 8
+SCRYPT_P = 1
+
+
+def _maxmem(n: int, r: int) -> int:
+    """OpenSSL refuses above 32 MB unless told otherwise, and 2**15 needs it.
+
+    The working set is 128 * N * r bytes — 32 MB at these parameters, which
+    is exactly the default ceiling, so the call fails. Asking for twice
+    that leaves room and keeps the parameters where they belong.
+    """
+    return max(128 * n * r * 2, 64 * 1024 * 1024)
+
+
+def now() -> str:
+    return datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
+
+
+def database_path(config_dir: pathlib.Path) -> pathlib.Path:
+    return config_dir / "portal.db"
+
+
+@contextlib.contextmanager
+def open_database(path: pathlib.Path):
+    """A connection with foreign keys on and the file kept private."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fresh = not path.exists()
+    connection = sqlite3.connect(path, timeout=10)
+    connection.row_factory = sqlite3.Row
+    connection.execute("PRAGMA foreign_keys = ON")
+    connection.execute("PRAGMA journal_mode = WAL")
+    try:
+        if fresh:
+            os.chmod(path, 0o600)
+        _migrate(connection)
+        yield connection
+        connection.commit()
+    finally:
+        connection.close()
+
+
+def _migrate(connection: sqlite3.Connection) -> None:
+    connection.executescript("""
+    CREATE TABLE IF NOT EXISTS users (
+        id             INTEGER PRIMARY KEY,
+        username       TEXT NOT NULL UNIQUE COLLATE NOCASE,
+        email          TEXT NOT NULL DEFAULT '',
+        password_hash  TEXT NOT NULL,
+        must_change    INTEGER NOT NULL DEFAULT 0,
+        totp_secret    TEXT NOT NULL DEFAULT '',
+        totp_confirmed INTEGER NOT NULL DEFAULT 0,
+        totp_last_step INTEGER NOT NULL DEFAULT -1,
+        created        TEXT NOT NULL,
+        last_login     TEXT NOT NULL DEFAULT '',
+        last_address   TEXT NOT NULL DEFAULT ''
+    );
+    CREATE TABLE IF NOT EXISTS recovery_codes (
+        id        INTEGER PRIMARY KEY,
+        user_id   INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        code_hash TEXT NOT NULL,
+        used_at   TEXT NOT NULL DEFAULT ''
+    );
+    CREATE TABLE IF NOT EXISTS sessions (
+        token_hash TEXT PRIMARY KEY,
+        user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        created    TEXT NOT NULL,
+        seen       TEXT NOT NULL,
+        expires    TEXT NOT NULL,
+        address    TEXT NOT NULL DEFAULT '',
+        agent      TEXT NOT NULL DEFAULT '',
+        stage      TEXT NOT NULL DEFAULT 'full'
+    );
+    CREATE TABLE IF NOT EXISTS events (
+        id       INTEGER PRIMARY KEY,
+        at       TEXT NOT NULL,
+        username TEXT NOT NULL DEFAULT '',
+        address  TEXT NOT NULL DEFAULT '',
+        what     TEXT NOT NULL,
+        detail   TEXT NOT NULL DEFAULT ''
+    );
+    CREATE TABLE IF NOT EXISTS attempts (
+        id       INTEGER PRIMARY KEY,
+        at       TEXT NOT NULL,
+        address  TEXT NOT NULL DEFAULT '',
+        username TEXT NOT NULL DEFAULT ''
+    );
+    CREATE INDEX IF NOT EXISTS attempts_at ON attempts(at);
+    CREATE INDEX IF NOT EXISTS events_at ON events(at);
+    """)
+
+
+# -- passwords -------------------------------------------------------------
+
+def hash_password(password: str) -> str:
+    salt = secrets.token_bytes(16)
+    derived = hashlib.scrypt(password.encode("utf-8"), salt=salt,
+                             n=SCRYPT_N, r=SCRYPT_R, p=SCRYPT_P, dklen=32,
+                             maxmem=_maxmem(SCRYPT_N, SCRYPT_R))
+    return "$".join(("scrypt", str(SCRYPT_N), str(SCRYPT_R), str(SCRYPT_P),
+                     base64.b64encode(salt).decode(),
+                     base64.b64encode(derived).decode()))
+
+
+def verify_password(stored: str, password: str) -> bool:
+    try:
+        kind, n, r, p, salt, expected = stored.split("$")
+        if kind != "scrypt":
+            return False
+        derived = hashlib.scrypt(password.encode("utf-8"),
+                                 salt=base64.b64decode(salt),
+                                 n=int(n), r=int(r), p=int(p), dklen=32,
+                                 maxmem=_maxmem(int(n), int(r)))
+    except (ValueError, TypeError):
+        return False
+    return hmac.compare_digest(derived, base64.b64decode(expected))
+
+
+def password_complaint(password: str) -> str:
+    """Empty when the password will do. One sentence when it will not."""
+    if len(password) < MIN_PASSWORD:
+        return f"Das Kennwort braucht mindestens {MIN_PASSWORD} Zeichen."
+    if password.lower() in ("passwort1234", "kennwort1234", "123456789012"):
+        return "Dieses Kennwort steht in jeder Liste."
+    return ""
+
+
+# -- accounts --------------------------------------------------------------
+
+def count_users(connection) -> int:
+    return connection.execute("SELECT COUNT(*) AS n FROM users").fetchone()["n"]
+
+
+def find_user(connection, username: str):
+    return connection.execute(
+        "SELECT * FROM users WHERE username = ? COLLATE NOCASE", (username,)).fetchone()
+
+
+def user_by_id(connection, user_id: int):
+    return connection.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+
+
+def create_user(connection, username: str, password: str, *, email: str = "",
+                must_change: bool = False) -> int:
+    cursor = connection.execute(
+        "INSERT INTO users (username, email, password_hash, must_change, created)"
+        " VALUES (?, ?, ?, ?, ?)",
+        (username.strip(), email.strip(), hash_password(password),
+         1 if must_change else 0, now()))
+    return cursor.lastrowid
+
+
+def set_password(connection, user_id: int, password: str) -> None:
+    connection.execute(
+        "UPDATE users SET password_hash = ?, must_change = 0 WHERE id = ?",
+        (hash_password(password), user_id))
+
+
+def set_identity(connection, user_id: int, username: str, email: str) -> None:
+    connection.execute("UPDATE users SET username = ?, email = ? WHERE id = ?",
+                       (username.strip(), email.strip(), user_id))
+
+
+def note_login(connection, user_id: int, address: str) -> None:
+    connection.execute("UPDATE users SET last_login = ?, last_address = ? WHERE id = ?",
+                       (now(), address, user_id))
+
+
+# -- two factor ------------------------------------------------------------
+
+def begin_totp(connection, user_id: int, secret: str) -> None:
+    """Stores an unconfirmed secret. It counts only once a code proved it."""
+    connection.execute(
+        "UPDATE users SET totp_secret = ?, totp_confirmed = 0, totp_last_step = -1"
+        " WHERE id = ?", (secret, user_id))
+
+
+def confirm_totp(connection, user_id: int, step: int, codes: list[str]) -> None:
+    connection.execute(
+        "UPDATE users SET totp_confirmed = 1, totp_last_step = ? WHERE id = ?",
+        (step, user_id))
+    connection.execute("DELETE FROM recovery_codes WHERE user_id = ?", (user_id,))
+    connection.executemany(
+        "INSERT INTO recovery_codes (user_id, code_hash) VALUES (?, ?)",
+        [(user_id, hash_password(code)) for code in codes])
+
+
+def disable_totp(connection, user_id: int) -> None:
+    connection.execute(
+        "UPDATE users SET totp_secret = '', totp_confirmed = 0, totp_last_step = -1"
+        " WHERE id = ?", (user_id,))
+    connection.execute("DELETE FROM recovery_codes WHERE user_id = ?", (user_id,))
+
+
+def note_totp_step(connection, user_id: int, step: int) -> None:
+    connection.execute("UPDATE users SET totp_last_step = ? WHERE id = ?", (step, user_id))
+
+
+def spend_recovery_code(connection, user_id: int, presented: str) -> bool:
+    """A recovery code works once. Returns whether this one did."""
+    cleaned = presented.strip().lower().replace(" ", "")
+    for row in connection.execute(
+            "SELECT id, code_hash FROM recovery_codes"
+            " WHERE user_id = ? AND used_at = ''", (user_id,)):
+        if verify_password(row["code_hash"], cleaned):
+            connection.execute("UPDATE recovery_codes SET used_at = ? WHERE id = ?",
+                               (now(), row["id"]))
+            return True
+    return False
+
+
+def recovery_left(connection, user_id: int) -> int:
+    return connection.execute(
+        "SELECT COUNT(*) AS n FROM recovery_codes WHERE user_id = ? AND used_at = ''",
+        (user_id,)).fetchone()["n"]
+
+
+# -- sessions --------------------------------------------------------------
+
+def _token_hash(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def start_session(connection, user_id: int, *, address: str = "", agent: str = "",
+                  stage: str = "full") -> str:
+    token = secrets.token_urlsafe(32)
+    expires = (datetime.datetime.now(datetime.timezone.utc)
+               + datetime.timedelta(hours=SESSION_HOURS)).isoformat(timespec="seconds")
+    connection.execute(
+        "INSERT INTO sessions (token_hash, user_id, created, seen, expires, address,"
+        " agent, stage) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (_token_hash(token), user_id, now(), now(), expires, address, agent[:200], stage))
+    return token
+
+
+def read_session(connection, token: str):
+    """The session row, or None when it is missing, expired or unknown."""
+    if not token:
+        return None
+    row = connection.execute("SELECT * FROM sessions WHERE token_hash = ?",
+                             (_token_hash(token),)).fetchone()
+    if row is None:
+        return None
+    if row["expires"] <= now():
+        connection.execute("DELETE FROM sessions WHERE token_hash = ?", (row["token_hash"],))
+        return None
+    connection.execute("UPDATE sessions SET seen = ? WHERE token_hash = ?",
+                       (now(), row["token_hash"]))
+    return row
+
+
+def promote_session(connection, token: str) -> None:
+    """Second factor passed: the half-open session becomes a real one."""
+    connection.execute("UPDATE sessions SET stage = 'full' WHERE token_hash = ?",
+                       (_token_hash(token),))
+
+
+def end_session(connection, token: str) -> None:
+    connection.execute("DELETE FROM sessions WHERE token_hash = ?", (_token_hash(token),))
+
+
+def end_all_sessions(connection, user_id: int, *, except_token: str = "") -> int:
+    keep = _token_hash(except_token) if except_token else ""
+    cursor = connection.execute(
+        "DELETE FROM sessions WHERE user_id = ? AND token_hash <> ?", (user_id, keep))
+    return cursor.rowcount
+
+
+def sessions_for(connection, user_id: int) -> list:
+    return connection.execute(
+        "SELECT * FROM sessions WHERE user_id = ? ORDER BY seen DESC", (user_id,)).fetchall()
+
+
+def sweep(connection) -> None:
+    """Drops what has expired. Called on every sign-in, which is often enough."""
+    connection.execute("DELETE FROM sessions WHERE expires <= ?", (now(),))
+    cutoff = (datetime.datetime.now(datetime.timezone.utc)
+              - datetime.timedelta(days=30)).isoformat(timespec="seconds")
+    connection.execute("DELETE FROM attempts WHERE at <= ?", (cutoff,))
+    connection.execute(
+        "DELETE FROM events WHERE id NOT IN"
+        " (SELECT id FROM events ORDER BY id DESC LIMIT 500)")
+
+
+# -- lockout and audit -----------------------------------------------------
+
+def record_attempt(connection, address: str, username: str) -> None:
+    connection.execute("INSERT INTO attempts (at, address, username) VALUES (?, ?, ?)",
+                       (now(), address, username[:100]))
+
+
+def clear_attempts(connection, address: str, username: str) -> None:
+    connection.execute("DELETE FROM attempts WHERE address = ? OR username = ?",
+                       (address, username[:100]))
+
+
+def lift_lockout(connection) -> int:
+    """Clears every recorded failed attempt.
+
+    Called when somebody with access to the server resets a password or
+    switches a second factor off. Those are recovery actions: leaving the
+    lockout in place would mean the operator fixes the account and the
+    person still cannot get in for another quarter of an hour. The lockout
+    counts by address as well as by name, so clearing only the name would
+    not do it.
+    """
+    cursor = connection.execute("DELETE FROM attempts")
+    return cursor.rowcount
+
+
+def locked_out(connection, address: str, username: str) -> int:
+    """Minutes still to wait, or 0. Counts by address and by name."""
+    since = (datetime.datetime.now(datetime.timezone.utc)
+             - datetime.timedelta(minutes=LOCKOUT_MINUTES)).isoformat(timespec="seconds")
+    row = connection.execute(
+        "SELECT COUNT(*) AS n, MIN(at) AS first FROM attempts"
+        " WHERE at > ? AND (address = ? OR username = ?)",
+        (since, address, username[:100])).fetchone()
+    if row["n"] < LOCKOUT_TRIES:
+        return 0
+    first = datetime.datetime.fromisoformat(row["first"])
+    passed = (datetime.datetime.now(datetime.timezone.utc) - first).total_seconds() / 60
+    return max(1, int(LOCKOUT_MINUTES - passed) + 1)
+
+
+def log_event(connection, what: str, *, username: str = "", address: str = "",
+              detail: str = "") -> None:
+    connection.execute(
+        "INSERT INTO events (at, username, address, what, detail) VALUES (?, ?, ?, ?, ?)",
+        (now(), username[:100], address, what, detail[:300]))
+
+
+def recent_events(connection, limit: int = 12) -> list:
+    return connection.execute(
+        "SELECT * FROM events ORDER BY id DESC LIMIT ?", (limit,)).fetchall()

@@ -23,10 +23,10 @@ edit of the .env — on the file that decides what an AI may spend.
     /setup/disconnect   forgets the refresh token (POST, asks first)
     /setup/check        runs the connection checks and shows the result
 
-THE PAGE IS AS SENSITIVE AS THE SERVER ITSELF, so it lives behind the same
-bearer token, offered as HTTP Basic auth: any user name, the token as the
-password. That turns an existing secret into a browser login instead of
-inventing a second one.
+THE PAGE IS AS SENSITIVE AS THE SERVER ITSELF, so it lives behind the
+portal's sign-in — a real account with a password and, if switched on, a
+second factor. That is portal_store and portal_pages; this file assumes a
+person got past them and draws the Google half.
 
 The page speaks German because a person reads it. Everything around it —
 names, comments, log lines — stays English, like every other tool here.
@@ -48,6 +48,7 @@ import hashlib
 import html
 import json
 import os
+import threading
 import pathlib
 import secrets
 import urllib.error
@@ -171,6 +172,26 @@ label.kasten input:disabled { opacity: .5; }
 .kasten-text .note { margin-top: .2rem; }
 .row { display: flex; gap: .7rem; flex-wrap: wrap; align-items: center; }
 .note { color: var(--muted); font-size: .87rem; margin-top: .8rem; line-height: 1.5; }
+/* Der QR-Code bleibt weiss auf weiss: ein Scanner erwartet dunkel auf hell,
+   und eine Umkehrung kostet auf manchen Kameras die Erkennung. */
+.qr { display: flex; justify-content: center; padding: 1rem; }
+.qr svg { background: #fff; border-radius: .4rem; max-width: 100%; height: auto; }
+ol.codes { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
+           gap: .45rem 1.2rem; margin: 0; padding-left: 1.4rem; }
+ol.codes li { font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+              font-size: 1rem; letter-spacing: .04em; }
+@media (max-width: 34rem) { ol.codes { grid-template-columns: 1fr; } }
+.card.schlecht { border-color: color-mix(in srgb, var(--bad) 45%, var(--line)); }
+nav.nav { display: flex; align-items: center; gap: 1.1rem; flex-wrap: wrap;
+          margin: -1rem 0 2rem; padding-bottom: 1rem;
+          border-bottom: 1px solid var(--line); font-size: .9rem; }
+nav.nav .wer { margin-left: auto; color: var(--muted); display: flex;
+               align-items: center; gap: .5rem; }
+nav.nav form.raus { margin: 0; }
+nav.nav .button { padding: .35rem .8rem; font-size: .85rem; }
+@media (max-width: 34rem) {
+  nav.nav .wer { margin-left: 0; width: 100%; order: -1; }
+}
 .warnung { border-left: 3px solid var(--warn); padding: .1rem 0 .1rem .8rem;
            margin: 0 0 1rem; color: var(--text); font-size: .9rem;
            line-height: 1.55; }
@@ -188,6 +209,33 @@ a:hover { color: #7CFF5C; }
   td { padding-top: 0; padding-bottom: .8rem; }
 }
 """
+
+
+_viewer = threading.local()
+
+
+def set_viewer(name: str = "", *, two_factor: bool = False) -> None:
+    """Who the current request belongs to. Per thread, because the server is."""
+    _viewer.name = name
+    _viewer.two_factor = two_factor
+
+
+def viewer() -> tuple[str, bool]:
+    return getattr(_viewer, "name", ""), getattr(_viewer, "two_factor", False)
+
+
+def navigation() -> str:
+    name, two_factor = viewer()
+    if not name:
+        return ""
+    schild = ('<span class="state ok">2FA</span>' if two_factor
+              else '<span class="state warn">ohne 2FA</span>')
+    return (f'<nav class="nav"><a href="/setup">Übersicht</a>'
+            f'<a href="/setup/guardrails">Schutzgrenzen</a>'
+            f'<a href="/konto">Konto</a>'
+            f'<span class="wer">{esc(name)} {schild}</span>'
+            f'<form method="post" action="/abmelden" class="raus">'
+            f'<button class="button quiet" type="submit">Abmelden</button></form></nav>')
 
 
 def logo_markup() -> str:
@@ -212,6 +260,7 @@ def page(title: str, body: str) -> bytes:
 <style>{STYLE}</style></head>
 <body><main>
 <header class="marke">{logo_markup()}<span class="wo">Google Ads</span></header>
+{navigation()}
 {body}</main></body></html>""").encode("utf-8")
 
 
@@ -401,17 +450,25 @@ rel="noopener">myaccount.google.com/permissions</a>.</p>
 <button class="danger" type="submit">Refresh Token löschen</button>
 </form></div>""")
 
+    wer, zwei = viewer()
     parts.append(f"""<div class="card">
-<h2 style="margin-top:0">Zugang zu dieser Seite</h2>
+<h2 style="margin-top:0">Die beiden Türen</h2>
 <table>
-<tr><th>Adresse</th><td class="mono">{esc(base_url)}/setup</td></tr>
-<tr><th>Benutzername</th><td>beliebig — geprüft wird nur das Kennwort</td></tr>
-<tr><th>Kennwort</th><td>das Zugangswort des Servers</td></tr>
-<tr><th>MCP-Adresse</th><td class="mono">{esc(base_url)}/mcp</td></tr>
+<tr><th>Portal</th><td class="mono">{esc(base_url)}/anmelden<br>
+<span class="note">Benutzerkonto mit Kennwort{', zweiter Faktor an'
+  if zwei else ' — zweiter Faktor noch aus'}</span></td></tr>
+<tr><th>MCP für claude.ai</th><td class="mono">{esc(base_url)}/mcp<br>
+<span class="note">Zugangswort als <code>Authorization: Bearer …</code></span></td></tr>
 </table>
-<p class="note">Dasselbe Wort öffnet beide Türen. Ein Wechsel gilt sofort und
-für beide — der Connector in claude.ai muss danach neu eingetragen werden.</p>
-<a class="button quiet" href="/setup/token">Zugangswort wechseln</a></div>""")
+<p class="note">Zwei Türen, zwei Schlüssel, mit Absicht. claude.ai kann kein
+Anmeldeformular ausfüllen und keinen zweiten Faktor eingeben — der Connector
+braucht deshalb ein festes Wort. Ein Mensch am Bildschirm kann beides, und
+soll es auch. Wer das Zugangswort wechselt, trägt den Connector neu ein; am
+Portal ändert sich dadurch nichts.</p>
+<div class="row">
+<a class="button quiet" href="/konto">Konto und zweiter Faktor</a>
+<a class="button quiet" href="/setup/token">Zugangswort für claude.ai wechseln</a>
+</div></div>""")
     return page("Status", "".join(parts))
 
 

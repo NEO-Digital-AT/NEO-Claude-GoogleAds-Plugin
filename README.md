@@ -74,13 +74,24 @@ Schutzgrenzen. Der Server hat kein `ports:` — erreichbar ist er nur durch
 Caddy. Wer schon einen Reverse Proxy hat, nimmt `docker-compose.plesk.yml`:
 ohne Caddy, gebunden auf `127.0.0.1`.
 
-Unter `/setup` liegt hinter demselben Zugangswort eine Verwaltungskonsole:
-Status, Konten, Zugriffsstufe, Änderungsprotokoll — und die Handgriffe, die
-sonst in der `.env` anfallen. Zugangsdaten ändern, neu verbinden, weitere
-Konten zum Schreiben berechtigen (zum Anhaken, nicht zum Tippen),
-Budgetdeckel setzen, Verbindung trennen, Zugangswort wechseln. Was die
-Umgebung vorgibt, zeigt sie gesperrt samt Variablennamen, statt eine
-Änderung anzunehmen, die nie greift.
+Dazu gehört ein **Portal mit Benutzerkonten**. Anmeldung mit Benutzername
+und Kennwort, auf Wunsch mit zweitem Faktor (TOTP, QR-Code wird auf dem
+Server gezeichnet), Wiederherstellungscodes, Sperre nach Fehlversuchen,
+Sitzungsübersicht. Benutzername, E-Mail und Kennwort sind dort änderbar;
+das erste Konto kommt aus `INIT_USER`/`INIT_PASS` in der `.env` und muss
+sein Kennwort beim ersten Anmelden wechseln. Wer ausgesperrt ist, hilft
+sich auf dem Server mit `--set-password` oder `--disable-2fa`.
+
+Dahinter liegt die Verwaltung des Google-Zugangs: Status, Konten,
+Zugriffsstufe, Änderungsprotokoll — und die Handgriffe, die sonst in der
+`.env` anfallen. Zugangsdaten ändern, neu verbinden, weitere Konten zum
+Schreiben berechtigen (zum Anhaken, nicht zum Tippen), Budgetdeckel setzen,
+Verbindung trennen. Was die Umgebung vorgibt, zeigt die Seite gesperrt samt
+Variablennamen, statt eine Änderung anzunehmen, die nie greift.
+
+Der MCP-Endpunkt behält sein eigenes Zugangswort: claude.ai kann kein
+Anmeldeformular ausfüllen. Zwei Türen, zwei Schlüssel, keiner öffnet die
+andere.
 
 ```bash
 cp .env.example .env && nano .env
@@ -139,7 +150,7 @@ Alle laufen ohne Abhängigkeiten und taugen als Tor in einer CI.
 | `google-ads-http.py` | Derselbe MCP-Server über Streamable HTTP, damit claude.ai im Browser und am Handy ihn als Connector erreichen kann. Zugangswort mit `--new-token`, `--anthropic-only` lässt nur Aufrufe aus Anthropics veröffentlichtem Adressbereich durch. TLS gehört vor den Prozess, in einen Reverse Proxy. |
 | `google-ads-auth.py` | Verbinden über OAuth mit PKCE. `--paste-url` für Maschinen ohne Browser, `--allow-write` setzt die Schutzgrenzen, `--show` zeigt den Stand ohne Geheimnisse, `--env` gibt sie als Übergabeblock für eine Cloud-Sitzung aus. |
 | `google-ads-check.py` | Misst die Verbindung in acht Prüfungen. Prüfung 7 verrät die Zugriffsstufe, die die API nie ausspricht — ein Explorer-Token hat die Planungswerkzeuge gesperrt. Prüfung 8 ist ein Trockenlauf gegen das echte Konto, der nichts verändert. Jede fehlgeschlagene Prüfung nennt die Abhilfe. |
-| `google-ads-selftest.py` | Weist ohne Netz und ohne Zugangsdaten nach, dass die Handbremse hält: 83 Fälle in zehn Gruppen, von den Schutzgrenzen über die Gestalt des Anfragekörpers bis zur Verwaltungskonsole. Gegen sabotierte Fassungen geprüft — jede fiel auf. |
+| `google-ads-selftest.py` | Weist ohne Netz und ohne Zugangsdaten nach, dass die Handbremse hält: 145 Fälle in dreizehn Gruppen, von den Schutzgrenzen über die Gestalt des Anfragekörpers bis zu Portal, Zwei-Faktor und QR-Code. Gegen sabotierte Fassungen geprüft — jede fiel auf. |
 
 ## Regeln
 

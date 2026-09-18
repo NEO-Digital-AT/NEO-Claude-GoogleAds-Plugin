@@ -161,15 +161,29 @@ DOMAIN="$(/bin/grep -m1 -oE '^[a-z0-9.-]+\.[a-z]{2,}' "$DEPLOY_DIR/Caddyfile" 2>
 [ -n "$DOMAIN" ] || DOMAIN="<deine-domain>"
 TOKEN="$(compose exec -T google-ads-mcp cat /data/http-token 2>/dev/null | /usr/bin/tr -d '\r\n' || true)"
 
+INIT_USER_WERT="$(/bin/grep -m1 '^INIT_USER=' "$DEPLOY_DIR/.env" 2>/dev/null | /usr/bin/cut -d= -f2- || true)"
+
 echo
-echo "  Verwaltung:  https://$DOMAIN/setup"
-echo "  Benutzer:    beliebig"
-if [ -n "$TOKEN" ]; then
-    echo "  Kennwort:    $TOKEN"
+echo "  Portal:      https://$DOMAIN/anmelden"
+if [ -n "$INIT_USER_WERT" ]; then
+    echo "  Benutzer:    $INIT_USER_WERT   (Kennwort: INIT_PASS aus der .env)"
+    echo "               Beim ersten Anmelden wird ein neues Kennwort verlangt."
+    echo "               Danach INIT_USER und INIT_PASS aus der .env entfernen."
 else
-    echo "  Kennwort:    (nicht lesbar — $DATA_DIR/http-token auf dem Server)"
+    echo "  Benutzer:    siehe Protokoll oben - der erste Start legt eines an."
 fi
-echo "  MCP-Adresse: https://$DOMAIN/mcp   (fuer claude.ai, als Authorization: Bearer <Kennwort>)"
+echo "               Kennwort vergessen? Auf dem Server:"
+echo "               compose exec google-ads-mcp python3 /app/scripts/google-ads-http.py \\"
+echo "                   --set-password <Benutzer>"
+echo
+echo "  MCP-Adresse: https://$DOMAIN/mcp   (fuer claude.ai)"
+if [ -n "$TOKEN" ]; then
+    echo "  Bearer:      $TOKEN"
+else
+    echo "  Bearer:      (nicht lesbar — $DATA_DIR/http-token auf dem Server)"
+fi
+echo "               Das ist NICHT das Portal-Kennwort: claude.ai kann kein"
+echo "               Formular ausfuellen, der Connector braucht einen Schluessel."
 echo
 echo "  Antwortet die Adresse nicht, fehlen die nginx-Direktiven:"
 echo "  Plesk -> Domain -> Apache & nginx -> Zusaetzliche nginx-Direktiven"

@@ -209,7 +209,10 @@ Dazu vier Skripte, die von Hand laufen:
 | --- | --- |
 | `google-ads-auth.py` | Verbinden, Schutzgrenzen setzen (`--allow-write`), Stand zeigen (`--show`), Zugangsdaten für eine Cloud-Sitzung ausgeben (`--env`) |
 | `google-ads-check.py` | Misst die Verbindung in acht Prüfungen, darunter Zugriffsstufe und Schreibweg |
-| `google-ads-selftest.py` | Weist ohne Netz nach, dass Schutzgrenzen und Konsole greifen — 83 Fälle |
+| `google-ads-selftest.py` | Weist ohne Netz nach, dass Schutzgrenzen, Portal und Zwei-Faktor greifen — 145 Fälle |
+| `portal_store.py` | Konten, Sitzungen, Sperre und Prüfspur des Portals (SQLite, ohne Fremdbibliothek) |
+| `portal_totp.py` | Zweiter Faktor nach RFC 6238, mit Wiederholungsschutz |
+| `portal_qr.py` | Zeichnet den QR-Code für die Authenticator-App auf dem Server, damit das Geheimnis die Maschine nicht verlässt |
 | `google-ads-mcp.py` | Der Server für Claude Code und Claude Desktop (lokaler Prozess); `--list-tools` und `--check-config` zur Diagnose |
 | `google-ads-http.py` | Derselbe Server über HTTP, für claude.ai im Browser und am Handy; `--new-token` erzeugt das Zugangswort |
 
