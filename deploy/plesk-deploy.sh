@@ -153,3 +153,33 @@ compose exec -T google-ads-mcp python3 -c \
     || { compose logs --tail=40 google-ads-mcp || true; fail "Der Server antwortet nicht."; }
 
 step "Bereitstellung fertig"
+
+# Everything needed next, printed where the operator is already looking.
+# Fetching the token over SSH afterwards is a step nobody should have to
+# take: whoever can read this log can already reach the server.
+DOMAIN="$(/bin/grep -m1 -oE '^[a-z0-9.-]+\.[a-z]{2,}' "$DEPLOY_DIR/Caddyfile" 2>/dev/null || true)"
+[ -n "$DOMAIN" ] || DOMAIN="<deine-domain>"
+TOKEN="$(compose exec -T google-ads-mcp cat /data/http-token 2>/dev/null | /usr/bin/tr -d '\r\n' || true)"
+
+echo
+echo "  Verwaltung:  https://$DOMAIN/setup"
+echo "  Benutzer:    beliebig"
+if [ -n "$TOKEN" ]; then
+    echo "  Kennwort:    $TOKEN"
+else
+    echo "  Kennwort:    (nicht lesbar — $DATA_DIR/http-token auf dem Server)"
+fi
+echo "  MCP-Adresse: https://$DOMAIN/mcp   (fuer claude.ai, als Authorization: Bearer <Kennwort>)"
+echo
+echo "  Antwortet die Adresse nicht, fehlen die nginx-Direktiven:"
+echo "  Plesk -> Domain -> Apache & nginx -> Zusaetzliche nginx-Direktiven"
+echo "      location / {"
+echo "          proxy_pass http://127.0.0.1:8788;"
+echo "          proxy_http_version 1.1;"
+echo "          proxy_set_header Host \$host;"
+echo "          proxy_set_header X-Forwarded-Proto \$scheme;"
+echo "          proxy_set_header X-Forwarded-For \$remote_addr;"
+echo "          proxy_read_timeout 300s;"
+echo "          proxy_send_timeout 300s;"
+echo "          proxy_buffering off;"
+echo "      }"

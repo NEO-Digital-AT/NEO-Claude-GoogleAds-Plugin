@@ -50,7 +50,12 @@ docker compose logs -f google-ads-mcp
 ```
 
 Beim ersten Start erzeugt der Server ein Zugangswort in `data/http-token`,
-falls keines da ist. Sichtbar machen:
+falls keines da ist. **Über Plesk steht es am Ende des
+Bereitstellungsprotokolls**, zusammen mit der Adresse der Verwaltung und
+der MCP-Adresse — es dafür über SSH zu holen ist ein Schritt, den niemand
+gehen sollte: wer das Protokoll lesen kann, erreicht den Server ohnehin.
+
+Ohne Plesk:
 
 ```bash
 docker compose exec google-ads-mcp cat /data/http-token
