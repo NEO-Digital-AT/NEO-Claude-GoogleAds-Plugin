@@ -4,8 +4,18 @@
 
 Sie stehen unter `guardrails` in `~/.config/neo-google-ads/config.json`
 und greifen im Werkzeug, nicht in der Absicht — auch dann, wenn diese
-Regeln missachtet werden. Gesetzt werden sie mit
-`google-ads-auth.py --allow-write`.
+Regeln missachtet werden.
+
+Gesetzt werden sie auf drei Wegen, und in dieser Rangfolge:
+
+| Weg | Wann |
+| --- | --- |
+| Umgebungsvariablen (`GOOGLE_ADS_ALLOW_WRITE` und die übrigen) | im Container; gewinnen gegen die Datei |
+| `/setup/guardrails` in der Verwaltungskonsole | im laufenden Betrieb, Konten zum Anhaken |
+| `google-ads-auth.py --allow-write` | bei der Einrichtung auf der Kommandozeile |
+
+Was die Umgebung setzt, zeigt die Konsole gesperrt an und nimmt es nicht
+entgegen: eine Änderung, die nie greift, ist schlimmer als keine.
 
 ```json
 "guardrails": {

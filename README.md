@@ -71,7 +71,16 @@ Der vollständige Weg für alle drei steht in
 Für den Browser liegt der Aufbau fertig unter `deploy/`: ein Container mit
 dem Server, einer mit Caddy für HTTPS, eine `.env` für Zugangsdaten und
 Schutzgrenzen. Der Server hat kein `ports:` — erreichbar ist er nur durch
-Caddy.
+Caddy. Wer schon einen Reverse Proxy hat, nimmt `docker-compose.plesk.yml`:
+ohne Caddy, gebunden auf `127.0.0.1`.
+
+Unter `/setup` liegt hinter demselben Zugangswort eine Verwaltungskonsole:
+Status, Konten, Zugriffsstufe, Änderungsprotokoll — und die Handgriffe, die
+sonst in der `.env` anfallen. Zugangsdaten ändern, neu verbinden, weitere
+Konten zum Schreiben berechtigen (zum Anhaken, nicht zum Tippen),
+Budgetdeckel setzen, Verbindung trennen, Zugangswort wechseln. Was die
+Umgebung vorgibt, zeigt sie gesperrt samt Variablennamen, statt eine
+Änderung anzunehmen, die nie greift.
 
 ```bash
 cp .env.example .env && nano .env
@@ -130,7 +139,7 @@ Alle laufen ohne Abhängigkeiten und taugen als Tor in einer CI.
 | `google-ads-http.py` | Derselbe MCP-Server über Streamable HTTP, damit claude.ai im Browser und am Handy ihn als Connector erreichen kann. Zugangswort mit `--new-token`, `--anthropic-only` lässt nur Aufrufe aus Anthropics veröffentlichtem Adressbereich durch. TLS gehört vor den Prozess, in einen Reverse Proxy. |
 | `google-ads-auth.py` | Verbinden über OAuth mit PKCE. `--paste-url` für Maschinen ohne Browser, `--allow-write` setzt die Schutzgrenzen, `--show` zeigt den Stand ohne Geheimnisse, `--env` gibt sie als Übergabeblock für eine Cloud-Sitzung aus. |
 | `google-ads-check.py` | Misst die Verbindung in acht Prüfungen. Prüfung 7 verrät die Zugriffsstufe, die die API nie ausspricht — ein Explorer-Token hat die Planungswerkzeuge gesperrt. Prüfung 8 ist ein Trockenlauf gegen das echte Konto, der nichts verändert. Jede fehlgeschlagene Prüfung nennt die Abhilfe. |
-| `google-ads-selftest.py` | Weist ohne Netz und ohne Zugangsdaten nach, dass die Handbremse hält: 35 Fälle in sechs Gruppen. Gegen sabotierte Fassungen geprüft — jede fiel auf. |
+| `google-ads-selftest.py` | Weist ohne Netz und ohne Zugangsdaten nach, dass die Handbremse hält: 83 Fälle in zehn Gruppen, von den Schutzgrenzen über die Gestalt des Anfragekörpers bis zur Verwaltungskonsole. Gegen sabotierte Fassungen geprüft — jede fiel auf. |
 
 ## Regeln
 

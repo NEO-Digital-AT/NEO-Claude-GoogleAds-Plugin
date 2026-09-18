@@ -304,6 +304,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self._send_html(setup.connect_page(self._base_url()))
         elif path == "/setup/token":
             self._send_html(setup.token_page(pathlib.Path(self.token_path)))
+        elif path == "/setup/guardrails":
+            self._send_html(setup.guardrails_page())
         elif path == "/setup/check":
             self._send_html(setup.check_page())
         elif path == "/setup/callback":
@@ -329,6 +331,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.__class__.token = neues
             self.log_line("setup: access word replaced")
             self._send_html(setup.token_page(pathlib.Path(self.token_path), neues))
+        elif path == "/setup/guardrails":
+            ok, message = setup.save_guardrails(form)
+            if ok:
+                self.log_line("setup: guardrails changed")
+                self._send_html(setup.guardrails_page(message))
+            else:
+                self._send_html(setup.guardrails_page(message))
         elif path == "/setup/disconnect":
             ok, message = setup.disconnect()
             self._send_html(setup.result_page(ok, message))

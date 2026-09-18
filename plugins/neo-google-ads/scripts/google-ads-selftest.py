@@ -10,7 +10,7 @@ That distinction matters. A guardrail that has never been shown to refuse
 anything is a comment, not a guardrail — and the thing it is supposed to
 stop is a five-figure invoice.
 
-The cases fall in seven groups:
+The cases fall in ten groups:
 
     guardrails    switch off, wrong account, budget ceiling, budget jump,
                   too many operations, and the clean case that must pass
@@ -20,6 +20,7 @@ The cases fall in seven groups:
     queries       every prepared report produces valid GAQL
     protocol      the MCP handshake, both generations, and tools/list
     http door     a real server on a real port: token, address filter, paths
+    console       the guardrails page edits what the server really reads
 
     google-ads-selftest.py
     google-ads-selftest.py --verbose
@@ -642,6 +643,168 @@ def test_change_log() -> None:
             gac.CHANGE_LOG = original
 
 
+# --------------------------------------------------------------------------
+# 10. Management console
+# --------------------------------------------------------------------------
+
+def load_setup():
+    import importlib.util
+    here = pathlib.Path(__file__).parent / "google_ads_setup.py"
+    spec = importlib.util.spec_from_file_location("google_ads_setup", here)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+CONSOLE_ACCOUNTS = [
+    {"id": "5691007627", "name": "NEO Digital", "currency": "EUR",
+     "manager": False, "problem": ""},
+    {"id": "6286913360", "name": "Kunde A", "currency": "EUR",
+     "manager": False, "problem": ""},
+    {"id": "5303457641", "name": "Verwaltung", "currency": "EUR",
+     "manager": True, "problem": ""},
+]
+
+
+def test_console() -> None:
+    """The guardrails page must edit what the server actually reads.
+
+    The page is the reason nobody has to touch the .env by hand, so the
+    two ways it can lie are what these cases look for: writing a value the
+    environment overrides anyway, and turning 'these three accounts' into
+    'every account' because the list happened not to load.
+    """
+    setup = load_setup()
+
+    def mit_konten(accounts, rails, env=None, form=None):
+        """Renders the page and optionally saves a form, in an empty home."""
+        with tempfile.TemporaryDirectory() as folder:
+            heim = pathlib.Path(folder)
+            konfig = heim / "config.json"
+            konfig.write_text(json.dumps({
+                "client_id": "test", "client_secret": "test",
+                "refresh_token": "test", "developer_token": "test",
+                "api_version": "v25",
+                "guardrails": dict(gac.DEFAULT_GUARDRAILS, **rails)}), encoding="utf-8")
+            echte_datei, gac.CONFIG_FILE = gac.CONFIG_FILE, konfig
+            echter_stand = setup.load_state
+            gesetzt = []
+            for name, wert in (env or {}).items():
+                gesetzt.append(name)
+                os.environ[name] = wert
+            try:
+                setup.load_state = lambda: {
+                    "configured": True, "connected": bool(accounts),
+                    "error": "" if accounts else "Verbindung nicht möglich",
+                    "accounts": list(accounts),
+                    "guardrails": gac.load_config()["guardrails"],
+                    "config": gac.load_config()}
+                html = setup.guardrails_page().decode("utf-8")
+                gespeichert, meldung = (None, "")
+                if form is not None:
+                    gespeichert, meldung = setup.save_guardrails(form)
+                    gespeichert = json.loads(
+                        konfig.read_text(encoding="utf-8"))["guardrails"]
+                return html, gespeichert, meldung
+            finally:
+                setup.load_state = echter_stand
+                gac.CONFIG_FILE = echte_datei
+                for name in gesetzt:
+                    os.environ.pop(name, None)
+
+    def feld(seite: str, name: str) -> str:
+        """The one tag that carries this form field."""
+        stelle = seite.index(f'name="{name}"')
+        return seite[seite.rindex("<", 0, stelle):seite.index(">", stelle) + 1]
+
+    # Anhaken statt Nummern tippen.
+    html, _, _ = mit_konten(CONSOLE_ACCOUNTS, {"allowed_customer_ids": ["5691007627"]})
+    case("every accessible account is offered as a checkbox",
+         html.count('name="konto"') == 3, f"{html.count(chr(0x22) + chr(0x22))}")
+    case("only the authorised account is ticked",
+         html.count('value="5691007627" checked') == 1
+         and 'value="6286913360" checked' not in html)
+    case("the manager account is marked as one", "Verwaltungskonto" in html)
+
+    # Ticking a second account must reach the file the server reads.
+    _, rails, _ = mit_konten(
+        CONSOLE_ACCOUNTS, {"allowed_customer_ids": ["5691007627"]},
+        form={"konten_gestellt": ["1"], "write_enabled": ["on"],
+              "konto": ["5691007627", "6286913360"], "max_daily_budget": ["75,50"]})
+    case("ticking an account authorises it",
+         rails["allowed_customer_ids"] == ["5691007627", "6286913360"],
+         str(rails["allowed_customer_ids"]))
+    case("a comma is read as a decimal point, and the value is stored in micros",
+         rails["max_daily_budget_micros"] == 75_500_000,
+         str(rails["max_daily_budget_micros"]))
+    case("a guardrail the page does not show is not dropped",
+         rails.get("log_changes") is True, str(rails.get("log_changes")))
+
+    # THE DANGEROUS ONE: an empty list means 'every account'.
+    html, rails, meldung = mit_konten(
+        [], {"allowed_customer_ids": ["5691007627"], "write_enabled": True},
+        form={"write_enabled": ["on"], "max_daily_budget": ["10"]})
+    case("an unreadable account list still shows what is authorised",
+         html.count('value="5691007627" checked') == 1)
+    case("and says so instead of pretending there is nothing",
+         'class="warnung"' in html)
+    case("saving from that page does NOT widen the authorisation to every account",
+         rails["allowed_customer_ids"] == ["5691007627"],
+         str(rails["allowed_customer_ids"]))
+    case("the other settings are saved all the same",
+         rails["max_daily_budget_micros"] == 10_000_000,
+         str(rails["max_daily_budget_micros"]))
+    case("and the page says why the accounts stayed as they were",
+         "unverändert" in meldung, meldung[:90])
+
+    # Deliberately unticking everything, from a page that could show them.
+    _, rails, _ = mit_konten(CONSOLE_ACCOUNTS, {"allowed_customer_ids": ["5691007627"]},
+                             form={"konten_gestellt": ["1"]})
+    case("unticking every box from a working page does clear the restriction",
+         rails["allowed_customer_ids"] == [], str(rails["allowed_customer_ids"]))
+
+    # What the environment sets, the page must not pretend to own.
+    html, rails, meldung = mit_konten(
+        CONSOLE_ACCOUNTS, {"allowed_customer_ids": ["5691007627"], "write_enabled": False},
+        env={"GOOGLE_ADS_ALLOW_WRITE": "false", "GOOGLE_ADS_MAX_DAILY_BUDGET": "10"},
+        form={"konten_gestellt": ["1"], "write_enabled": ["on"],
+              "konto": ["5691007627", "6286913360"], "max_daily_budget": ["999"],
+              "max_budget_increase_factor": ["3"]})
+    case("a guardrail fixed by the environment is shown locked",
+         "disabled" in feld(html, "write_enabled")
+         and "disabled" in feld(html, "max_daily_budget"),
+         feld(html, "write_enabled"))
+    case("a guardrail the environment leaves alone stays editable",
+         "disabled" not in feld(html, "max_budget_increase_factor"),
+         feld(html, "max_budget_increase_factor"))
+    case("and the page names the variable it comes from",
+         "GOOGLE_ADS_ALLOW_WRITE" in html and "GOOGLE_ADS_MAX_DAILY_BUDGET" in html)
+    case("a form that submits a locked field anyway changes nothing",
+         rails["write_enabled"] is not True
+         and rails["max_daily_budget_micros"] != 999_000_000,
+         f"{rails['write_enabled']} / {rails['max_daily_budget_micros']}")
+    case("a field the environment does not set is still editable",
+         rails["max_budget_increase_factor"] == 3.0,
+         str(rails["max_budget_increase_factor"]))
+    case("and the page says which values it passed over",
+         "Übergangen" in meldung, meldung[:90])
+
+    # Rubbish in the number fields.
+    for eingabe, erwartet in (("viel", "ist keine Zahl"), ("-5", "Negative Werte")):
+        _, rails, meldung = mit_konten(
+            CONSOLE_ACCOUNTS, {"max_daily_budget_micros": 50_000_000},
+            form={"konten_gestellt": ["1"], "max_daily_budget": [eingabe]})
+        case(f"a budget of {eingabe!r} is refused, and the old value stands",
+             erwartet in meldung and rails["max_daily_budget_micros"] == 50_000_000,
+             meldung[:80])
+
+    # A customer id that is not one.
+    _, _, meldung = mit_konten(CONSOLE_ACCOUNTS, {},
+                               form={"konten_gestellt": ["1"], "konto": ["12345"]})
+    case("a customer id that is not ten digits is refused",
+         "ten digits" in meldung, meldung[:80])
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Prove the Google Ads guardrails hold.")
     parser.add_argument("--verbose", action="store_true", help="show the detail of every case")
@@ -654,7 +817,8 @@ def main() -> int:
                        ("errors", test_errors),
                        ("shaping", test_shaping), ("reports", test_reports),
                        ("protocol", test_protocol), ("http door", test_http),
-                       ("change log", test_change_log)):
+                       ("change log", test_change_log),
+                       ("management console", test_console)):
         start = len(RESULTS)
         run()
         failed = sum(1 for _, ok, _ in RESULTS[start:] if not ok)

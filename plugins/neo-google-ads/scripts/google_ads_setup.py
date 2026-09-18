@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""A small management page for the Google Ads connection, served in the browser.
+"""A small management console for the Google Ads connection, in the browser.
 
 Setting the connection up over SSH means copying an URL out of a terminal
 where Ctrl-C interrupts rather than copies, pasting it back, and reading a
@@ -7,11 +7,19 @@ JSON file to see what happened. The container already answers on a public
 HTTPS address, so it can serve a page instead, and the whole round trip
 becomes three clicks.
 
-    /setup              status: connection, accounts, access level, guardrails
+It does not stop at the first connection, because that is not where the
+work stops: accounts get added, a token gets replaced, a budget ceiling
+turns out too low. Each of those otherwise means an SSH session and a hand
+edit of the .env — on the file that decides what an AI may spend.
+
+    /setup              status: connection, accounts, access level, guardrails,
+                        and the last write attempts from the change log
     /setup/credentials  the four values Google requires (POST)
-    /setup/connect      starts the consent flow
+    /setup/connect      starts the consent flow — also to reconnect
     /setup/callback     where Google returns; trades the code for a token
     /setup/paste        the fallback when the OAuth client is a desktop one
+    /setup/guardrails   edits the guardrails, accounts by tick box (POST)
+    /setup/token        replaces the access word for both doors (POST)
     /setup/disconnect   forgets the refresh token (POST, asks first)
     /setup/check        runs the connection checks and shows the result
 
@@ -22,6 +30,12 @@ inventing a second one.
 
 The page speaks German because a person reads it. Everything around it —
 names, comments, log lines — stays English, like every other tool here.
+
+A guardrail this page cannot show, it does not change. An account list that
+failed to load would otherwise submit as "no boxes ticked", which the server
+reads as "every account" — the widest setting there is, reached by a network
+hiccup. The account section therefore carries a marker, and without it the
+save leaves the authorisation exactly as it was.
 
 No dependencies, no template engine, no JavaScript: one function per page,
 HTML as text.
@@ -144,8 +158,22 @@ button.danger { background: transparent; color: var(--bad);
   border-color: color-mix(in srgb, var(--bad) 45%, transparent); }
 button.danger:hover { background: color-mix(in srgb, var(--bad) 14%, transparent); }
 
+label.kasten { display: flex; gap: .7rem; align-items: flex-start;
+  margin: .7rem 0; padding: .7rem .8rem; border: 1px solid var(--line);
+  border-radius: .45rem; font-weight: 400; cursor: pointer; }
+label.kasten:hover { border-color: color-mix(in srgb, var(--neon) 40%, var(--line)); }
+label.kasten input { accent-color: var(--neon); width: 1.1rem; height: 1.1rem;
+  margin-top: .15rem; flex: none; }
+label.kasten input:disabled { opacity: .5; }
+.kasten-text { display: block; }
+.kasten-text b { display: block; font-size: .95rem; }
+.kasten-text .mono { display: block; color: var(--muted); font-size: .84rem; }
+.kasten-text .note { margin-top: .2rem; }
 .row { display: flex; gap: .7rem; flex-wrap: wrap; align-items: center; }
 .note { color: var(--muted); font-size: .87rem; margin-top: .8rem; line-height: 1.5; }
+.warnung { border-left: 3px solid var(--warn); padding: .1rem 0 .1rem .8rem;
+           margin: 0 0 1rem; color: var(--text); font-size: .9rem;
+           line-height: 1.55; }
 a { color: var(--neon); text-underline-offset: .2em; }
 a:hover { color: #7CFF5C; }
 
@@ -340,10 +368,9 @@ def status_page(base_url: str) -> bytes:
 <tr><th>Größter Budgetsprung</th><td>Faktor {esc(rails.get('max_budget_increase_factor'))}</td></tr>
 <tr><th>Operationen je Aufruf</th><td>{esc(rails.get('max_operations_per_call'))}</td></tr>
 </table>
-<p class="note">Diese Werte stehen in der <code>.env</code> des Containers und
-werden dort geändert. Auch bei eingeschaltetem Schreiben ist jeder Aufruf
-zuerst ein Trockenlauf — scharf wird er erst nach ausdrücklicher Freigabe im
-Gespräch.</p></div>""")
+<p class="note">Auch bei eingeschaltetem Schreiben ist jeder Aufruf zuerst ein
+Trockenlauf — scharf wird er erst nach ausdrücklicher Freigabe im Gespräch.</p>
+<a class="button quiet" href="/setup/guardrails">Schutzgrenzen bearbeiten</a></div>""")
 
     # -- Letzte Änderungen -------------------------------------------------
     changes = recent_changes()
@@ -460,9 +487,9 @@ nicht zwingend das des Verwaltungskontos.</p>
 <div class="card">
 <a class="button" href="{esc(url)}">Bei Google anmelden und zustimmen</a>
 <p class="note">Danach kommst du hierher zurück. Steht die App noch auf
-„Test", erscheint eine Warnung; unter „Erweitert" lässt sie sich
+„Test“, erscheint eine Warnung; unter „Erweitert“ lässt sie sich
 übergehen. Im Testmodus läuft die Verbindung allerdings nach sieben Tagen
-ab — für den Dauerbetrieb gehört die App auf „In Produktion".</p>
+ab — für den Dauerbetrieb gehört die App auf „In Produktion“.</p>
 </div>
 <div class="card">
 <h2 style="margin-top:0">Diese Rückadresse muss bei Google eingetragen sein</h2>
@@ -494,7 +521,7 @@ def exchange_code(pasted_or_query: str) -> tuple[bool, str]:
     """Trades an authorisation code for a refresh token. Returns (ok, message)."""
     if not PENDING_FILE.exists():
         return False, ("Keine offene Anmeldung. Der Vorgang muss über „Mit Google "
-                       "verbinden" " beginnen.")
+                       "verbinden“ beginnen.")
     pending = json.loads(PENDING_FILE.read_text(encoding="utf-8"))
     parsed = urllib.parse.urlparse(pasted_or_query.strip())
     query = urllib.parse.parse_qs(parsed.query or pasted_or_query.strip().lstrip("?"))
@@ -639,6 +666,206 @@ def save_credentials(form: dict) -> tuple[bool, str]:
                                encoding="utf-8")
     os.chmod(gac.CONFIG_FILE, 0o600)
     return True, "Gespeichert."
+
+
+def env_overrides() -> dict:
+    """Which guardrails come from the environment and are therefore fixed here.
+
+    A value set in the container's .env wins over the configuration file.
+    Editing it on this page would write something that never takes effect,
+    so the form shows it as locked and names where it comes from instead of
+    quietly losing the change.
+    """
+    return {field: name for field, name in gac.GUARDRAIL_ENV.items()
+            if os.environ.get(name) is not None}
+
+
+def guardrails_page(message: str = "") -> bytes:
+    """The page that replaces editing the .env by hand."""
+    state = load_state()
+    rails = state["guardrails"]
+    fest = env_overrides()
+    erlaubt = set(rails.get("allowed_customer_ids") or [])
+
+    def gesperrt(field: str) -> str:
+        if field not in fest:
+            return ""
+        return (f'<span class="note">Kommt aus der Umgebung '
+                f'(<code>{esc(fest[field])}</code>) und ist hier nicht änderbar. '
+                f'Aus der <code>.env</code> entfernen, um ihn hier zu setzen.</span>')
+
+    # Die Konten zum Anhaken, statt Nummern zu tippen.
+    def kasten(wert: str, titel: str, zusatz: list[str], an: bool) -> str:
+        sperre = " disabled" if "allowed_customer_ids" in fest else ""
+        rand = f'<span class="note">{esc(" · ".join(zusatz))}</span>' if zusatz else ""
+        return (f'<label class="kasten"><input type="checkbox" name="konto" '
+                f'value="{esc(wert)}"{" checked" if an else ""}{sperre}>'
+                f'<span class="kasten-text"><b>{esc(titel)}</b>'
+                f'<span class="mono">{esc(wert)}</span>{rand}</span></label>')
+
+    kaesten = []
+    for account in state["accounts"]:
+        zusatz = []
+        if account.get("currency"):
+            zusatz.append(account["currency"])
+        if account.get("manager"):
+            zusatz.append("Verwaltungskonto")
+        if account["problem"]:
+            zusatz.append("nicht lesbar")
+        kaesten.append(kasten(account["id"], account["name"] or "ohne Namen",
+                              zusatz, account["id"] in erlaubt))
+    # Berechtigte Konten, die gerade nicht in der Liste stehen, gingen sonst
+    # beim Speichern still verloren.
+    for verwaist in sorted(erlaubt - {a["id"] for a in state["accounts"]}):
+        kaesten.append(kasten(verwaist, "steht gerade nicht in der Liste", [], True))
+
+    if state["accounts"]:
+        konten_feld = ("".join(kaesten)
+                       + '<input type="hidden" name="konten_gestellt" value="1">')
+    elif kaesten:
+        # Die Liste liess sich nicht lesen. Ohne den Merker rührt das Speichern
+        # die Berechtigung nicht an — sonst hiesse ein Klick nach einer
+        # Störung plötzlich "alle Konten", und das in die andere Richtung.
+        grund = f' ({esc(state["error"].splitlines()[0])})' if state["error"] else ""
+        konten_feld = (f'<p class="warnung">Die Kontenliste liess sich gerade nicht '
+                       f'lesen{grund}. Was berechtigt ist, steht unten und bleibt beim '
+                       f'Speichern unverändert. Zum Ändern zuerst die Verbindung '
+                       f'prüfen.</p>' + "".join(kaesten))
+    else:
+        konten_feld = ('<p class="note">Noch keine Konten gelesen. Erst verbinden, '
+                       'dann stehen sie hier zum Anhaken.</p>')
+
+    hinweis = f'<div class="card akzent"><p>{esc(message)}</p></div>' if message else ""
+    deckel = rails.get("max_daily_budget_micros") or 0
+    schreibt = "checked" if rails.get("write_enabled") else ""
+
+    return page("Schutzgrenzen", f"""
+<h1>Schutzgrenzen</h1>
+<p class="lead">Was überhaupt möglich ist. Ob eine einzelne Änderung dann
+geschieht, entscheidet die Freigabe im Gespräch — jeder Schreibaufruf ist
+zuerst ein Trockenlauf.</p>
+{hinweis}
+<form method="post" action="/setup/guardrails">
+
+<div class="card">
+<h2 style="margin-top:0">Schreiben</h2>
+<label class="kasten"><input type="checkbox" name="write_enabled" {schreibt}
+  {'disabled' if 'write_enabled' in fest else ''}>
+<span class="kasten-text"><b>Schreiben erlauben</b>
+<span class="note">Ohne diesen Haken sind nur Trockenläufe möglich. Lesen
+geht immer.</span></span></label>
+{gesperrt('write_enabled')}
+</div>
+
+<div class="card">
+<h2 style="margin-top:0">Konten, in die geschrieben werden darf</h2>
+<p class="note" style="margin-top:0">Kein Haken heißt <b>alle zugänglichen</b> —
+bei eingeschaltetem Schreiben ist das selten gemeint.</p>
+{konten_feld}
+{gesperrt('allowed_customer_ids')}
+</div>
+
+<div class="card">
+<h2 style="margin-top:0">Budget</h2>
+<label>Höchstes Tagesbudget je Budget
+<span>In deiner Kontowährung. 0 heißt: keine Obergrenze.</span>
+<input type="text" name="max_daily_budget" value="{deckel / 1_000_000:.2f}"
+  {'disabled' if 'max_daily_budget_micros' in fest else ''}></label>
+{gesperrt('max_daily_budget_micros')}
+
+<label>Größter Sprung in einem Schritt
+<span>Faktor. 2 heißt: höchstens verdoppeln.</span>
+<input type="text" name="max_budget_increase_factor"
+  value="{esc(rails.get('max_budget_increase_factor'))}"
+  {'disabled' if 'max_budget_increase_factor' in fest else ''}></label>
+{gesperrt('max_budget_increase_factor')}
+
+<label>Operationen je Aufruf
+<span>Begrenzt den Schaden eines einzelnen Fehlgriffs.</span>
+<input type="text" name="max_operations_per_call"
+  value="{esc(rails.get('max_operations_per_call'))}"
+  {'disabled' if 'max_operations_per_call' in fest else ''}></label>
+{gesperrt('max_operations_per_call')}
+</div>
+
+<button type="submit">Speichern</button>
+<a class="button quiet" href="/setup">Abbrechen</a>
+</form>""")
+
+
+def save_guardrails(form: dict) -> tuple[bool, str]:
+    """Writes the guardrails to the configuration file.
+
+    Values that the environment sets are skipped: writing them would
+    produce a file that says one thing while the server does another.
+    """
+    config = {}
+    if gac.CONFIG_FILE.exists():
+        try:
+            config = json.loads(gac.CONFIG_FILE.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            config = {}
+    rails = dict(gac.DEFAULT_GUARDRAILS, **(config.get("guardrails") or {}))
+    fest = env_overrides()
+    uebergangen = []
+
+    if "write_enabled" in fest:
+        uebergangen.append(gac.GUARDRAIL_ENV["write_enabled"])
+    else:
+        rails["write_enabled"] = bool(form.get("write_enabled"))
+
+    unberuehrt = False
+    if "allowed_customer_ids" in fest:
+        uebergangen.append(gac.GUARDRAIL_ENV["allowed_customer_ids"])
+    elif not form.get("konten_gestellt"):
+        # Das Formular kam von einer Seite, die die Konten nicht anzeigen
+        # konnte. Kein Haken hiesse dort nicht "keine Einschränkung", sondern
+        # nur "nichts gesehen" — also wird hier nichts angerührt.
+        unberuehrt = True
+    else:
+        konten = []
+        for wert in form.get("konto") or []:
+            try:
+                konten.append(gac.normalize_customer_id(wert))
+            except gac.GoogleAdsError as exc:
+                return False, exc.message
+        rails["allowed_customer_ids"] = konten
+
+    # Formularfeld, Ziel in den Schutzgrenzen, Faktor, ganzzahlig
+    zahlen = (("max_daily_budget", "max_daily_budget_micros", 1_000_000, True),
+              ("max_budget_increase_factor", "max_budget_increase_factor", 1, False),
+              ("max_operations_per_call", "max_operations_per_call", 1, True))
+    for feldname, ziel, faktor, ganzzahlig in zahlen:
+        if ziel in fest:
+            uebergangen.append(gac.GUARDRAIL_ENV[ziel])
+            continue
+        roh = (form.get(feldname) or [""])[0].strip().replace(",", ".")
+        if not roh:
+            continue
+        try:
+            wert = float(roh) * faktor
+        except ValueError:
+            return False, f"„{roh}“ ist keine Zahl."
+        if wert < 0:
+            return False, "Negative Werte ergeben hier keinen Sinn."
+        rails[ziel] = int(wert) if ganzzahlig else wert
+
+    config["guardrails"] = rails
+    config.setdefault("api_version", gac.DEFAULT_API_VERSION)
+    gac.CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
+    gac.CONFIG_FILE.write_text(json.dumps(config, indent=2, ensure_ascii=False) + "\n",
+                               encoding="utf-8")
+    os.chmod(gac.CONFIG_FILE, 0o600)
+
+    meldung = "Gespeichert."
+    if unberuehrt:
+        meldung += (" Die Kontenberechtigung blieb unverändert, weil die Kontenliste "
+                    "beim Aufbau der Seite nicht lesbar war.")
+    if uebergangen:
+        meldung += (" Übergangen wurde, was die Umgebung vorgibt: "
+                    + ", ".join(sorted(set(uebergangen)))
+                    + ". Diese Werte gelten weiter aus der .env.")
+    return True, meldung
 
 
 def rotate_token(token_file: pathlib.Path) -> tuple[bool, str]:

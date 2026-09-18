@@ -70,13 +70,42 @@ curl https://ads.mcp.neo-digital.at/health
 Antwortet `{"status": "ok", ...}`, ist alles bereit. Der Pfad verrät nichts
 über die Konten, nur dass ein Server da ist.
 
-### Die Oberfläche
+### Die Verwaltungskonsole
 
-Unter `/setup` liegt eine kleine Verwaltung: Status der Verbindung, die
+Unter `/setup` liegt die Konsole. Sie zeigt den Status der Verbindung, die
 Konten mit Namen und Währung, die Zugriffsstufe des Developer Tokens, die
-Schutzgrenzen, die letzten Einträge des Änderungsprotokolls. Dort werden
-die Zugangsdaten eingetragen, die Verbindung hergestellt und wieder
-getrennt.
+Schutzgrenzen und die letzten Einträge des Änderungsprotokolls.
+
+Sie ist nicht nur für den ersten Tag. Alles, was später anfällt, geht dort
+ohne SSH und ohne Handgriff an der `.env`:
+
+| Was | Wo |
+| --- | --- |
+| Zugangsdaten eintragen oder ändern | Zugangsdaten bearbeiten |
+| Verbinden, neu verbinden, neu genehmigen | Mit Google verbinden |
+| Weitere Konten zum Schreiben berechtigen | Schutzgrenzen bearbeiten |
+| Budgetdeckel, Sprungfaktor, Operationen je Aufruf | Schutzgrenzen bearbeiten |
+| Schreiben ein- und ausschalten | Schutzgrenzen bearbeiten |
+| Verbindung trennen | Refresh Token löschen |
+| Zugangswort wechseln | Zugangswort wechseln |
+| Verbindung prüfen | Verbindung prüfen |
+
+**Konten werden angehakt, nicht getippt.** Unter *Schutzgrenzen bearbeiten*
+steht jedes zugängliche Konto mit Name, Währung und Kontonummer als
+Kästchen. Kommt ein Kundenkonto dazu, genügt ein Haken. Eine Nummer von
+Hand einzutragen ist nirgends nötig.
+
+Zwei Dinge macht die Seite bewusst nicht:
+
+- **Was in der `.env` steht, zeigt sie gesperrt** und schreibt die
+  Variable dazu. Die Umgebung gewinnt gegen die Datei; ein Feld, dessen
+  Änderung nie greifen würde, nimmt die Seite gar nicht erst an.
+- **Was sie nicht anzeigen kann, ändert sie nicht.** Lässt sich die
+  Kontenliste gerade nicht lesen, hieße „kein Kästchen angehakt“ sonst
+  „alle Konten erlaubt“ — die weiteste Einstellung, erreicht durch eine
+  Störung. Stattdessen sagt die Seite, dass die Liste fehlt, zeigt die
+  berechtigten Nummern an und lässt die Berechtigung beim Speichern
+  unberührt.
 
 Angemeldet wird mit demselben Zugangswort wie der MCP-Endpunkt: der
 Browser fragt nach Benutzername und Kennwort, der Name ist beliebig, das
@@ -109,8 +138,17 @@ nächste Start legt eine neue an und schreibt sie ins Protokoll.
 
 **Benutzername und Kennwort sind nicht zweierlei.** Der Browser fragt nach
 beidem, geprüft wird nur das Kennwort. Es gibt keine Benutzerkonten, keine
-E-Mail-Adresse und kein „Kennwort vergessen" — es gibt ein Wort, das den
+E-Mail-Adresse und kein „Kennwort vergessen“ — es gibt ein Wort, das den
 Server öffnet, und wer den Server verwaltet, kann es lesen und wechseln.
+
+**Zwei Faktoren kann dieser Server nicht**, und er soll es auch nicht: ein
+zweiter Faktor gehört vor die Tür, nicht hinter sie. Wer die Konsole
+zusätzlich absichern will, setzt das im Reverse Proxy — Plesk kann
+IP-Beschränkung und eigenen Passwortschutz auf den Pfad `/setup`, und wer
+mehr will, stellt einen Identitätsanbieter davor (Authelia, Authentik,
+Cloudflare Access). Der MCP-Pfad `/mcp` bleibt davon frei: claude.ai kann
+keinen zweiten Faktor eingeben. Genau deshalb sind die Schutzgrenzen dort,
+wo sie sind — im Werkzeug, nicht in der Anmeldung.
 
 ### Wie der Aufbau sich schützt
 
