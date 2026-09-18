@@ -80,6 +80,17 @@ trifft immer nur einzelne Konten. Steht die Zugriffsstufe auf Test, ist
 
 Wer einen zweiten Client braucht, legt ihn deshalb im **selben** Projekt
 an. Muss es ein neues sein, ist der Zugriff dort neu zu beantragen:
+**Cloud Console → Google Ads API → Übersicht → Zugriffsstufe hochstufen →
+Zugriff beantragen.** Die Markenprüfung des Zustimmungsbildschirms muss
+vorher durch sein.
+
+Die angebotene nächste Stufe ist dabei meist **Explorer**, nicht Basic —
+und die wird oft sofort erteilt. Explorer reicht für alles in diesem
+Werkzeug außer dem Keyword-Planer: elf der dreizehn Werkzeuge laufen
+damit, gegen echte Konten, mit 2.880 Operationen am Tag. **Basic** ist
+erst nötig für den Planer und für mehr Volumen; darauf kann Google bis zu
+zehn Werktage prüfen.
+
 <https://developers.google.com/google-ads/api/docs/access-levels>
 
 Die Messung unter **/setup/diagnose** im Portal unterscheidet die Fälle

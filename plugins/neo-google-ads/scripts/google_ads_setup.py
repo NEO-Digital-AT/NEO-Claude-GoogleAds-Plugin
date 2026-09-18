@@ -631,8 +631,13 @@ def status_page(base_url: str) -> bytes:
                        f'genau diesem Projekt: <b>Google Ads API → Übersicht → '
                        f'Zugriffsstufe hochstufen → Zugriff beantragen</b>. Die '
                        f'Markenprüfung des Zustimmungsbildschirms muss vorher durch '
-                       f'sein. Google stuft oft sofort hoch, prüft sonst bis zu zehn '
-                       f'Werktage.</p>'
+                       f'sein.</p>'
+                       f'<p class="note">Die nächste Stufe ist meist <b>Explorer</b>, '
+                       f'und die kommt oft sofort. Sie reicht für alles hier außer dem '
+                       f'Keyword-Planer — elf der dreizehn Werkzeuge laufen damit. '
+                       f'<b>Basic</b> braucht es erst für den Planer und für mehr als '
+                       f'2.880 Operationen am Tag; darauf kann Google bis zu zehn '
+                       f'Werktage prüfen.</p>'
                        f'<p class="note">Schneller geht es, wenn ein <b>anderes, bereits '
                        f'freigeschaltetes Projekt</b> vorhanden ist: den OAuth-Client '
                        f'dort anlegen und die neue Kennung hier eintragen. Dann ist '
@@ -1033,8 +1038,9 @@ def diagnose_page() -> bytes:
                    f"Freischalten in der Cloud Console in genau diesem Projekt: "
                    f"<b>Google Ads API → Übersicht → Zugriffsstufe hochstufen → "
                    f"Zugriff beantragen</b>. Die Markenprüfung muss vorher durch sein. "
-                   f"Oder den OAuth-Client in einem bereits freigeschalteten Projekt "
-                   f"anlegen — das dauert Minuten statt Tage. "
+                   f"Die nächste Stufe ist meist <b>Explorer</b> und kommt oft sofort; "
+                   f"sie reicht für alles außer dem Keyword-Planer. Oder den "
+                   f"OAuth-Client in einem bereits freigeschalteten Projekt anlegen. "
                    f"<a href=\"https://developers.google.com/google-ads/api/docs/access-levels\" "
                    f"target=\"_blank\" rel=\"noopener\">Zugriffsstufen</a>")
     elif not lesbar:
