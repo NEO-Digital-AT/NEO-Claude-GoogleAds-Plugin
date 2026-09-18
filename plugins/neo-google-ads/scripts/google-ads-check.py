@@ -70,7 +70,7 @@ class Report:
         width = max(len(c["check"]) for c in self.checks)
         for check in self.checks:
             print(f"  [{check['status']}] {check['check']:<{width}}  {check['detail']}")
-            if check["fix"] and check["status"] == FAIL:
+            if check["fix"] and check["status"] in (FAIL, SKIP):
                 for line in check["fix"].splitlines():
                     print(f"         -> {line}")
         print()
@@ -124,6 +124,50 @@ def check_token(report: Report, client: Client) -> bool:
     return True
 
 
+def diagnose_account(client: Client, customer_id: str) -> str:
+    """Says WHY an account cannot be read, by trying the one thing that differs.
+
+    The usual cause is login_customer_id: the header names a manager, and
+    the account is not under it. The API answers that with a bare
+    "invalid argument", which names neither the header nor the link. So
+    the same query runs twice — with the header and without — and the
+    pair of answers says which one it is.
+    """
+    query = "SELECT customer.id, customer.descriptive_name FROM customer"
+    with_header = without_header = None
+    try:
+        client.search(customer_id, query, page_size=1, max_rows=1)
+        return ""                                   # readable after all
+    except GoogleAdsError as exc:
+        with_header = exc
+
+    login = client.config.get("login_customer_id") or ""
+    if not login:
+        return with_header.message                  # no header to blame
+
+    # Same call, no manager header. If this succeeds, the header is the
+    # problem and the account simply is not under that manager.
+    saved = client.config["login_customer_id"]
+    client.config["login_customer_id"] = ""
+    try:
+        client.search(customer_id, query, page_size=1, max_rows=1)
+        return (f"readable WITHOUT the manager header, refused WITH it.\n"
+                f"         Account {customer_id} is not linked under manager {saved}.\n"
+                f"         Either link it (manager -> Einstellungen fuer Unterkonten ->\n"
+                f"         Vorhandenes Konto verknuepfen, then accept in the account), or\n"
+                f"         clear login_customer_id for accounts you reach directly.")
+    except GoogleAdsError as without:
+        without_header = without
+    finally:
+        client.config["login_customer_id"] = saved
+
+    return (f"refused both with and without the manager header.\n"
+            f"         With:    {with_header.message.splitlines()[0]}\n"
+            f"         Without: {without_header.message.splitlines()[0]}\n"
+            f"         Full answer with the header:\n         "
+            + "\n         ".join(with_header.message.splitlines()))
+
+
 def check_accounts(report: Report, client: Client) -> list[str]:
     try:
         ids = client.list_accessible_customers()
@@ -143,24 +187,23 @@ def check_accounts(report: Report, client: Client) -> list[str]:
                    "The connected Google account is not a user on any Ads account.")
         return []
 
-    readable = []
+    readable, problems = [], []
     for customer_id in ids:
-        try:
-            rows = client.search(customer_id,
-                                 "SELECT customer.descriptive_name, customer.currency_code, "
-                                 "customer.manager FROM customer",
-                                 page_size=1, max_rows=1)
-            if rows:
-                readable.append(customer_id)
-        except GoogleAdsError:
-            continue
+        trouble = diagnose_account(client, customer_id)
+        if trouble:
+            problems.append(f"{customer_id}: {trouble}")
+        else:
+            readable.append(customer_id)
+
     if readable:
         report.add("accounts", PASS,
-                   f"{len(readable)} of {len(ids)} accessible accounts are readable")
+                   f"{len(readable)} of {len(ids)} accessible accounts are readable: "
+                   + ", ".join(readable))
+        for problem in problems:
+            report.add("account", SKIP, problem)
     else:
         report.add("accounts", FAIL, f"{len(ids)} accounts listed, none readable",
-                   "A manager account often needs login_customer_id set. "
-                   "Run google-ads-auth.py and give the manager ID.")
+                   "\n".join(problems))
     return readable
 
 
