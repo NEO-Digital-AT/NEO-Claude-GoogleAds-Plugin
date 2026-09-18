@@ -152,6 +152,15 @@ Ins Feld **Bereitstellungsaktionen** kommt genau eine Zeile:
 /bin/bash /var/www/vhosts/<domain>/<verzeichnis>/deploy/plesk-deploy.sh
 ```
 
+**Die Probe muss der Befehl sein, der später läuft.** Zwei Fallen liegen
+hier dicht beieinander: Wer mit `docker info` prüft und danach
+`docker compose` ausführt, bringt eine korrekt eingegrenzte sudo-Regel zu
+Fall — sie erlaubt compose, nicht info, und die Probe scheitert, bevor
+irgendetwas versucht wird. Wer mit `docker compose version` prüft, beweist
+nur, dass der Client da ist; den Dienst berührt der Befehl nicht. Das
+Skript nimmt `docker compose ps`: braucht den Dienst, und die Regel deckt
+es ab.
+
 **Docker-Rechte: nicht über die Gruppe.** Der verbreitete Rat lautet
 `usermod -aG docker <benutzer>`. Wer Docker steuern darf, kann jedes
 Verzeichnis des Wirts in einen Container einhängen — das ist root mit

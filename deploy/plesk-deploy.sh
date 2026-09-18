@@ -70,21 +70,39 @@ Client-Geheimnis und Developer Token."
 # The subscription user is usually not allowed to talk to the docker
 # socket. A sudo rule for exactly these commands is the safer answer than
 # membership in the docker group, which is root by another name.
-if ! "$DOCKER" info >/dev/null 2>&1; then
-    if /usr/bin/sudo -n "$DOCKER" info >/dev/null 2>&1; then
-        SUDO="/usr/bin/sudo -n"
-        echo "docker ueber sudo erreichbar"
-    else
-        fail "Kein Zugriff auf docker, auch nicht ueber sudo.
-Als root eine Regel anlegen (Benutzer und Pfad anpassen):
-  echo '$(/usr/bin/id -un) ALL=(root) NOPASSWD: $DOCKER compose -f $COMPOSE_FILE *' \\
-    > /etc/sudoers.d/neo-google-ads
-  echo '$(/usr/bin/id -un) ALL=(root) NOPASSWD: /bin/chown $CONTAINER_UID\\:$CONTAINER_UID $DATA_DIR' \\
-    >> /etc/sudoers.d/neo-google-ads
-  chmod 440 /etc/sudoers.d/neo-google-ads && visudo -c"
-    fi
-else
+# The probe has to be the command that will actually run, and it has to
+# reach the daemon. Two traps sit here: probing with "docker info" while
+# running "docker compose" makes a correctly scoped sudoers rule fail the
+# probe; and probing with "compose version" proves only that the client
+# exists, because it never contacts the daemon. "compose ps" does both —
+# it needs the daemon, and a rule scoped to compose covers it.
+if "$DOCKER" compose -f "$COMPOSE_FILE" ps -q >/dev/null 2>&1; then
     echo "docker direkt erreichbar"
+elif /usr/bin/sudo -n "$DOCKER" compose -f "$COMPOSE_FILE" ps -q >/dev/null 2>&1; then
+    SUDO="/usr/bin/sudo -n"
+    echo "docker ueber sudo erreichbar"
+else
+    USER_NAME="$(/usr/bin/id -un)"
+    RULE_FILE=/etc/sudoers.d/neo-google-ads
+    # Write the rule where it can be copied in one piece: a deployment log
+    # wraps long lines, and a wrapped sudoers rule pasted back is a broken
+    # sudoers file.
+    cat > "$DEPLOY_DIR/sudoers-regel.txt" <<RULE
+$USER_NAME ALL=(root) NOPASSWD: $DOCKER compose -f $COMPOSE_FILE *
+$USER_NAME ALL=(root) NOPASSWD: /bin/chown $CONTAINER_UID\:$CONTAINER_UID $DATA_DIR
+RULE
+    fail "Kein Zugriff auf docker, auch nicht ueber sudo.
+
+Die passende Regel steht fertig in:
+  $DEPLOY_DIR/sudoers-regel.txt
+
+Als root einmalig:
+  install -m 440 -o root -g root $DEPLOY_DIR/sudoers-regel.txt $RULE_FILE
+  visudo -c
+
+Danach erneut bereitstellen. Ohne sudo geht es auch, wenn der Benutzer in
+der Gruppe docker ist — das gibt ihm allerdings faktisch root auf diesem
+Server, weil er jedes Verzeichnis in einen Container einhaengen kann."
 fi
 
 compose() { $SUDO "$DOCKER" compose -f "$COMPOSE_FILE" "$@"; }

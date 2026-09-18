@@ -19,3 +19,7 @@ __pycache__/
 # das Änderungsprotokoll.
 /deploy/.env
 /deploy/data/
+
+# Die Regeldatei, die das Bereitstellungsskript bei fehlendem
+# Docker-Zugriff schreibt. Sie enthaelt den Systembenutzer des Servers.
+/deploy/sudoers-regel.txt
