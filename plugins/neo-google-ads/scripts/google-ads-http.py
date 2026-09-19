@@ -473,10 +473,15 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if path == "/login" and verb == "GET":
             self._send_html(portal.login_page(
                 first_run=store.count_users(connection) == 0,
-                passkeys=store.count_passkeys(connection) > 0))
+                passkeys=(self._passkeys_moeglich()
+                          and store.count_passkeys(connection) > 0)))
             return
         if path == "/login" and verb == "POST":
             self._sign_in(connection, address)
+            return
+        if path in ("/login/passkey", "/login/passkey/start") and not \
+                self._passkeys_moeglich():
+            self._send(400, {"error": "passkeys need a host name, not an address"})
             return
         if path == "/login/passkey/start" and verb == "POST":
             self._passkey_challenge(connection)
@@ -502,6 +507,23 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
     def _rp_id(self) -> str:
         return self._own_host().split(":")[0]
+
+    def _passkeys_moeglich(self) -> bool:
+        """Whether this address can carry passkeys at all.
+
+        WebAuthn wants a domain name as the relying party id. Over a bare
+        IP address the browser refuses — not with a message anyone can
+        act on, so the portal says it itself instead of offering a button
+        that always fails.
+        """
+        name = self._rp_id()
+        if not name:
+            return False
+        try:
+            ipaddress.ip_address(name)
+        except ValueError:
+            return True
+        return False
 
     def _origin(self) -> str:
         return f"{self._scheme()}://{self._own_host()}"
@@ -689,6 +711,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 recovery_left=store.recovery_left(connection, user["id"]),
                 message=message, trouble=trouble,
                 passkeys=store.passkeys_for(connection, user["id"]),
+                passkeys_moeglich=self._passkeys_moeglich(),
                 ueberlagerung=ueberlagerung,
                 current_token_hash=session["token_hash"]))
 

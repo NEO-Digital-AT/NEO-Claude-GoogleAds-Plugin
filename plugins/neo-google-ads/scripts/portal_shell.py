@@ -194,6 +194,28 @@ OTP_JS = """
 """
 
 
+GRENZEN_JS = """
+(function () {
+  document.querySelectorAll('.kontogrenze').forEach(function (karte) {
+    var schalter = karte.querySelector('.eigene-schalter');
+    var felder = [].slice.call(karte.querySelectorAll('.grenzfeld input'));
+    var texte = [].slice.call(karte.querySelectorAll('.grenzfeld span'));
+    if (!schalter) return;
+    var nachziehen = function () {
+      var an = schalter.checked;
+      karte.classList.toggle('akzent', an);
+      felder.forEach(function (feld) { feld.disabled = !an; });
+      texte.forEach(function (text) {
+        text.textContent = an ? text.dataset.eigen : text.dataset.geerbt;
+      });
+    };
+    schalter.addEventListener('change', nachziehen);
+    nachziehen();
+  });
+})();
+"""
+
+
 def otp_felder(name: str = "code", falsch: bool = False) -> str:
     """Sechs Felder fuer sechs Ziffern.
 
@@ -213,15 +235,16 @@ def otp_felder(name: str = "code", falsch: bool = False) -> str:
 # Bausteine
 # --------------------------------------------------------------------------
 def karte(titel: str = "", inhalt: str = "", *, zustand: str = "",
-          aktion: str = "", art: str = "") -> str:
+          aktion: str = "", art: str = "", kennung: str = "") -> str:
     """Eine Karte mit Kopf: Titel links, Zustand daneben, Handlung rechts."""
     klassen = "card" + (f" {art}" if art else "")
+    marke = f' id="{esc(kennung)}"' if kennung else ""
     kopf = ""
     if titel or aktion:
         rechts = f'<div class="rechts">{aktion}</div>' if aktion else ""
         kopf = (f'<div class="card-kopf"><h2>{esc(titel)}'
                 f'{" " + zustand if zustand else ""}</h2>{rechts}</div>')
-    return f'<div class="{klassen}">{kopf}{inhalt}</div>'
+    return f'<div class="{klassen}"{marke}>{kopf}{inhalt}</div>'
 
 
 def zeile(label: str, wert: str, notiz: str = "", *, mono: bool = False) -> str:
@@ -261,13 +284,15 @@ def feld(name: str, beschriftung: str, hinweis_text: str = "", *, art: str = "te
 
 
 def ankreuzzeile(name: str, titel: str, notiz: str = "", *, wert: str = "1",
-                 an: bool = False, gesperrt: bool = False, kennung: str = "") -> str:
+                 an: bool = False, gesperrt: bool = False, kennung: str = "",
+                 klasse: str = "") -> str:
     haken = " checked" if an else ""
     sperre = " disabled" if gesperrt else ""
+    marke = f' class="{esc(klasse)}"' if klasse else ""
     unten = f'<span class="note">{esc(notiz)}</span>' if notiz else ""
     kenn = f'<span class="mono">{esc(kennung)}</span>' if kennung else ""
     return (f'<label class="kasten"><input type="checkbox" name="{esc(name)}" '
-            f'value="{esc(wert)}"{haken}{sperre}>'
+            f'value="{esc(wert)}"{haken}{sperre}{marke}>'
             f'<span class="kasten-text"><b>{esc(titel)}</b>{kenn}{unten}</span></label>')
 
 
@@ -330,6 +355,8 @@ def rahmen(*, titel: str, lead: str, weg: str, inhalt: str, benutzer: str,
                  f'{zustand("MCP erreichbar", "ok")}</div>')
     schild = zustand("2FA", "ok") if zwei_faktor else zustand("ohne 2FA", "warn")
     rechts = f'<div class="rechts">{aktionen}</div>' if aktionen else ""
+    # Ein leerer Vorspann hinterliess eine leere Zeile unter der Ueberschrift.
+    vorspann = f'<p class="lead">{esc(lead)}</p>' if lead else ""
     return (kopf + f"""<body><div class="app">
 <aside class="leiste">
 <a class="marke" href="/dashboard">{logo}<span class="eyebrow">{esc(beiwort)}</span></a>
@@ -345,7 +372,7 @@ def rahmen(*, titel: str, lead: str, weg: str, inhalt: str, benutzer: str,
 </header>
 <main class="app-inhalt">
 <div class="seitenkopf"><div style="min-width:0"><h1>{esc(titel)}</h1>
-<p class="lead">{esc(lead)}</p></div>{rechts}</div>
+{vorspann}</div>{rechts}</div>
 {inhalt}
 </main></div></div>{ueberlagerung}{js}</body></html>""").encode("utf-8")
 

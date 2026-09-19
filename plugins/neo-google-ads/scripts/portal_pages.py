@@ -91,39 +91,70 @@ ANMELDEN_JS = PASSKEY_JS + """
 
 KONTO_JS = PASSKEY_JS + """
 (function () {
-  var knopf = document.getElementById('passkey-neu');
-  if (!knopf) return;
-  if (!window.PublicKeyCredential) {
-    knopf.disabled = true;
-    knopf.title = 'Dieser Browser kann keine Passkeys.';
-    return;
-  }
+  var karte = document.getElementById('passkey-karte');
+  if (!karte) return;
+  var neu = document.getElementById('passkey-neu');
+  var abbrechen = document.getElementById('passkey-ab');
+  var warten = document.getElementById('passkey-warten');
+  var benennen = document.getElementById('passkey-benennen');
   var meldung = document.getElementById('passkey-meldung');
   var form = document.getElementById('passkey-form');
+  var name = form.name;
+
+  if (!window.PublicKeyCredential) {
+    neu.disabled = true;
+    neu.title = 'Dieser Browser kann keine Passkeys.';
+    return;
+  }
+
   var vorschlag = function () {
     var ua = navigator.userAgent;
     var system = /Windows/.test(ua) ? 'Windows' : /Mac/.test(ua) ? 'macOS'
-      : /Android/.test(ua) ? 'Android' : /iPhone|iPad/.test(ua) ? 'iOS' : 'Dieses Gerät';
+      : /Android/.test(ua) ? 'Android' : /iPhone|iPad/.test(ua) ? 'iOS'
+      : 'Dieses Gerät';
     var browser = /Edg\\//.test(ua) ? 'Edge' : /Chrome\\//.test(ua) ? 'Chrome'
       : /Firefox\\//.test(ua) ? 'Firefox' : /Safari\\//.test(ua) ? 'Safari' : 'Browser';
     return system + ' · ' + browser;
   };
-  knopf.addEventListener('click', function () {
-    knopf.disabled = true;
-    window.neoPasskey.melden(meldung, 'Der Browser fragt nach Fingerabdruck, Gesicht oder PIN …', false);
+
+  var stufe = function (welche) {
+    warten.hidden = welche !== 'warten';
+    benennen.hidden = welche !== 'benennen';
+    neu.hidden = welche !== 'aus';
+    abbrechen.hidden = welche === 'aus';
+    if (welche === 'aus') meldung.hidden = true;
+  };
+
+  abbrechen.addEventListener('click', function () { stufe('aus'); });
+
+  karte.querySelectorAll('.vorschlag').forEach(function (knopf) {
+    knopf.addEventListener('click', function () {
+      name.value = knopf.dataset.wert || knopf.textContent.trim();
+      name.focus();
+    });
+  });
+  var eigenes = karte.querySelector('.vorschlag[data-eigen]');
+  if (eigenes) { eigenes.dataset.wert = vorschlag(); eigenes.textContent = vorschlag(); }
+
+  neu.addEventListener('click', function () {
+    stufe('warten');
     window.neoPasskey.holen('/account/passkeys/start').then(function (d) {
       d.challenge = window.neoPasskey.b64(d.challenge);
       d.user.id = window.neoPasskey.b64(d.user.id);
-      (d.excludeCredentials || []).forEach(function (c) { c.id = window.neoPasskey.b64(c.id); });
+      (d.excludeCredentials || []).forEach(function (c) {
+        c.id = window.neoPasskey.b64(c.id);
+      });
       return navigator.credentials.create({ publicKey: d });
     }).then(function (zeugnis) {
       form.kennung.value = zeugnis.id;
       form.daten.value = window.neoPasskey.url(zeugnis.response.clientDataJSON);
       form.zeugnis.value = window.neoPasskey.url(zeugnis.response.attestationObject);
-      form.name.value = (form.name.value || '').trim() || vorschlag();
-      form.submit();
+      name.value = vorschlag();
+      stufe('benennen');
+      name.focus();
+      name.select();
     }).catch(function (e) {
-      knopf.disabled = false;
+      stufe('aus');
       window.neoPasskey.melden(meldung, e && e.name === 'NotAllowedError'
         ? 'Abgebrochen — es wurde kein Passkey angelegt.'
         : (e.message || 'Der Browser hat keinen Passkey angelegt.'), true);
@@ -259,7 +290,8 @@ def _passkeyzeilen(passkeys) -> str:
 
 def account_page(user, sessions, *, recovery_left: int = 0, message: str = "",
                  trouble: str = "", current_token_hash: str = "",
-                 passkeys=(), ueberlagerung: str = "") -> bytes:
+                 passkeys=(), passkeys_moeglich: bool = True,
+                 ueberlagerung: str = "") -> bytes:
     """User name, e-mail, password, second factor, passkeys, open sessions."""
     zwei = bool(user["totp_confirmed"])
     ui.set_viewer(user["username"], two_factor=zwei)
@@ -293,25 +325,70 @@ def account_page(user, sessions, *, recovery_left: int = 0, message: str = "",
             'Zwei-Faktor einschalten</a></div>',
             zustand=sh.zustand("aus", "warn"), art="akzent")
 
+    # Der Ablauf des Entwurfs: der Knopf startet die Abfrage des Geraets,
+    # waehrenddessen steht die Wartemeldung, und erst wenn der Schluessel
+    # da ist, erscheint die Karte mit dem Namensfeld. Ohne JavaScript geht
+    # WebAuthn ueberhaupt nicht, also bleiben beide Stufen verborgen und
+    # der Knopf sperrt sich selbst — ein Namensfeld, das ins Leere fuehrt,
+    # stand vorher dauerhaft in der Karte.
+    vorschlaege = ("Büro-PC · Windows Hello", "iPhone · Face ID",
+                   "YubiKey · Schlüsselbund")
+    knoepfe = ('<button type="button" class="ghost klein vorschlag" data-eigen="1">'
+               'Dieses Gerät</button>')
+    knoepfe += "".join(
+        f'<button type="button" class="ghost klein vorschlag">{esc(wort)}</button>'
+        for wort in vorschlaege)
+
     passkey_karte = sh.karte(
         "Passkeys",
         '<p class="note" style="margin-top:0;margin-bottom:14px">Ein Passkey ersetzt '
         'Kennwort und Code in einem Schritt. Der Schlüssel bleibt auf dem Gerät; der '
         'Server kennt nur den öffentlichen Teil.</p>'
         '<div id="passkey-meldung" class="warnung" hidden><span></span></div>'
-        '<form id="passkey-form" method="post" action="/account/passkeys">'
-        '<input type="hidden" name="kennung"><input type="hidden" name="daten">'
-        '<input type="hidden" name="zeugnis">'
+
+        f'<div id="passkey-warten" class="card flach werkzeile" '
+        f'style="gap:16px;margin-bottom:16px" hidden>{symbol("passkey", 32)}'
+        f'<div><b style="display:block">Der Browser fragt nach Fingerabdruck, '
+        f'Gesicht oder PIN …</b><span class="note" style="display:block;'
+        f'margin-top:4px">Bestätige die Abfrage des Geräts. Danach bekommt der '
+        f'Passkey einen Namen.</span></div></div>'
+
+        + '<form id="passkey-form" method="post" action="/account/passkeys">'
+          '<input type="hidden" name="kennung"><input type="hidden" name="daten">'
+          '<input type="hidden" name="zeugnis">'
+          '<div id="passkey-benennen" class="card akzent" '
+          'style="margin-bottom:16px" hidden>'
+          '<div class="card-kopf"><h2>Gerät benennen '
+        + sh.zustand("Schlüssel angelegt", "ok") + '</h2></div>'
         + sh.feld("name", "Bezeichnung des Geräts",
-                  "Frei wählbar — der Name steht später in dieser Liste. Leer "
-                  "lassen: der Browser schlägt einen vor.",
+                  "Frei wählbar — der Name steht später in dieser Liste und im "
+                  "Anmeldeprotokoll. Nimm etwas, das du in einem Jahr noch "
+                  "zuordnest.",
                   extra='autocomplete="off" maxlength="60"')
-        + '</form>'
+        + f'<div class="row eng" style="margin-top:12px">'
+          f'<span class="eyebrow" style="margin-right:4px">Vorschläge</span>'
+          f'{knoepfe}</div>'
+          '<div class="row" style="margin-top:18px">'
+          '<button type="submit">Passkey speichern</button></div>'
+          '</div></form>'
+
         + sh.tabelle(_passkeyzeilen(passkeys), "noch keiner angelegt")
         + '<p class="note">Einen Passkey zu entfernen ist endgültig — das Gerät '
           'meldet sich danach wieder mit Kennwort und Code an.</p>',
-        aktion='<button id="passkey-neu" class="quiet klein" type="button">'
-               + symbol("add", 18) + 'Passkey hinzufügen</button>')
+        aktion=f'<button id="passkey-neu" class="quiet klein" type="button"'
+               f'{"" if passkeys_moeglich else " disabled"}>'
+               + symbol("add", 18) + 'Passkey hinzufügen</button>'
+               + '<button id="passkey-ab" class="ghost klein" type="button" hidden>'
+                 'Abbrechen</button>',
+        kennung="passkey-karte")
+    if not passkeys_moeglich:
+        # Ueber eine nackte Adresse laesst der Browser WebAuthn nicht zu. Das
+        # einmal auszusprechen ist besser als ein Knopf, der immer scheitert.
+        passkey_karte = passkey_karte.replace(
+            '<div id="passkey-meldung" class="warnung" hidden><span></span></div>',
+            sh.warnung("Dieser Server wird gerade über eine IP-Adresse aufgerufen. "
+                       "Passkeys verlangen einen Hostnamen — unter "
+                       "ads.mcp.neo-digital.at gehen sie, unter 1.2.3.4 nicht."))
 
     inhalt = f"""<div class="stack">
 {sh.karte("Name und E-Mail",

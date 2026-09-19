@@ -1438,6 +1438,15 @@ def test_portal_door() -> None:
          not any(wort in startseite for wort in ("5691007627", "changes.jsonl",
                                                  "refresh_token", "client_secret")))
 
+    # WebAuthn verlangt einen Hostnamen. Ueber eine nackte Adresse faellt
+    # jeder Passkey-Aufruf im Browser durch, und zwar ohne brauchbare
+    # Meldung — also bietet das Portal ihn dort gar nicht erst an.
+    case("PASSKEYS ARE OFFERED ON A HOST NAME",
+         handler_with({"Host": "ads.mcp.neo-digital.at"})._passkeys_moeglich())
+    for adresse in ("127.0.0.1", "127.0.0.1:8080", "192.168.1.10", "[::1]"):
+        case(f"but not on the bare address {adresse}",
+             not handler_with({"Host": adresse})._passkeys_moeglich(), adresse)
+
     case("signing out sends an empty cookie that expires at once",
          "Max-Age=0" in handler_with({})._cookie_header(clear=True))
 

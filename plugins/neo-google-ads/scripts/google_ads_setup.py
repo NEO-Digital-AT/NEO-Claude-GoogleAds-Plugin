@@ -612,7 +612,7 @@ hinzufügen</b> → Adresse von oben einfügen → speichern.</li>
 <b>Webanwendung</b>: auf derselben Seite <b>Client erstellen</b> → Typ
 <b>Webanwendung</b> → Rückadresse eintragen → neue Kennung und neues
 Geheimnis unter
-<a href="/setup/credentials">Zugangsdaten bearbeiten</a> eintragen. Das
+<a href="/setup">Zugangsdaten bearbeiten</a> eintragen. Das
 Developer Token bleibt, wie es ist.</p>
 <p class="note">Änderungen an einem Client brauchen bei Google manchmal ein
 paar Minuten, bis sie greifen.</p>
@@ -626,9 +626,10 @@ wieder Kopieren und Einfügen.</p>
 <form method="post" action="/setup/paste">
 <input type="text" name="pasted" placeholder="http://127.0.0.1:…/?state=…&amp;code=…"
        autocomplete="off" spellcheck="false">
+<div class="row" style="margin-top:18px">
 <button type="submit">Adresse auswerten</button>
-</form></div>
-<p><a href="/setup">Zurück zur Übersicht</a></p>""")
+<a class="button quiet" href="/dashboard">Zurück zur Übersicht</a></div>
+</form></div>""")
 
 
 def pkce_pair() -> tuple[str, str]:
@@ -720,24 +721,36 @@ def result_page(ok: bool, message: str, *, nochmal: str = "",
 
 
 def check_page() -> bytes:
-    """Runs the same checks as google-ads-check.py and shows them as a table."""
+    """Dieselben Prüfungen wie google-ads-check.py, als Tabelle.
+
+    Jede Zeile traegt ihren eigenen Zustand. Vorher stand neben jeder
+    Zeile "ok", auch neben der, die "gesperrt" sagte — eine Pille, die
+    dem Satz daneben widerspricht, ist schlimmer als keine.
+    """
     state = load_state()
     zeilen = []
 
-    def zeile(name, ok, text):
-        marke = ('<span class="state ok">ok</span>' if ok
-                 else '<span class="state bad">Befund</span>')
+    def zeile(name: str, art: str, text: str) -> None:
+        marke = {"ok": sh.zustand("ok", "ok"),
+                 "hinweis": sh.zustand("Hinweis", "warn"),
+                 "befund": sh.zustand("Befund", "bad")}[art]
         zeilen.append(f'<tr><th>{esc(name)}</th><td>{marke} {esc(text)}</td></tr>')
 
-    zeile("Konfiguration", state["configured"],
+    zeile("Konfiguration", "ok" if state["configured"] else "befund",
           "vollständig" if state["configured"] else state["error"].splitlines()[0])
     if state["configured"]:
-        zeile("Zugang", state["connected"],
+        zeile("Zugang", "ok" if state["connected"] else "befund",
               "die API antwortet" if state["connected"]
               else state["error"].splitlines()[0])
         lesbar = [a for a in state["accounts"] if not a["problem"]]
-        zeile("Konten", bool(lesbar),
-              f"{len(lesbar)} von {len(state['accounts'])} lesbar")
+        alle = len(state["accounts"])
+        if not lesbar:
+            art = "befund"
+        elif len(lesbar) < alle:
+            art = "hinweis"
+        else:
+            art = "ok"
+        zeile("Konten", art, f"{len(lesbar)} von {alle} lesbar")
 
         if lesbar:
             client = gac.Client(state["config"])
@@ -747,17 +760,24 @@ def check_page() -> bytes:
                             {"keywords": ["test"], "language": "languageConstants/1001",
                              "geoTargetConstants": ["geoTargetConstants/2040"],
                              "keywordPlanNetwork": "GOOGLE_SEARCH"})
-                zeile("Keyword-Planer", True, "verfügbar — Zugriffsstufe Basic oder höher")
+                zeile("Keyword-Planer", "ok",
+                      "verfügbar — Zugriffsstufe Basic oder höher")
             except gac.GoogleAdsError:
-                zeile("Keyword-Planer", True,
+                zeile("Keyword-Planer", "hinweis",
                       "gesperrt — Zugriffsstufe Explorer. Elf der dreizehn Werkzeuge "
                       "laufen, der Keyword-Planer nicht")
 
     rails = state["guardrails"]
-    zeile("Schutzgrenzen", True,
-          "Schreiben aus" if not rails.get("write_enabled")
-          else f"Schreiben ein, Konten: "
-               f"{', '.join(rails.get('allowed_customer_ids') or ['ALLE']) }")
+    if not rails.get("write_enabled"):
+        zeile("Schutzgrenzen", "ok", "Schreiben aus — nur Trockenläufe")
+    else:
+        konten = rails.get("allowed_customer_ids") or []
+        # Schreiben ein ohne Kontenliste heisst ALLE zugaenglichen Konten.
+        # Das ist die weiteste Einstellung, die es gibt, und kein "ok".
+        zeile("Schutzgrenzen", "ok" if konten else "hinweis",
+              f"Schreiben ein, erlaubt: {', '.join(konten)}" if konten
+              else "Schreiben ein, aber KEIN Konto angehakt — das heißt alle "
+                   "zugänglichen")
 
     return konsole(
         "Verbindung geprüft",
@@ -1081,15 +1101,26 @@ def accounts_page(message: str = "") -> bytes:
 
 
 def _grenzfelder(kennung: str, eigene: dict, standard: dict, aktiv: bool) -> str:
-    """Die drei Zahlen eines Kontos. Ohne eigene Grenzen zeigen sie den Standard."""
+    """Die drei Zahlen eines Kontos.
+
+    DIE FELDER SIND IMMER SCHREIBBAR. Vorher sperrte sie der Server nach
+    dem gespeicherten Stand — und ein gesperrtes Feld schickt seinen Wert
+    nicht mit. Wer den Haken setzte, konnte die Zahlen also nicht
+    eintragen, und ohne Zahlen fiel der Haken beim Speichern wieder weg:
+    eigene Grenzen liessen sich ueberhaupt nicht anlegen.
+
+    Ob die Zahlen gelten, entscheidet allein der Haken beim Speichern. Das
+    Skript unten graut sie zusaetzlich aus, solange er nicht gesetzt ist —
+    das ist Beiwerk, kein Verschluss: ohne Skript steht alles offen und
+    funktioniert trotzdem.
+    """
     def wert(feld: str) -> str:
         roh = eigene.get(feld, standard.get(feld))
         if feld == "max_daily_budget_micros":
             return f"{(roh or 0) / 1_000_000:.2f}"
         return esc(roh)
 
-    sperre = "" if aktiv else " disabled"
-    geerbt = "Aus dem Standard geerbt."
+    geerbt = "Aus dem Standard geerbt, bis der Haken oben sitzt."
     felder = (
         ("Tagesbudget je Budget", f"budget_{kennung}", "max_daily_budget_micros",
          "In der Kontowährung. 0 heißt: keine Obergrenze."),
@@ -1100,10 +1131,12 @@ def _grenzfelder(kennung: str, eigene: dict, standard: dict, aktiv: bool) -> str
     )
     zeilen = "".join(
         f'<label>{esc(beschriftung)}'
-        f'<span>{esc(hinweis if aktiv else geerbt)}</span>'
-        f'<input type="text" name="{esc(name)}" value="{wert(feld)}"{sperre}></label>'
+        f'<span data-eigen="{esc(hinweis)}" data-geerbt="{esc(geerbt)}">'
+        f'{esc(hinweis if aktiv else geerbt)}</span>'
+        f'<input type="text" name="{esc(name)}" value="{wert(feld)}"></label>'
         for beschriftung, name, feld, hinweis in felder)
-    return f'<div class="grid-3" style="align-items:start;margin-top:16px">{zeilen}</div>'
+    return (f'<div class="grid-3 grenzfeld" '
+            f'style="align-items:start;margin-top:16px">{zeilen}</div>')
 
 
 def _kontogrenze(konto: dict, eigene: dict, standard: dict, erlaubt: set) -> str:
@@ -1158,7 +1191,7 @@ def _kontogrenze(konto: dict, eigene: dict, standard: dict, erlaubt: set) -> str
                 f'nicht lesen — Grenzen greifen erst, wenn der Zugriff steht.</p>'
                 f'{merker}{bleibt}</div>')
 
-    return (f'<div class="card{" akzent" if hat_eigene else ""}">{kopf}'
+    return (f'<div class="card kontogrenze{" akzent" if hat_eigene else ""}">{kopf}'
             f'<div class="row" style="gap:20px">'
             f'<div style="flex:1 1 260px">'
             + sh.ankreuzzeile("konto", "Schreiben erlauben",
@@ -1167,7 +1200,8 @@ def _kontogrenze(konto: dict, eigene: dict, standard: dict, erlaubt: set) -> str
             + '</div><div style="flex:1 1 260px">'
             + sh.ankreuzzeile("eigene", "Eigene Grenzen",
                               "Ohne Haken gilt der Standard weiter unten.",
-                              wert=kennung, an=hat_eigene)
+                              wert=kennung, an=hat_eigene,
+                              klasse="eigene-schalter")
             + '</div></div>'
             + _grenzfelder(kennung, eigene, standard, hat_eigene)
             + merker + "</div>")
@@ -1282,7 +1316,7 @@ def guardrails_page(message: str = "") -> bytes:
         "Schutzgrenzen",
         "Was überhaupt möglich ist. Ob eine einzelne Änderung dann geschieht, "
         "entscheidet die Freigabe im Gespräch.",
-        "/guardrails", inhalt)
+        "/guardrails", inhalt, skript=sh.GRENZEN_JS)
 
 
 def _zahl_aus(form: dict, name: str, faktor: int, ganzzahlig: bool):
