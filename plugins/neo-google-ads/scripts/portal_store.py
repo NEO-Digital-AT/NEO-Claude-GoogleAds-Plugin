@@ -14,6 +14,8 @@ the configuration, no server, no dependency.
     users            name, e-mail, password, the two-factor secret
     recovery_codes   ten one-shot codes for the day the phone is gone
     sessions         one row per signed-in browser, revocable
+    passkeys         the public half of a WebAuthn key, one row per device
+    challenges       the one-shot random string a passkey has to sign
     events           who did what, when, from where
     attempts         failed sign-ins, for the lockout
 
@@ -40,7 +42,8 @@ import pathlib
 import secrets
 import sqlite3
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
+CHALLENGE_MINUTES = 5
 SESSION_HOURS = 12
 SESSION_COOKIE = "neo_portal"
 MIN_PASSWORD = 12
@@ -136,6 +139,22 @@ def _migrate(connection: sqlite3.Connection) -> None:
         at       TEXT NOT NULL,
         address  TEXT NOT NULL DEFAULT '',
         username TEXT NOT NULL DEFAULT ''
+    );
+    CREATE TABLE IF NOT EXISTS passkeys (
+        id            INTEGER PRIMARY KEY,
+        user_id       INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        credential_id TEXT NOT NULL UNIQUE,
+        public_key    TEXT NOT NULL,
+        sign_count    INTEGER NOT NULL DEFAULT 0,
+        name          TEXT NOT NULL DEFAULT '',
+        created       TEXT NOT NULL,
+        used          TEXT NOT NULL DEFAULT ''
+    );
+    CREATE TABLE IF NOT EXISTS challenges (
+        challenge TEXT PRIMARY KEY,
+        purpose   TEXT NOT NULL,
+        user_id   INTEGER NOT NULL DEFAULT 0,
+        expires   TEXT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS attempts_at ON attempts(at);
     CREATE INDEX IF NOT EXISTS events_at ON events(at);
@@ -385,3 +404,79 @@ def log_event(connection, what: str, *, username: str = "", address: str = "",
 def recent_events(connection, limit: int = 12) -> list:
     return connection.execute(
         "SELECT * FROM events ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+
+
+# -- passkeys --------------------------------------------------------------
+#
+# Gespeichert wird nur der oeffentliche Teil. Der private Schluessel
+# verlaesst das Geraet nie — deshalb ist diese Tabelle auch dann nicht
+# gefaehrlich, wenn jemand die Datei in die Hand bekommt: mit einem
+# oeffentlichen Schluessel meldet sich niemand an.
+
+def count_passkeys(connection: sqlite3.Connection) -> int:
+    return connection.execute("SELECT COUNT(*) FROM passkeys").fetchone()[0]
+
+
+def passkeys_for(connection: sqlite3.Connection, user_id: int) -> list:
+    return connection.execute(
+        "SELECT * FROM passkeys WHERE user_id = ? ORDER BY created", (user_id,)
+    ).fetchall()
+
+
+def passkey_by_credential(connection: sqlite3.Connection, credential_id: str):
+    return connection.execute(
+        "SELECT * FROM passkeys WHERE credential_id = ?", (credential_id,)).fetchone()
+
+
+def add_passkey(connection: sqlite3.Connection, user_id: int, credential_id: str,
+                public_key: str, name: str, sign_count: int = 0) -> None:
+    connection.execute(
+        "INSERT INTO passkeys (user_id, credential_id, public_key, sign_count, "
+        "name, created) VALUES (?, ?, ?, ?, ?, ?)",
+        (user_id, credential_id, public_key, sign_count, name[:60] or "Passkey", now()))
+
+
+def note_passkey_use(connection: sqlite3.Connection, passkey_id: int,
+                     sign_count: int) -> None:
+    connection.execute("UPDATE passkeys SET used = ?, sign_count = ? WHERE id = ?",
+                       (now(), sign_count, passkey_id))
+
+
+def remove_passkey(connection: sqlite3.Connection, user_id: int,
+                   credential_id: str) -> bool:
+    cursor = connection.execute(
+        "DELETE FROM passkeys WHERE user_id = ? AND credential_id = ?",
+        (user_id, credential_id))
+    return cursor.rowcount > 0
+
+
+# -- challenges ------------------------------------------------------------
+#
+# Eine Challenge gilt einmal und fuenf Minuten. Sie steht in der Datenbank
+# und nicht im Cookie, damit dieselbe Zufallszahl nicht zweimal
+# unterschrieben werden kann: abgeholt heisst geloescht.
+
+def new_challenge(connection: sqlite3.Connection, purpose: str,
+                  user_id: int = 0) -> str:
+    wert = base64.urlsafe_b64encode(secrets.token_bytes(32)).rstrip(b"=").decode()
+    ablauf = (datetime.datetime.now(datetime.timezone.utc)
+              + datetime.timedelta(minutes=CHALLENGE_MINUTES))
+    connection.execute("DELETE FROM challenges WHERE expires < ?", (now(),))
+    connection.execute(
+        "INSERT INTO challenges (challenge, purpose, user_id, expires) "
+        "VALUES (?, ?, ?, ?)",
+        (wert, purpose, user_id, ablauf.isoformat(timespec="seconds")))
+    return wert
+
+
+def spend_challenge(connection: sqlite3.Connection, challenge: str,
+                    purpose: str) -> tuple[bool, int]:
+    """Takes the challenge away and says whether it was still good for this."""
+    row = connection.execute(
+        "SELECT * FROM challenges WHERE challenge = ?", (challenge,)).fetchone()
+    if row is None:
+        return False, 0
+    connection.execute("DELETE FROM challenges WHERE challenge = ?", (challenge,))
+    if row["purpose"] != purpose or row["expires"] < now():
+        return False, 0
+    return True, row["user_id"]

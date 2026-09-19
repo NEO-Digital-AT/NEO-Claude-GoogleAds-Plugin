@@ -106,7 +106,6 @@ footer.fuss .innen{max-width:var(--measure-site);margin:0 auto;padding:40px 28px
 footer.fuss svg{height:20px;width:auto;color:var(--neon);opacity:.85}
 footer.fuss .zeile{color:var(--faint);font-size:.84rem}
 footer.fuss .links{margin-left:auto;gap:22px;font-size:.86rem}
-.tabellennotiz{display:block;color:var(--muted);font-size:var(--size-note);margin-top:2px}
 
 @media (max-width:900px){
   .hero{grid-template-columns:1fr;gap:36px;padding:56px 0 48px}
@@ -163,7 +162,7 @@ def _url_umbruch(url: str) -> str:
 
 
 def _zeile(label: str, wert: str, notiz: str = "") -> str:
-    ergaenzung = f'<span class="tabellennotiz">{esc(notiz)}</span>' if notiz else ""
+    ergaenzung = f'<span class="notiz">{esc(notiz)}</span>' if notiz else ""
     return f'<tr><th>{esc(label)}</th><td>{wert}{ergaenzung}</td></tr>'
 
 
@@ -495,7 +494,7 @@ BESCHREIBUNG = ("Google Ads im Gespräch steuern: Konten lesen, auswerten und "
                 f"nach ausdrücklicher Freigabe ändern. Betrieben von {FIRMA}.")
 
 
-def seite(*, logo: str, favicon: str, anmelden_url: str = "/anmelden") -> bytes:
+def seite(*, logo: str, favicon: str, anmelden_url: str = "/login") -> bytes:
     """Die öffentliche Startseite als fertiges HTML-Dokument.
 
     logo und favicon kommen von aussen, damit dieses Modul nichts aus dem

@@ -108,7 +108,7 @@ zehn Werktage prüfen.
 
 <https://developers.google.com/google-ads/api/docs/access-levels>
 
-Die Messung unter **/setup/diagnose** im Portal unterscheidet die Fälle
+Die Messung unter **/check/permissions** im Portal unterscheidet die Fälle
 ohne Raterei: sie probiert jedes Konto mit jedem denkbaren
 Verwaltungskopf durch.
 

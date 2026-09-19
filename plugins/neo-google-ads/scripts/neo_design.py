@@ -195,6 +195,7 @@ BASIS_CSS = """
 }
 
 *{box-sizing:border-box}
+[hidden]{display:none !important}
 html{color-scheme:dark;-webkit-text-size-adjust:100%}
 body{margin:0;background:var(--ink-900);background-image:var(--page-glow);
   background-repeat:no-repeat;color:var(--fg);
@@ -320,6 +321,7 @@ button.breit,.button.breit{width:100%}
 .state.neutral{background:var(--ink-700);color:var(--muted);border-color:var(--line)}
 .note{color:var(--muted);font-size:var(--size-note);line-height:var(--leading-note);
   margin:var(--space-3) 0 0;max-width:var(--measure-prose)}
+.notiz{display:block;color:var(--muted);font-size:var(--size-note);margin-top:2px}
 .row{display:flex;gap:var(--space-3);flex-wrap:wrap;align-items:center}
 .row.eng{gap:var(--space-2)}
 .stack{display:grid;gap:var(--space-4)}

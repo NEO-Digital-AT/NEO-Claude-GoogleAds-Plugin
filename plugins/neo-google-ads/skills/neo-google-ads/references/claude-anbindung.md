@@ -124,11 +124,13 @@ anderes an. Danach können beide Zeilen aus der `.env` verschwinden.
 Fehlen sie, legt der erste Start ein Konto `admin` mit einem zufälligen
 Kennwort an und schreibt es ins Bereitstellungsprotokoll.
 
-**Unter /konto** lässt sich alles ändern, was zum Konto gehört:
+**Unter /account** lässt sich alles ändern, was zum Konto gehört:
 Benutzername, E-Mail, Kennwort. Ein Kennwortwechsel beendet auf Wunsch
 alle anderen Sitzungen; der Browser, in dem gewechselt wurde, bleibt
 angemeldet. Darunter stehen die angemeldeten Browser mit Zeitpunkt und
 Adresse, samt Schalter, alle anderen abzumelden.
+
+**Passkeys** stehen dort ebenfalls: ein Gerät anmelden, benennen, fertig. Der private Schlüssel bleibt auf dem Gerät, der Server kennt nur den öffentlichen Teil und prüft damit die Unterschrift. Ein Passkey ersetzt Kennwort und Code zusammen, weil das Gerät vorher selbst nach Finger, Gesicht oder PIN fragt.
 
 **Zwei-Faktor** wird dort eingeschaltet: QR-Code scannen, einen Code
 eingeben, fertig. Erst der bestätigte Code schaltet ihn scharf — ein
@@ -217,7 +219,7 @@ das Problem nicht — aber die Zeile schadet auch dann nicht.
 
 | Tür | Wer | Womit |
 | --- | --- | --- |
-| `/anmelden` | ein Mensch | Benutzerkonto, Kennwort, wahlweise zweiter Faktor |
+| `/login` | ein Mensch | Benutzerkonto, Kennwort, wahlweise zweiter Faktor — oder ein Passkey, der beides in einem Schritt ersetzt |
 | `/mcp` | claude.ai | ein festes Zugangswort als `Authorization: Bearer` |
 
 Das ist Absicht. claude.ai kann kein Formular ausfüllen und keinen Code aus

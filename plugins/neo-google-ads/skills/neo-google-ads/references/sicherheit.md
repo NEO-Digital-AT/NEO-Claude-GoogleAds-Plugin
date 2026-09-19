@@ -11,7 +11,7 @@ Gesetzt werden sie auf drei Wegen, und in dieser Rangfolge:
 | Weg | Wann |
 | --- | --- |
 | Umgebungsvariablen (`GOOGLE_ADS_ALLOW_WRITE` und die übrigen) | im Container; gewinnen gegen die Datei |
-| `/setup/guardrails` in der Verwaltungskonsole | im laufenden Betrieb, Konten zum Anhaken |
+| `/guardrails` in der Verwaltungskonsole | im laufenden Betrieb, Konten zum Anhaken |
 | `google-ads-auth.py --allow-write` | bei der Einrichtung auf der Kommandozeile |
 
 Was die Umgebung setzt, zeigt die Konsole gesperrt an und nimmt es nicht

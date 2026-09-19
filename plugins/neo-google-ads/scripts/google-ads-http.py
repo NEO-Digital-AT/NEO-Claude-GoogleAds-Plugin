@@ -83,7 +83,8 @@ def load_mcp():
 mcp = load_mcp()
 import google_ads_setup as setup  # noqa: E402
 import portal_pages as portal  # noqa: E402
-import portal_store as store  # noqa: E402
+import portal_store as store
+import portal_webauthn as webauthn  # noqa: E402
 import portal_totp as totp  # noqa: E402
 
 # Anthropic publishes the range its servers call out from. Restricting to it
@@ -404,12 +405,21 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
     # -- portal routing ----------------------------------------------------
 
-    OPEN_PATHS = ("/anmelden", "/anmelden/code", "/abbrechen")
+    # Was ein Fremder sehen darf. Der Passkey-Weg gehoert dazu: er ersetzt
+    # gerade das Kennwort, kann also nicht hinter der Anmeldung liegen.
+    OPEN_PATHS = ("/login", "/login/code", "/login/cancel",
+                  "/login/passkey", "/login/passkey/start")
+
+    # Die Wege der Konsole. Englisch wie jeder technische Name hier; was
+    # darauf steht, ist deutsch.
+    PORTAL_ROOTS = ("/dashboard", "/setup", "/guardrails", "/check", "/account")
 
     @staticmethod
     def _is_portal_path(path: str) -> bool:
-        return (path.startswith("/setup") or path.startswith("/konto")
-                or path in Handler.OPEN_PATHS or path == "/abmelden")
+        if path in Handler.OPEN_PATHS or path == "/logout":
+            return True
+        return any(path == root or path.startswith(root + "/")
+                   for root in Handler.PORTAL_ROOTS)
 
     def _portal_request(self, path: str, verb: str) -> None:
         """Every page behind the sign-in goes through here, in one place."""
@@ -429,22 +439,23 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 user, session = self._signed_in(connection)
                 if user is not None and session["stage"] != "full":
                     # Password accepted, second factor still outstanding.
-                    if path in ("/anmelden/code", "/abbrechen"):
+                    if path in ("/login/code", "/login/cancel"):
                         self._portal_open(connection, path, verb, user, session)
                         return
-                    self._redirect("/anmelden/code")
+                    self._redirect("/login/code")
                     return
                 if user is None:
                     if path in self.OPEN_PATHS:
                         self._portal_open(connection, path, verb, None, None)
                         return
-                    self._redirect("/anmelden")
+                    self._redirect("/login")
                     return
-                if user["must_change"] and path not in ("/konto/kennwort", "/abmelden"):
+                if user["must_change"] and path not in ("/account/password", "/logout"):
                     self._send_html(portal.change_password_page(username=user["username"]))
                     return
                 setup.set_viewer(user["username"],
                                  two_factor=bool(user["totp_confirmed"]))
+                setup.set_host(self._own_host())
                 self.log_line(f"portal: {verb} {path} as {user['username']}")
                 self._portal_closed(connection, path, verb, user, session)
         except Exception as exc:  # noqa: BLE001
@@ -454,26 +465,114 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def _portal_open(self, connection, path, verb, user, session) -> None:
         """The pages a stranger may see: sign in, and the second factor."""
         address = str(self._client_ip() or "")
-        if path == "/abbrechen":
+        if path == "/login/cancel":
             if session is not None:
                 store.end_session(connection, self._session_token())
-            self._redirect("/anmelden", cookie=self._cookie_header(clear=True))
+            self._redirect("/login", cookie=self._cookie_header(clear=True))
             return
-        if path == "/anmelden" and verb == "GET":
+        if path == "/login" and verb == "GET":
             self._send_html(portal.login_page(
-                first_run=store.count_users(connection) == 0))
+                first_run=store.count_users(connection) == 0,
+                passkeys=store.count_passkeys(connection) > 0))
             return
-        if path == "/anmelden" and verb == "POST":
+        if path == "/login" and verb == "POST":
             self._sign_in(connection, address)
             return
-        if path == "/anmelden/code" and verb == "GET":
+        if path == "/login/passkey/start" and verb == "POST":
+            self._passkey_challenge(connection)
+            return
+        if path == "/login/passkey" and verb == "POST":
+            self._passkey_sign_in(connection, address)
+            return
+        if path == "/login/code" and verb == "GET":
             self._send_html(portal.second_factor_page(
                 name=user["username"] if user else ""))
             return
-        if path == "/anmelden/code" and verb == "POST":
+        if path == "/login/code" and verb == "POST":
             self._second_factor(connection, user, address)
             return
-        self._redirect("/anmelden")
+        self._redirect("/login")
+
+    # -- passkeys ----------------------------------------------------------
+    #
+    # Der Name des Servers, wie WebAuthn ihn meint: rp_id ist der Rechner
+    # ohne Anschluss, die Herkunft ist, was der Browser in clientDataJSON
+    # schreibt. Beides kommt aus derselben Quelle wie die Herkunftspruefung
+    # der Formulare, damit nicht zwei Stellen verschieden raten.
+
+    def _rp_id(self) -> str:
+        return self._own_host().split(":")[0]
+
+    def _origin(self) -> str:
+        return f"{self._scheme()}://{self._own_host()}"
+
+    def _send_json_or_refuse(self, payload: dict) -> None:
+        """The browser asks for this with fetch, so it gets JSON, not a page."""
+        self._send(200, payload)
+
+    def _passkey_challenge(self, connection) -> None:
+        """A fresh one-shot random string for signing in with a passkey."""
+        if store.count_passkeys(connection) == 0:
+            self._send(404, {"error": "no passkeys"})
+            return
+        challenge = store.new_challenge(connection, "login")
+        # Keine allowCredentials: wer sich anmelden will, ist noch niemand.
+        # Eine Liste hier wuerde jedem Besucher verraten, welche Geraete
+        # dieses Portal kennt.
+        self._send_json_or_refuse(webauthn.anmeldung_beginnen(
+            challenge=challenge, rp_id=self._rp_id()))
+
+    def _passkey_sign_in(self, connection, address: str) -> None:
+        form = self._read_form()
+        einzeln = lambda name: (form.get(name) or [""])[0]  # noqa: E731
+        try:
+            daten = webauthn.b64url_decode(einzeln("daten"))
+            challenge = json.loads(daten.decode("utf-8")).get("challenge", "")
+            gut, _ = store.spend_challenge(connection, challenge, "login")
+            if not gut:
+                raise webauthn.PasskeyError("Die Anfrage ist abgelaufen. "
+                                            "Bitte noch einmal.")
+            schluessel = store.passkey_by_credential(connection, einzeln("kennung"))
+            if schluessel is None:
+                raise webauthn.PasskeyError("Dieser Passkey ist hier nicht "
+                                            "hinterlegt.")
+            zaehler = webauthn.anmeldung_pruefen(
+                client_daten=daten,
+                authenticator=webauthn.b64url_decode(einzeln("authenticator")),
+                signatur=webauthn.b64url_decode(einzeln("signatur")),
+                gespeicherter_schluessel=schluessel["public_key"],
+                challenge=challenge, herkunft=self._origin(),
+                rp_id=self._rp_id(), zaehler=schluessel["sign_count"])
+        except (webauthn.PasskeyError, ValueError, UnicodeDecodeError) as exc:
+            meldung = str(exc) if isinstance(exc, webauthn.PasskeyError) else (
+                "Die Antwort des Browsers war unlesbar.")
+            store.record_attempt(connection, address, "(passkey)")
+            store.log_event(connection, "passkey refused", address=address,
+                            detail=meldung[:120])
+            self.log_line(f"portal: passkey refused ({meldung})")
+            self._send_html(portal.login_page(meldung, passkeys=True), 401)
+            return
+
+        user = store.user_by_id(connection, schluessel["user_id"])
+        if user is None:
+            self._send_html(portal.login_page(
+                "Zu diesem Passkey gibt es kein Konto mehr.", passkeys=True), 401)
+            return
+        store.note_passkey_use(connection, schluessel["id"], zaehler)
+        store.clear_attempts(connection, address, user["username"])
+        # Ein Passkey ist Besitz und Merkmal in einem Schritt. Er ersetzt
+        # damit auch den zweiten Faktor — sonst waere er umstaendlicher als
+        # das Kennwort, das er ablosen soll.
+        token = store.start_session(connection, user["id"], address=address,
+                                    agent=self.headers.get("User-Agent", ""),
+                                    stage="full")
+        store.note_login(connection, user["id"], address)
+        store.log_event(connection, "signed in with a passkey",
+                        username=user["username"], address=address,
+                        detail=schluessel["name"])
+        self.log_line(f"portal: {user['username']} signed in with a passkey")
+        self._redirect("/account" if user["must_change"] else "/dashboard",
+                       cookie=self._cookie_header(token))
 
     def _sign_in(self, connection, address: str) -> None:
         form = self._read_form()
@@ -510,19 +609,19 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if zwei:
             store.log_event(connection, "password accepted, second factor pending",
                             username=user["username"], address=address)
-            self._redirect("/anmelden/code", cookie=self._cookie_header(token))
+            self._redirect("/login/code", cookie=self._cookie_header(token))
             return
         store.note_login(connection, user["id"], address)
         store.log_event(connection, "signed in", username=user["username"], address=address)
         self.log_line(f"portal: {user['username']} signed in")
-        self._redirect("/konto" if user["must_change"] else "/setup",
+        self._redirect("/account" if user["must_change"] else "/dashboard",
                        cookie=self._cookie_header(token))
 
     def _second_factor(self, connection, user, address: str) -> None:
         if user is None:
-            self._redirect("/anmelden")
+            self._redirect("/login")
             return
-        presented = (self._read_form().get("code") or [""])[0]
+        presented = self._code_from_form(self._read_form())
         warten = store.locked_out(connection, address, user["username"])
         if warten:
             self._send_html(portal.second_factor_page(
@@ -555,24 +654,24 @@ class Handler(http.server.BaseHTTPRequestHandler):
         store.log_event(connection, "signed in with second factor",
                         username=user["username"], address=address)
         self.log_line(f"portal: {user['username']} signed in (2FA)")
-        self._redirect("/setup")
+        self._redirect("/dashboard")
 
     def _portal_closed(self, connection, path, verb, user, session) -> None:
         """Everything that needs a signed-in person."""
         address = str(self._client_ip() or "")
-        if path == "/abmelden":
+        if path == "/logout":
             store.end_session(connection, self._session_token())
             store.log_event(connection, "signed out", username=user["username"],
                             address=address)
-            self._redirect("/anmelden", cookie=self._cookie_header(clear=True))
+            self._redirect("/login", cookie=self._cookie_header(clear=True))
             return
         if path in self.OPEN_PATHS:
             # Schon angemeldet. Die Anmeldeseite noch einmal aufzurufen ist
             # kein Fehler, sondern ein Lesezeichen — also weiterleiten,
             # statt eine 404 zu zeigen.
-            self._redirect("/setup")
+            self._redirect("/dashboard")
             return
-        if path.startswith("/konto"):
+        if path == "/account" or path.startswith("/account/"):
             self._account(connection, path, verb, user, session, address)
             return
         if verb == "GET":
@@ -583,21 +682,23 @@ class Handler(http.server.BaseHTTPRequestHandler):
     # -- the account pages -------------------------------------------------
 
     def _account(self, connection, path, verb, user, session, address) -> None:
-        def zeigen(message="", trouble=""):
+        def zeigen(message="", trouble="", ueberlagerung=""):
             frisch = store.user_by_id(connection, user["id"])
             self._send_html(portal.account_page(
                 frisch, store.sessions_for(connection, user["id"]),
                 recovery_left=store.recovery_left(connection, user["id"]),
                 message=message, trouble=trouble,
+                passkeys=store.passkeys_for(connection, user["id"]),
+                ueberlagerung=ueberlagerung,
                 current_token_hash=session["token_hash"]))
 
-        if path == "/konto" and verb == "GET":
+        if path == "/account" and verb == "GET":
             zeigen()
             return
 
         form = self._read_form() if verb == "POST" else {}
 
-        if path == "/konto/name" and verb == "POST":
+        if path == "/account/name" and verb == "POST":
             name = (form.get("benutzer") or [""])[0].strip()
             email = (form.get("email") or [""])[0].strip()
             if not name:
@@ -615,11 +716,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
             zeigen("Gespeichert.")
             return
 
-        if path == "/konto/kennwort" and verb == "POST":
+        if path == "/account/password" and verb == "POST":
             self._change_password(connection, user, form, address, zeigen)
             return
 
-        if path == "/konto/sitzungen" and verb == "POST":
+        if path == "/account/sessions" and verb == "POST":
             beendet = store.end_all_sessions(connection, user["id"],
                                              except_token=self._session_token())
             store.log_event(connection, "other sessions ended",
@@ -629,7 +730,32 @@ class Handler(http.server.BaseHTTPRequestHandler):
                    if beendet else "Es gab keine anderen Sitzungen.")
             return
 
-        if path == "/konto/2fa" and verb == "GET":
+        if path == "/account/passkeys/start" and verb == "POST":
+            vorhandene = [k["credential_id"]
+                          for k in store.passkeys_for(connection, user["id"])]
+            self._send(200, webauthn.registrierung_beginnen(
+                challenge=store.new_challenge(connection, "register", user["id"]),
+                rp_id=self._rp_id(), marke=setup.MARKE,
+                benutzer_kennung=str(user["id"]), benutzername=user["username"],
+                vorhandene=vorhandene))
+            return
+
+        if path == "/account/passkeys" and verb == "POST":
+            self._add_passkey(connection, user, form, address, zeigen)
+            return
+
+        if path == "/account/passkeys/delete" and verb == "POST":
+            kennung = (form.get("kennung") or [""])[0]
+            if store.remove_passkey(connection, user["id"], kennung):
+                store.log_event(connection, "passkey removed",
+                                username=user["username"], address=address)
+                self.log_line(f"portal: {user['username']} removed a passkey")
+                zeigen("Passkey entfernt.")
+            else:
+                zeigen(trouble="Diesen Passkey gibt es hier nicht.")
+            return
+
+        if path == "/account/2fa" and verb == "GET":
             if user["totp_confirmed"]:
                 zeigen(trouble="Zwei-Faktor ist bereits eingeschaltet.")
                 return
@@ -637,15 +763,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
             store.begin_totp(connection, user["id"], secret)
             uri = totp.provisioning_uri(secret, user["username"],
                                         f"{setup.MARKE} ({self._host_name()})")
-            self._send_html(portal.two_factor_page(secret, uri,
-                                                   username=user["username"]))
+            zeigen(ueberlagerung=portal.two_factor_overlay(secret, uri))
             return
 
-        if path == "/konto/2fa" and verb == "POST":
+        if path == "/account/2fa" and verb == "POST":
             self._confirm_two_factor(connection, user, form, address, zeigen)
             return
 
-        if path == "/konto/2fa/aus" and verb == "POST":
+        if path == "/account/2fa/off" and verb == "POST":
             store.disable_totp(connection, user["id"])
             store.log_event(connection, "second factor switched off",
                             username=user["username"], address=address)
@@ -653,7 +778,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             zeigen("Zwei-Faktor ist aus. Das Kennwort allein öffnet diese Seite jetzt.")
             return
 
-        if path == "/konto/2fa/neu" and verb == "POST":
+        if path == "/account/2fa/new" and verb == "POST":
             if not user["totp_confirmed"]:
                 zeigen(trouble="Zwei-Faktor ist nicht eingeschaltet.")
                 return
@@ -666,6 +791,35 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return
 
         self._send_html(setup.result_page(False, "Diese Seite gibt es nicht."), 404)
+
+    def _add_passkey(self, connection, user, form, address, zeigen) -> None:
+        einzeln = lambda name: (form.get(name) or [""])[0]  # noqa: E731
+        try:
+            daten = webauthn.b64url_decode(einzeln("daten"))
+            challenge = json.loads(daten.decode("utf-8")).get("challenge", "")
+            gut, wer = store.spend_challenge(connection, challenge, "register")
+            if not gut or wer != user["id"]:
+                raise webauthn.PasskeyError("Die Anfrage ist abgelaufen. "
+                                            "Bitte noch einmal.")
+            kennung, schluessel, zaehler = webauthn.registrierung_pruefen(
+                client_daten=daten,
+                zeugnis=webauthn.b64url_decode(einzeln("zeugnis")),
+                challenge=challenge, herkunft=self._origin(), rp_id=self._rp_id())
+        except (webauthn.PasskeyError, ValueError, UnicodeDecodeError) as exc:
+            meldung = str(exc) if isinstance(exc, webauthn.PasskeyError) else (
+                "Die Antwort des Browsers war unlesbar.")
+            self.log_line(f"portal: passkey not stored ({meldung})")
+            zeigen(trouble=meldung)
+            return
+        if store.passkey_by_credential(connection, kennung) is not None:
+            zeigen(trouble="Dieses Gerät ist schon hinterlegt.")
+            return
+        store.add_passkey(connection, user["id"], kennung, schluessel,
+                          einzeln("name").strip(), zaehler)
+        store.log_event(connection, "passkey added", username=user["username"],
+                        address=address, detail=einzeln("name")[:60])
+        self.log_line(f"portal: {user['username']} added a passkey")
+        zeigen("Passkey gespeichert. Ab jetzt geht die Anmeldung auch damit.")
 
     def _change_password(self, connection, user, form, address, zeigen) -> None:
         neu = (form.get("neu") or [""])[0]
@@ -704,7 +858,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                         address=address, detail=f"{beendet} other sessions ended")
         self.log_line(f"portal: {user['username']} changed the password")
         if erzwungen:
-            self._redirect("/setup")
+            self._redirect("/dashboard")
             return
         zeigen("Kennwort geändert."
                + (f" {beendet} andere Sitzung(en) beendet." if beendet else ""))
@@ -714,14 +868,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if not secret:
             zeigen(trouble="Die Einrichtung ist abgelaufen. Bitte neu beginnen.")
             return
-        presented = (form.get("code") or [""])[0]
+        presented = self._code_from_form(form)
         ok, step = totp.check(secret, presented, last_step=-1)
         if not ok:
             uri = totp.provisioning_uri(secret, user["username"],
                                         f"{setup.MARKE} ({self._host_name()})")
-            self._send_html(portal.two_factor_page(
-                secret, uri, "Der Code stimmt nicht. Stimmt die Uhrzeit auf dem Telefon?",
-                username=user["username"]), 400)
+            zeigen(ueberlagerung=portal.two_factor_overlay(
+                secret, uri,
+                "Der Code stimmt nicht. Stimmt die Uhrzeit auf dem Telefon?"))
             return
         codes = totp.recovery_codes(store.RECOVERY_COUNT)
         store.confirm_totp(connection, user["id"], step, codes)
@@ -730,24 +884,39 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.log_line(f"portal: {user['username']} switched 2FA on")
         self._send_html(portal.recovery_page(codes, username=user["username"]))
 
+    @staticmethod
+    def _code_from_form(form: dict) -> str:
+        """Six digit fields, or one recovery code — whichever was filled in.
+
+        The second factor arrives as six separate inputs that all carry the
+        name code. Joining them here keeps everything behind this point
+        unaware that the field was ever split.
+        """
+        wieder = (form.get("wieder") or [""])[0].strip()
+        if wieder:
+            return wieder
+        return "".join(teil.strip() for teil in form.get("code") or [])
+
     def _host_name(self) -> str:
         return (self.headers.get("X-Forwarded-Host")
                 or self.headers.get("Host") or "neo-google-ads").split(":")[0]
 
     def _setup_get(self, path: str):
-        if path == "/setup":
-            self._send_html(setup.status_page(self._base_url()))
-        elif path == "/setup/credentials":
+        if path == "/dashboard":
+            self._send_html(setup.dashboard_page(self._base_url()))
+        elif path == "/setup":
             self._send_html(setup.credentials_page())
         elif path == "/setup/connect":
             self._send_html(setup.connect_page(self._base_url()))
+        elif path == "/setup/accounts":
+            self._send_html(setup.accounts_page())
         elif path == "/setup/token":
             self._send_html(setup.token_page(pathlib.Path(self.token_path)))
-        elif path == "/setup/guardrails":
+        elif path == "/guardrails":
             self._send_html(setup.guardrails_page())
-        elif path == "/setup/check":
+        elif path == "/check":
             self._send_html(setup.check_page())
-        elif path == "/setup/diagnose":
+        elif path == "/check/permissions":
             self._send_html(setup.diagnose_page())
         elif path == "/setup/callback":
             query = urllib.parse.urlparse(self.path).query
@@ -760,12 +929,20 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
     def _setup_post(self, path: str):
         form = self._read_form()
-        if path == "/setup/credentials":
+        if path == "/setup":
             ok, message = setup.save_credentials(form)
             if ok:
-                self._redirect("/setup")
+                self._redirect("/setup/connect")
             else:
                 self._send_html(setup.credentials_page(message))
+        elif path == "/setup/accounts":
+            ok, message = setup.save_accounts(form)
+            self.log_line(f"setup: allowed accounts saved ({message})" if ok
+                          else f"setup: allowed accounts refused ({message})")
+            if ok:
+                self._redirect("/guardrails")
+            else:
+                self._send_html(setup.accounts_page(message))
         elif path == "/setup/paste":
             ok, message = setup.exchange_code((form.get("pasted") or [""])[0])
             self._send_html(setup.result_page(
@@ -776,14 +953,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.__class__.token = neues
             self.log_line("setup: access word replaced")
             self._send_html(setup.token_page(pathlib.Path(self.token_path), neues))
-        elif path == "/setup/guardrails":
+        elif path == "/guardrails":
             ok, message = setup.save_guardrails(form)
             if ok:
                 self.log_line("setup: guardrails changed")
-                self._send_html(setup.guardrails_page(message))
-            else:
-                self._send_html(setup.guardrails_page(message))
-        elif path == "/setup/diagnose":
+            self._send_html(setup.guardrails_page(message))
+        elif path == "/check/permissions":
             ok, message = setup.save_account_logins(form)
             self.log_line(f"setup: account logins saved ({message})" if ok
                           else f"setup: account logins refused ({message})")
@@ -1097,7 +1272,7 @@ def main() -> int:
           file=sys.stderr)
     print("  health:     GET /health", file=sys.stderr)
     if options.setup:
-        print(f"  portal:     GET /anmelden  (accounts in {database})", file=sys.stderr)
+        print(f"  portal:     GET /login     (accounts in {database})", file=sys.stderr)
         print(f"  address:    {Handler.public_url or 'derived from the proxy headers'}",
               file=sys.stderr)
         print("  recovery:   --list-users, --set-password NAME, --disable-2fa NAME",

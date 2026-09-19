@@ -208,11 +208,14 @@ Dazu vier Skripte, die von Hand laufen:
 | Skript | Zweck |
 | --- | --- |
 | `google-ads-auth.py` | Verbinden, Schutzgrenzen setzen (`--allow-write`), Stand zeigen (`--show`), Zugangsdaten für eine Cloud-Sitzung ausgeben (`--env`) |
-| `/setup/diagnose` im Portal | Misst, welcher `login-customer-id` welches Konto lesbar macht, statt aus `USER_PERMISSION_DENIED` zu raten. Ist **kein** Konto lesbar, liegt es nicht an der Verknüpfung, sondern an der Zugriffsstufe des Cloud-Projekts. |
+| `/check/permissions` im Portal | Misst, welcher `login-customer-id` welches Konto lesbar macht, statt aus `USER_PERMISSION_DENIED` zu raten. Ist **kein** Konto lesbar, liegt es nicht an der Verknüpfung, sondern an der Zugriffsstufe des Cloud-Projekts. |
 | `google-ads-check.py` | Misst die Verbindung in acht Prüfungen, darunter Zugriffsstufe und Schreibweg |
-| `google-ads-selftest.py` | Weist ohne Netz nach, dass Schutzgrenzen, Portal und Zwei-Faktor greifen — 243 Fälle |
+| `google-ads-selftest.py` | Weist ohne Netz nach, dass Schutzgrenzen, Portal und Zwei-Faktor, Passkeys und QR-Code greifen — 260 Fälle |
 | `portal_store.py` | Konten, Sitzungen, Sperre und Prüfspur des Portals (SQLite, ohne Fremdbibliothek) |
 | `portal_totp.py` | Zweiter Faktor nach RFC 6238, mit Wiederholungsschutz |
+| `portal_webauthn.py` | Passkeys: CBOR, COSE, ES256 und RS256 in reinem Python. Prüft Challenge, Herkunft, Serverkennung, Unterschrift und Zähler |
+| `portal_shell.py` | Der Rahmen der Konsole: Seitenleiste, Kopfzeile, schmale Anmeldeseiten, Bausteine |
+| `neo_design.py` | Tokens, Grundbausteine und Symbole des NEO-Designsystems, geteilt von öffentlicher Seite und Portal |
 | `oeffentliche_seite.py` | Die Startseite ohne Anmeldung, nach dem NEO-Designsystem. Symbole und Hero-Bild liegen als SVG im Quelltext — die Seite lädt von keinem fremden Rechner nach |
 | `portal_qr.py` | Zeichnet den QR-Code für die Authenticator-App auf dem Server, damit das Geheimnis die Maschine nicht verlässt |
 | `google-ads-mcp.py` | Der Server für Claude Code und Claude Desktop (lokaler Prozess); `--list-tools` und `--check-config` zur Diagnose |

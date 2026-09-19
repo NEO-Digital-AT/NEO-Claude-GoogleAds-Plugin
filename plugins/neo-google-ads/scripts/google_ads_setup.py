@@ -12,16 +12,21 @@ work stops: accounts get added, a token gets replaced, a budget ceiling
 turns out too low. Each of those otherwise means an SSH session and a hand
 edit of the .env — on the file that decides what an AI may spend.
 
-    /setup              status: connection, accounts, access level, guardrails,
-                        and the last write attempts from the change log
-    /setup/credentials  the four values Google requires (POST)
-    /setup/connect      starts the consent flow — also to reconnect
+    /dashboard          connection, accounts, access level, guardrails and the
+                        last write attempts from the change log
+    /setup              step 1 of the rail: the four values Google requires
+    /setup/connect      step 2: starts the consent flow — also to reconnect
+    /setup/accounts     step 3: which accounts may be written to (POST)
     /setup/callback     where Google returns; trades the code for a token
     /setup/paste        the fallback when the OAuth client is a desktop one
-    /setup/guardrails   edits the guardrails, accounts by tick box (POST)
-    /setup/token        replaces the access word for both doors (POST)
+    /setup/token        replaces the access word for claude.ai (POST)
     /setup/disconnect   forgets the refresh token (POST, asks first)
-    /setup/check        runs the connection checks and shows the result
+    /guardrails         edits the guardrails (POST)
+    /check              runs the connection checks and shows the result
+    /check/permissions  measures which login header opens which account
+
+The addresses are English like every other technical name here; what a
+person reads on them is German.
 
 THE PAGE IS AS SENSITIVE AS THE SERVER ITSELF, so it lives behind the
 portal's sign-in — a real account with a password and, if switched on, a
@@ -57,8 +62,20 @@ import urllib.request
 
 import google_ads_client as gac
 import oeffentliche_seite
+import portal_shell as sh
+from neo_design import symbol
 
 AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
+
+# Die vier Schritte der Einrichtung, in der Reihenfolge, in der sie
+# auseinander folgen. Der letzte fuehrt aus der Schiene heraus: die
+# Schutzgrenzen sind danach ein eigener Schirm, kein Schritt mehr.
+SCHIENE = (("/setup", "Zugangsdaten", "key"),
+           ("/setup/connect", "Mit Google verbinden", "link"),
+           ("/setup/accounts", "Konten", "account_tree"),
+           ("/guardrails", "Schutzgrenzen", "shield_lock"))
+EINRICHTUNG_LEAD = ("Vier Schritte von den Zugangsdaten bis zur "
+                    "freigegebenen Verbindung.")
 PENDING_FILE = gac.CONFIG_FILE.parent / "pending-auth.json"
 
 # Der Name, unter dem diese Anwendung auftritt: im Seitentitel, in der
@@ -98,215 +115,8 @@ LOGO = """<svg viewBox="0 0 449.49 143.2" role="img" aria-label="NEO Digital"
 <path d="M420.85 28.64v85.92h-85.92V28.64h85.92ZM449.49 0H306.29v143.2h143.2V0h0Z"/>
 </svg>"""
 
-STYLE = """
-/* Ein Farbschema, dunkel. Kein prefers-color-scheme: die Seite ist dunkel,
-   überall. Jeder Wert unten ist mit dem Kontrastrechner aus neo-design
-   gemessen; die schwächste Paarung liegt bei 5,7:1 und damit über AA. */
-:root {
-  --bg:      #0B0F0B;   /* Grund                                        */
-  --card:    #141814;   /* Karten, 1 Stufe heller                       */
-  --line:    #242C24;   /* Rahmen, nur Fläche — kein Text darauf        */
-  --fg:      #E8EDE8;   /* Fließtext            16,3:1 auf --bg         */
-  --muted:   #A3ADA3;   /* Nebentext             7,7:1 auf --card       */
-  --neon:    #a8f20d;   /* NEO-Grün             13,1:1 auf --card       */
-  --neon-dim:#7fb80a;   /* dasselbe Grün ruhiger  7,5:1 auf --card       */
-  --neon-up: #bcff33;   /* heller, für Hover     16,1:1 auf --bg         */
-  --warn:    #FFB454;   /* Hinweis              10,2:1 auf --card       */
-  /* Das Markenviolett. NUR auf hellen Flächen: auf --bg läge es bei
-     1,3:1 und wäre schlicht unsichtbar. Hier steht es deshalb allein auf
-     der weißen Kachel des QR-Codes, wo es 16,4:1 erreicht. */
-  --violett: #2a025f;
-  --bad:     #FF6B5C;   /* Befund                6,4:1 auf --card       */
-}
-* { box-sizing: border-box; }
-html { color-scheme: dark; }
-body { margin: 0; background: var(--bg); color: var(--fg);
-  font: 16px/1.6 "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system,
-        "SF Pro Text", Roboto, "Helvetica Neue", Arial, sans-serif;
-  font-synthesis-weight: none;
-  -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; }
-
-/* Überschriften enger und schwerer als der Fließtext: bei einer Seite ohne
-   Bilder macht die Typografie die Gliederung, nicht das Layout. */
-h1, h2, h3 { font-family: "Segoe UI Variable Display", "Segoe UI", system-ui,
-             -apple-system, "SF Pro Display", sans-serif;
-             letter-spacing: -.021em; text-wrap: balance; }
-h1 { font-size: 1.9rem; font-weight: 650; line-height: 1.2; margin: 0 0 .5rem; }
-h2 { font-size: 1.12rem; font-weight: 620; letter-spacing: -.012em;
-     margin: 2rem 0 .8rem; }
-p.lead { color: var(--muted); font-size: 1.02rem; max-width: 42em;
-         margin: 0 0 1.8rem; }
-table { font-variant-numeric: tabular-nums; }
-main { max-width: 54rem; margin: 0 auto; padding: 2.5rem 1rem 5rem; }
-
-header.marke { display: flex; align-items: center; gap: 1rem;
-  padding-bottom: 1.5rem; margin-bottom: 2rem;
-  border-bottom: 1px solid var(--line); }
-header.marke svg { height: 1.55rem; width: auto; color: var(--neon);
-  filter: drop-shadow(0 0 18px color-mix(in srgb, var(--neon) 28%, transparent)); }
-header.marke .button.klein { margin-left: 1rem; padding: .38rem .9rem;
-                            font-size: .85rem; }
-header.marke .wo { margin-left: auto; color: var(--muted); font-size: .82rem;
-  letter-spacing: .08em; text-transform: uppercase; }
-
-h1 { font-size: 1.6rem; margin: 0 0 .3rem; letter-spacing: -.01em; }
-h2 { font-size: 1.05rem; margin: 0 0 .9rem; letter-spacing: .01em; }
-p.lead { color: var(--muted); margin: 0 0 2rem; max-width: 42rem; }
-
-.card { background: var(--card); border: 1px solid var(--line);
-  border-radius: .7rem; padding: 1.35rem; margin-bottom: 1rem; }
-.card.akzent { border-color: color-mix(in srgb, var(--neon) 35%, var(--line)); }
-
-table { width: 100%; border-collapse: collapse; font-size: .94rem; }
-th, td { text-align: left; padding: .6rem .7rem; vertical-align: top;
-  border-bottom: 1px solid var(--line); }
-th { font-weight: 600; color: var(--muted); font-size: .78rem;
-  text-transform: uppercase; letter-spacing: .06em; white-space: nowrap; }
-tr:last-child th, tr:last-child td { border-bottom: none; }
-
-code, .mono, pre { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
-code, .mono { font-size: .89em; color: var(--neon); }
-pre { background: var(--bg); border: 1px solid var(--line); border-radius: .45rem;
-  padding: .9rem; overflow-x: auto; font-size: .85rem; margin: 0;
-  color: var(--fg); white-space: pre-wrap; word-break: break-all; }
-
-/* Ein Zustand ist eine Fußnote zur Überschrift, kein zweiter Titel. Also
-   klein, in Grundschrift, mit einem Punkt davor statt Versalien in einer
-   farbigen Pille. */
-.state { display: inline-flex; align-items: center; gap: .4rem;
-  padding: .16rem .55rem .16rem .5rem; border-radius: .35rem;
-  font-size: .8rem; font-weight: 600; letter-spacing: 0;
-  vertical-align: middle; position: relative; top: -.12em;
-  font-family: inherit; }
-.state::before { content: ""; width: .42rem; height: .42rem; border-radius: 50%;
-  background: currentColor; flex: none; }
-.state.ok   { background: color-mix(in srgb, var(--neon) 16%, transparent);
-              color: var(--neon); }
-.state.warn { background: color-mix(in srgb, var(--warn) 16%, transparent);
-              color: var(--warn); }
-.state.bad  { background: color-mix(in srgb, var(--bad) 16%, transparent);
-              color: var(--bad); }
-
-label { display: block; margin: 1.35rem 0 .3rem; font-weight: 600; font-size: .92rem; }
-label:first-child { margin-top: 0; }
-label span { display: block; font-weight: 400; color: var(--muted);
-  font-size: .85rem; margin-top: .2rem; line-height: 1.45; }
-input[type=text], input[type=password], input[type=email] {
-  width: 100%; padding: .62rem .8rem;
-  margin-top: .45rem; border: 1px solid var(--line); border-radius: .45rem;
-  background: var(--bg); color: var(--fg);
-  font-family: ui-monospace, Menlo, monospace; font-size: .9rem;
-  transition: border-color .12s, box-shadow .12s; }
-input[type=text]:hover, input[type=password]:hover, input[type=email]:hover {
-  border-color: color-mix(in srgb, var(--neon) 30%, var(--line)); }
-/* Ein Ring, kein Rahmen: 1px in der Markenfarbe plus ein weicher Schein.
-   Der 2px-Umriss von vorher sass aussen auf der Ecke und wirkte wie ein
-   Fehler, nicht wie ein Fokus. */
-input:focus { outline: none; border-color: var(--neon);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--neon) 22%, transparent); }
-input[type=text]:-webkit-autofill, input[type=password]:-webkit-autofill {
-  -webkit-text-fill-color: var(--fg);
-  -webkit-box-shadow: 0 0 0 40rem var(--bg) inset; }
-
-button, .button { display: inline-block; padding: .62rem 1.15rem; border-radius: .5rem;
-  border: 1px solid transparent; background: var(--neon); color: #07120A;
-  font: inherit; font-weight: 620; font-size: .92rem; cursor: pointer;
-  letter-spacing: -.005em; transition: background .12s, border-color .12s;
-  text-decoration: none; margin-top: 1.4rem; }
-button:hover, .button:hover { background: var(--neon-up); }
-button:focus-visible, .button:focus-visible { outline: 2px solid var(--fg);
-  outline-offset: 2px; }
-button.quiet, .button.quiet { background: transparent; color: var(--fg);
-  border-color: var(--line); }
-button.quiet:hover, .button.quiet:hover { border-color: var(--neon);
-  color: var(--neon); }
-button.danger { background: transparent; color: var(--bad);
-  border-color: color-mix(in srgb, var(--bad) 45%, transparent); }
-button.danger:hover { background: color-mix(in srgb, var(--bad) 14%, transparent); }
-
-label.kasten { display: flex; gap: .7rem; align-items: flex-start;
-  margin: .7rem 0; padding: .7rem .8rem; border: 1px solid var(--line);
-  border-radius: .45rem; font-weight: 400; cursor: pointer; }
-label.kasten:hover { border-color: color-mix(in srgb, var(--neon) 40%, var(--line)); }
-label.kasten input { accent-color: var(--neon); width: 1.1rem; height: 1.1rem;
-  margin-top: .15rem; flex: none; }
-label.kasten input:disabled { opacity: .5; }
-.kasten-text { display: block; }
-.kasten-text b { display: block; font-size: .95rem; }
-.kasten-text .mono { display: block; color: var(--muted); font-size: .84rem; }
-.kasten-text .note { margin-top: .2rem; }
-.row { display: flex; gap: .7rem; flex-wrap: wrap; align-items: center; }
-.note { color: var(--muted); font-size: .87rem; margin-top: .8rem; line-height: 1.5; }
-/* Der QR-Code bleibt weiss auf weiss: ein Scanner erwartet dunkel auf hell,
-   und eine Umkehrung kostet auf manchen Kameras die Erkennung. */
-/* Feste Breite statt voller Kachel: ein Code von 57 Modulen wird sonst
-   riesig und schiebt alles andere aus dem Bild. 15rem reichen jeder
-   Telefonkamera aus Armlänge. */
-.qr svg { display: block; width: 15rem; max-width: 100%; height: auto; }
-ol.schritte { margin: .6rem 0 0; padding-left: 1.3rem; color: var(--fg);
-             font-size: .9rem; line-height: 1.6; }
-ol.schritte li { margin-bottom: .35rem; }
-ol.schritte li::marker { color: var(--neon-dim); font-weight: 700; }
-ol.codes { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
-           gap: .45rem 1.2rem; margin: 0; padding-left: 1.4rem; }
-ol.codes li { font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-              font-size: 1rem; letter-spacing: .04em; }
-@media (max-width: 34rem) { ol.codes { grid-template-columns: 1fr; } }
-.card.schlecht { border-color: color-mix(in srgb, var(--bad) 45%, var(--line)); }
-/* Die schmale Spalte: Anmeldung und zweiter Faktor. Eine Karte, zwei
-   Felder, mittig — und das Logo darüber statt einer Kopfleiste. */
-body.schmal main { max-width: 25rem; padding-top: 4.5rem; }
-body.schmal header.marke { justify-content: center; border-bottom: none;
-  padding-bottom: 0; margin-bottom: 2.2rem; }
-body.schmal header.marke svg { height: 2.1rem; }
-body.schmal header.marke .wo { display: none; }
-body.schmal h1 { font-size: 1.45rem; text-align: center; }
-body.schmal p.lead { text-align: center; margin-bottom: 1.6rem; font-size: .95rem; }
-body.schmal button[type=submit] { width: 100%; padding: .72rem 1rem; }
-body.schmal .card { padding: 1.5rem 1.35rem; margin-bottom: 1.1rem; }
-body.schmal .card p.note:last-of-type { margin-bottom: 0; }
-body.schmal form { margin: 0; }
-body.schmal > main > p.note { text-align: center; margin-top: 1.8rem;
-  font-size: .82rem; }
-@media (max-width: 34rem) { body.schmal main { padding-top: 2.5rem; } }
-
-/* Die weiße Kachel des QR-Codes ist die einzige helle Fläche der Seite —
-   und damit die einzige, auf der das Markenviolett lesbar ist. */
-.qr { background: #fff; border-radius: .6rem; padding: 1.1rem 1.1rem .8rem;
-      display: flex; flex-direction: column; align-items: center; gap: .5rem;
-      width: fit-content; margin: 0 auto; }
-.qr figcaption { color: var(--violett); font-size: .8rem; font-weight: 600;
-                 letter-spacing: .01em; }
-
-nav.nav { display: flex; align-items: center; gap: 1.1rem; flex-wrap: wrap;
-          margin: -1rem 0 2rem; padding-bottom: 1rem;
-          border-bottom: 1px solid var(--line); font-size: .9rem; }
-nav.nav .wer { margin-left: auto; color: var(--muted); display: flex;
-               align-items: center; gap: .5rem; }
-nav.nav form.raus { margin: 0; }
-nav.nav .button { padding: .35rem .8rem; font-size: .85rem; }
-@media (max-width: 34rem) {
-  nav.nav .wer { margin-left: 0; width: 100%; order: -1; }
-}
-.warnung { border-left: 3px solid var(--warn); padding: .1rem 0 .1rem .8rem;
-           margin: 0 0 1rem; color: var(--text); font-size: .9rem;
-           line-height: 1.55; }
-a { color: var(--neon); text-underline-offset: .2em; }
-a:hover { color: #c4ff4d; }
-
-@media (max-width: 34rem) {
-  main { padding: 1.5rem .85rem 3.5rem; }
-  header.marke { gap: .7rem; }
-  header.marke .wo { display: none; }
-  th, td { padding: .5rem .35rem; font-size: .88rem; }
-  th { font-size: .72rem; }
-  table, tbody, tr, th, td { display: block; }
-  th { border: none; padding-bottom: .15rem; }
-  td { padding-top: 0; padding-bottom: .8rem; }
-}
-"""
-
-
+# Wer gerade zusieht. Je Faden, weil der Server einer ist: zwei Abrufe
+# duerfen sich nicht gegenseitig den Namen in der Kopfzeile ueberschreiben.
 _viewer = threading.local()
 
 
@@ -320,23 +130,36 @@ def viewer() -> tuple[str, bool]:
     return getattr(_viewer, "name", ""), getattr(_viewer, "two_factor", False)
 
 
-def navigation() -> str:
-    name, two_factor = viewer()
-    if not name:
-        return ""
-    schild = ('<span class="state ok">2FA</span>' if two_factor
-              else '<span class="state warn">ohne 2FA</span>')
-    return (f'<nav class="nav"><a href="/setup">Übersicht</a>'
-            f'<a href="/setup/guardrails">Schutzgrenzen</a>'
-            f'<a href="/konto">Konto</a>'
-            f'<span class="wer">{esc(name)} {schild}</span>'
-            f'<form method="post" action="/abmelden" class="raus">'
-            f'<button class="button quiet" type="submit">Abmelden</button></form></nav>')
+def set_host(host: str = "") -> None:
+    """The host this request came in on. Only the sidebar shows it."""
+    _viewer.host = host
 
 
-# Auf den oeffentlichen Seiten steht oben rechts nur der Weg hinein. Er
-# sitzt in der Kopfleiste selbst, damit keine leere Zeile darunter klafft.
-OEFFENTLICHER_KOPF = '<a class="button quiet klein" href="/anmelden">Anmelden</a>' 
+def host() -> str:
+    return getattr(_viewer, "host", "")
+
+
+def konsole(titel: str, lead: str, weg: str, inhalt: str, *, aktionen: str = "",
+            ueberlagerung: str = "", skript: str = "") -> bytes:
+    """One page of the management console, in the frame from portal_shell.
+
+    Everything the frame needs about the brand and the person looking at
+    it is already known here, so a caller passes only its own page.
+    """
+    name, zwei = viewer()
+    return sh.rahmen(
+        titel=titel, lead=lead, weg=weg, inhalt=inhalt, benutzer=name,
+        zwei_faktor=zwei, logo=logo_markup(), favicon=FAVICON, marke=MARKE,
+        beiwort=marke_beiwort(), server=host(), aktionen=aktionen,
+        ueberlagerung=ueberlagerung, skript=skript)
+
+
+def schmale_seite(titel: str, lead: str, inhalt: str, *, fuss: str = "",
+                  oben: str = "", skript: str = "") -> bytes:
+    """A page with one job: signing in, the second factor, the new password."""
+    return sh.schmale_seite(
+        titel=titel, lead=lead, inhalt=inhalt, logo=logo_markup(),
+        favicon=FAVICON, marke=MARKE, fuss=fuss, oben=oben, skript=skript)
 
 
 def logo_markup() -> str:
@@ -348,38 +171,6 @@ def logo_markup() -> str:
         except OSError:
             pass
     return LOGO
-
-
-def page(title: str, body: str, *, schmal: bool = False, leiste: str = "",
-         kopf_rechts: str = "") -> bytes:
-    """One HTML document. No framework, no build step, nothing to update.
-
-    schmal is for the pages with one job and two fields — signing in, the
-    second factor. A form of 54rem width with two inputs in it looks like
-    a mistake, because it is one: the eye has to travel the whole line to
-    find a field that is 20 characters long.
-    """
-    klasse = " class=\"schmal\"" if schmal else ""
-    # Eine schmale Seite hat genau eine Aufgabe. Eine Navigationsleiste
-    # darüber böte Wege an, die alle sofort hierher zurückführen — auf der
-    # erzwungenen Kennwortseite tat sie genau das.
-    if not leiste:
-        leiste = "" if schmal else navigation()
-    # Auf der Startseite heisst die Seite wie die Anwendung — dann nicht
-    # zweimal dasselbe in den Titel schreiben.
-    titel_zeile = title if title == MARKE else f"{title} — {MARKE}"
-    return (f"""<!doctype html>
-<html lang="de"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="color-scheme" content="dark">
-<meta name="robots" content="noindex, nofollow">
-<link rel="icon" href="{FAVICON}">
-<title>{html.escape(titel_zeile)}</title>
-<style>{STYLE}</style></head>
-<body{klasse}><main>
-<header class="marke">{logo_markup()}<span class="wo">{esc(marke_beiwort())}</span>{kopf_rechts}</header>
-{leiste}
-{body}</main></body></html>""").encode("utf-8")
 
 
 def esc(value) -> str:
@@ -492,191 +283,238 @@ def startseite(base_url: str = "") -> bytes:
     """
     set_viewer("")
     return oeffentliche_seite.seite(logo=logo_markup(), favicon=FAVICON,
-                                    anmelden_url="/anmelden")
+                                    anmelden_url="/login")
 
 
-def status_page(base_url: str) -> bytes:
+def _zugriffsstufe(state: dict) -> tuple[str, str]:
+    """What the access level of the Cloud project looks like from here.
+
+    The API never says it out loud. What it does say is the error when a
+    planner call is refused, and whether anything is readable at all.
+    """
+    codes = {a.get("code", "") for a in state["accounts"] if a.get("code")}
+    if any("CLOUD_PROJECT_NOT_APPROVED" in code for code in codes):
+        return "Test", "kein Zugriff auf echte Konten"
+    if state["connected"] and any(not a["problem"] for a in state["accounts"]):
+        return "Explorer", "mindestens — 11 von 13 Werkzeugen"
+    return "unbekannt", "noch keine Antwort der API"
+
+
+def geldbetrag(micros: int) -> str:
+    """Micros als Betrag, mit dem Komma, das hier gelesen wird."""
+    return f"{micros / 1_000_000:.2f}".replace(".", ",")
+
+
+def dashboard_page(base_url: str) -> bytes:
+    """Was dieser Server gerade kann: Verbindung, Konten, Grenzen, Protokoll."""
     state = load_state()
     config = state["config"]
     rails = state["guardrails"]
+    konten = state["accounts"]
+    lesbar = sum(1 for a in konten if not a["problem"])
 
     if state["connected"]:
-        badge = '<span class="state ok">verbunden</span>'
+        schild = sh.zustand("verbunden", "ok")
     elif state["configured"]:
-        badge = '<span class="state bad">Zugang abgelehnt</span>'
+        schild = sh.zustand("Zugang abgelehnt", "bad")
     elif config.get("client_id"):
-        badge = '<span class="state warn">noch nicht verbunden</span>'
+        schild = sh.zustand("noch nicht verbunden", "warn")
     else:
-        badge = '<span class="state warn">nicht eingerichtet</span>'
+        schild = sh.zustand("nicht eingerichtet", "warn")
 
-    parts = [f"<h1>Google Ads {badge}</h1>",
-             '<p class="lead">Verbindung, Konten und Schutzgrenzen dieses Servers.</p>']
+    stufe, stufe_notiz = _zugriffsstufe(state)
+    deckel = rails.get("max_daily_budget_micros") or 0
+    teile = [
+        '<div class="grid-3" style="margin-bottom:20px">',
+        sh.kennzahl("Konten lesbar",
+                    f'{lesbar} <span style="color:var(--faint);font-weight:400">'
+                    f'/ {len(konten)}</span>' if konten else "—",
+                    neon=bool(lesbar), icon="account_tree"),
+        sh.kennzahl("höchstes Tagesbudget",
+                    geldbetrag(deckel) if deckel else "ohne Deckel",
+                    icon="payments", notiz="je Budget, in der Kontowährung"),
+        sh.kennzahl("Zugriffsstufe", stufe, icon="verified", notiz=stufe_notiz),
+        sh.kennzahl("API-Fassung", esc(config.get("api_version", "—")), icon="bolt"),
+        "</div>",
+        '<div class="stack">',
+    ]
 
     if state["error"]:
-        parts.append('<div class="card"><h2 style="margin-top:0">Meldung der API</h2>'
-                     f'<pre>{esc(state["error"])}</pre></div>')
+        teile.append(sh.karte("Meldung der API", f"<pre>{esc(state['error'])}</pre>",
+                              art="schlecht"))
 
-    # -- Zugangsdaten ------------------------------------------------------
-    have = lambda key: "gesetzt" if config.get(key) else "fehlt"  # noqa: E731
-    parts.append(f"""<div class="card">
-<h2 style="margin-top:0">Zugangsdaten</h2>
-<table>
-<tr><th>Client-ID</th><td class="mono">{esc(config.get('client_id','') [:42])}{'…' if len(config.get('client_id','')) > 42 else ''}</td></tr>
-<tr><th>Cloud-Projekt</th><td class="mono">{esc(gac.project_number_of(config.get('client_id','')) or '—')}<br>
-<span class="note">Daran hängt die Zugriffsstufe, nicht am Developer Token.</span></td></tr>
-<tr><th>Client-Geheimnis</th><td>{have('client_secret')}</td></tr>
-<tr><th>Developer Token</th><td>{have('developer_token')}</td></tr>
-<tr><th>Refresh Token</th><td>{have('refresh_token')}</td></tr>
-<tr><th>Verwaltungskonto</th><td class="mono">{esc(config.get('login_customer_id') or '—')}</td></tr>
-<tr><th>API-Fassung</th><td class="mono">{esc(config.get('api_version','—'))}</td></tr>
-</table>
-<div class="row">
-<a class="button quiet" href="/setup/credentials">Zugangsdaten bearbeiten</a>
-{'<a class="button" href="/setup/connect">Mit Google verbinden</a>'
- if config.get('client_id') and config.get('client_secret') else ''}
-{'<a class="button quiet" href="/setup/check">Verbindung prüfen</a>' if state['configured'] else ''}
-</div></div>""")
+    # -- Verbindung --------------------------------------------------------
+    def haben(key: str) -> str:
+        return sh.zustand(key_name[key], "ok" if config.get(key) else "bad")
+
+    key_name = {"client_secret": "Client-Geheimnis",
+                "developer_token": "Developer Token",
+                "refresh_token": "Refresh Token"}
+    kennung = config.get("client_id", "")
+    gekuerzt = kennung[:42] + ("…" if len(kennung) > 42 else "")
+    teile.append(sh.karte(
+        "Verbindung",
+        sh.tabelle(
+            sh.zeile("Client-ID", f'<span class="mono">{esc(gekuerzt) or "—"}</span>')
+            + sh.zeile("Cloud-Projekt",
+                       f'<span class="mono">'
+                       f'{esc(gac.project_number_of(kennung) or "—")}</span>',
+                       "Daran hängt die Zugriffsstufe, nicht am Developer Token.")
+            + sh.zeile("Geheimnisse", " ".join(haben(k) for k in key_name))
+            + sh.zeile("Verwaltungskonto",
+                       f'<span class="mono">'
+                       f'{esc(config.get("login_customer_id") or "—")}</span>')),
+        zustand=schild,
+        aktion='<a class="button quiet klein" href="/setup">Zugangsdaten</a>'
+               + ('<a class="button quiet klein" href="/check">Verbindung prüfen</a>'
+                  if state["configured"] else "")))
 
     # -- Konten ------------------------------------------------------------
-    if state["accounts"]:
+    if konten:
         zeilen = []
-        for account in state["accounts"]:
-            if account["problem"]:
-                code = (f'<br><span class="mono" style="font-size:.8rem">'
-                        f'{esc(account["code"])}</span>' if account.get("code") else "")
-                rechts = (f'<span class="state bad">nicht lesbar</span>{code}<br>'
-                          f'<span class="note">{esc(account["problem"])}</span>')
+        for konto in konten:
+            if konto["problem"]:
+                code = (f' <span class="mono leise">{esc(konto["code"])}</span>'
+                        if konto.get("code") else "")
+                wert = sh.zustand("nicht lesbar", "bad") + code
+                notiz = konto["problem"]
             else:
-                marks = " · Verwaltungskonto" if account["manager"] else ""
-                rechts = (f'{esc(account["name"] or "ohne Namen")} '
-                          f'<span class="note">{esc(account["currency"])}{marks}</span>')
-            zeilen.append(f'<tr><th class="mono">{esc(account["id"])}</th>'
-                          f'<td>{rechts}</td></tr>')
-        lesbar = sum(1 for a in state["accounts"] if not a["problem"])
-        nicht_lesbar = len(state["accounts"]) - lesbar
-        codes = {a.get("code", "") for a in state["accounts"] if a.get("code")}
-        projekt = gac.project_number_of(config.get("client_id", ""))
-        hinweis = ""
-        if any("CLOUD_PROJECT_NOT_APPROVED" in c for c in codes):
-            # Der Fehlercode ist eindeutig. Dann nicht auf den
-            # Verwaltungskopf raten und auch nicht zum Messen schicken:
-            # keine Kopfzeile der Welt hebt eine fehlende Freigabe auf.
-            hinweis = (f'<p class="note"><b>Das ist nicht der Verwaltungskopf.</b> '
-                       f'<code>CLOUD_PROJECT_NOT_APPROVED_FOR_PRODUCTION</code> heißt: '
-                       f'das Google-Cloud-Projekt '
-                       f'<span class="mono">{esc(projekt)}</span> darf noch nicht auf '
-                       f'echte Konten zugreifen — es steht auf Zugriffsstufe Test.</p>'
-                       f'<p class="note">Freischalten in der Google Cloud Console, in '
-                       f'genau diesem Projekt: <b>Google Ads API → Übersicht → '
-                       f'Zugriffsstufe hochstufen → Zugriff beantragen</b>. Die '
-                       f'Markenprüfung des Zustimmungsbildschirms muss vorher durch '
-                       f'sein.</p>'
-                       f'<p class="note">Die nächste Stufe ist meist <b>Explorer</b>, '
-                       f'und die kommt oft sofort. Sie reicht für alles hier außer dem '
-                       f'Keyword-Planer — elf der dreizehn Werkzeuge laufen damit. '
-                       f'<b>Basic</b> braucht es erst für den Planer und für mehr als '
-                       f'2.880 Operationen am Tag; darauf kann Google bis zu zehn '
-                       f'Werktage prüfen.</p>'
-                       f'<p class="note">Schneller geht es, wenn ein <b>anderes, bereits '
-                       f'freigeschaltetes Projekt</b> vorhanden ist: den OAuth-Client '
-                       f'dort anlegen und die neue Kennung hier eintragen. Dann ist '
-                       f'nichts zu beantragen.</p>'
-                       f'<div class="row">'
-                       f'<a class="button" href="/setup/credentials">Zugangsdaten '
-                       f'bearbeiten</a>'
-                       f'<a class="button quiet" href="/setup/diagnose">Trotzdem '
-                       f'messen</a></div>')
+                marke = " · Verwaltungskonto" if konto["manager"] else ""
+                wert = (f'{esc(konto["name"] or "ohne Namen")} '
+                        f'<span class="leise">{esc(konto["currency"])}{marke}</span>')
+                notiz = ""
+            zeilen.append(sh.zeile(konto["id"], wert, notiz, mono=True))
+        nicht_lesbar = len(konten) - lesbar
+        codes = {a.get("code", "") for a in konten if a.get("code")}
+        if any("CLOUD_PROJECT_NOT_APPROVED" in code for code in codes):
+            fuss = _stufe_hinweis(gac.project_number_of(kennung))
         elif nicht_lesbar:
-            hinweis = ('<p class="note">Ein Konto, das die API auflistet, aber nicht '
-                       'lesen lässt, scheitert meist am Verwaltungskopf — der Fehler '
-                       'nennt ihn nur nicht. Die Messung probiert jede Kombination '
-                       'durch und sagt, welche geht.</p>'
-                       '<a class="button" href="/setup/diagnose">'
-                       'Berechtigungen messen</a>')
-        parts.append(f"""<div class="card">
-<h2 style="margin-top:0">Konten <span class="note">{lesbar} von
-{len(state['accounts'])} lesbar</span></h2>
-<table>{''.join(zeilen)}</table>{hinweis}</div>""")
+            fuss = ('<p class="note">Ein Konto, das die API auflistet, aber nicht '
+                    'lesen lässt, scheitert meist am Verwaltungskopf — der Fehler '
+                    'nennt ihn nur nicht. Die Messung probiert jede Kombination durch '
+                    'und sagt, welche geht.</p>')
+        else:
+            fuss = ""
+        teile.append(sh.karte(
+            "Konten", sh.tabelle("".join(zeilen)) + fuss,
+            zustand=(sh.zustand(f"{nicht_lesbar} nicht lesbar", "warn")
+                     if nicht_lesbar else sh.zustand("alle lesbar", "ok")),
+            aktion='<a class="button quiet klein" href="/check/permissions">'
+                   'Berechtigungen messen</a>'))
 
     # -- Schutzgrenzen -----------------------------------------------------
-    schreiben = ('<span class="state warn">eingeschaltet</span>'
-                 if rails.get("write_enabled") else '<span class="state ok">aus</span>')
-    konten = ", ".join(rails.get("allowed_customer_ids") or []) or "alle zugänglichen"
-    deckel = rails.get("max_daily_budget_micros") or 0
-    parts.append(f"""<div class="card">
-<h2 style="margin-top:0">Schutzgrenzen</h2>
-<table>
-<tr><th>Schreiben</th><td>{schreiben}</td></tr>
-<tr><th>Erlaubte Konten</th><td class="mono">{esc(konten)}</td></tr>
-<tr><th>Budgetdeckel je Tag</th><td>{f'{deckel / 1_000_000:.2f}' if deckel else 'keiner'}</td></tr>
-<tr><th>Größter Budgetsprung</th><td>Faktor {esc(rails.get('max_budget_increase_factor'))}</td></tr>
-<tr><th>Operationen je Aufruf</th><td>{esc(rails.get('max_operations_per_call'))}</td></tr>
-</table>
-<p class="note">Auch bei eingeschaltetem Schreiben ist jeder Aufruf zuerst ein
-Trockenlauf — scharf wird er erst nach ausdrücklicher Freigabe im Gespräch.</p>
-<a class="button quiet" href="/setup/guardrails">Schutzgrenzen bearbeiten</a></div>""")
+    erlaubt = rails.get("allowed_customer_ids") or []
+    teile.append(sh.karte(
+        "Schutzgrenzen",
+        sh.tabelle(
+            sh.zeile("Schreiben",
+                     sh.zustand("eingeschaltet", "warn") if rails.get("write_enabled")
+                     else sh.zustand("aus", "ok"))
+            + sh.zeile("Erlaubte Konten",
+                       f'<span class="mono">{esc(", ".join(erlaubt))}</span>'
+                       if erlaubt else "alle zugänglichen")
+            + sh.zeile("Budgetdeckel je Tag",
+                       geldbetrag(deckel) if deckel else "keiner")
+            + sh.zeile("Größter Budgetsprung",
+                       f"Faktor {esc(rails.get('max_budget_increase_factor'))}")
+            + sh.zeile("Operationen je Aufruf",
+                       esc(rails.get("max_operations_per_call"))))
+        + '<p class="note">Auch bei eingeschaltetem Schreiben ist jeder Aufruf zuerst '
+          'ein Trockenlauf — scharf wird er erst nach ausdrücklicher Freigabe im '
+          'Gespräch.</p>',
+        zustand=(sh.zustand(f"{len(erlaubt)} Konten mit Schreibrecht", "warn")
+                 if rails.get("write_enabled") and erlaubt else ""),
+        aktion='<a class="button quiet klein" href="/guardrails">Bearbeiten</a>'))
 
-    # -- Letzte Änderungen -------------------------------------------------
+    # -- Letzte Aenderungen ------------------------------------------------
     changes = recent_changes()
     if changes:
         zeilen = []
-        for entry in changes:
-            art = "Trockenlauf" if entry.get("dry_run") else "<b>scharf</b>"
-            zeilen.append(
-                f'<tr><th class="mono">{esc(entry.get("time","")[:16].replace("T", " "))}</th>'
-                f'<td>{art} · {esc(entry.get("customer_id"))} · '
-                f'{esc(entry.get("operation_count"))} Operationen · '
-                f'{esc(entry.get("result"))}<br>'
-                f'<span class="note">{esc(entry.get("reason") or "ohne Begründung")}'
-                f'</span></td></tr>')
-        parts.append(f'<div class="card"><h2 style="margin-top:0">Letzte Änderungen</h2>'
-                     f'<table>{"".join(zeilen)}</table></div>')
+        for eintrag in changes:
+            art = (sh.zustand("Trockenlauf", "neutral") if eintrag.get("dry_run")
+                   else sh.zustand("scharf", "warn"))
+            zeilen.append(sh.zeile(
+                eintrag.get("time", "")[:16].replace("T", " "),
+                f'{art} <span class="mono leise">{esc(eintrag.get("customer_id"))}'
+                f'</span> · {esc(eintrag.get("operation_count"))} Operationen · '
+                f'{esc(eintrag.get("result"))}',
+                eintrag.get("reason") or "ohne Begründung", mono=True))
+        teile.append(sh.karte("Letzte Änderungen", sh.tabelle("".join(zeilen))))
+
+    # -- Die beiden Tueren -------------------------------------------------
+    _, zwei = viewer()
+    teile.append(sh.karte(
+        "Die beiden Türen",
+        sh.tabelle(
+            sh.zeile("Portal", f'<span class="mono">{esc(base_url)}/login</span>',
+                     "Benutzerkonto mit Kennwort" + (", zweiter Faktor an" if zwei
+                                                     else " — zweiter Faktor noch aus"))
+            + sh.zeile("MCP für claude.ai",
+                       f'<span class="mono">{esc(base_url)}/mcp</span>',
+                       "Zugangswort als Authorization: Bearer …"))
+        + '<p class="note">Zwei Türen, zwei Schlüssel, mit Absicht. claude.ai kann '
+          'kein Anmeldeformular ausfüllen und keinen zweiten Faktor eingeben — der '
+          'Connector braucht deshalb ein festes Wort. Wer das Zugangswort wechselt, '
+          'trägt den Connector neu ein; am Portal ändert sich dadurch nichts.</p>'
+          '<div class="row" style="margin-top:18px">'
+          '<a class="button quiet" href="/account">Konto und zweiter Faktor</a>'
+          '<a class="button quiet" href="/setup/token">Zugangswort wechseln</a>'
+          '</div>'))
 
     # -- Verbindung trennen ------------------------------------------------
     if config.get("refresh_token"):
-        parts.append("""<div class="card">
-<h2 style="margin-top:0">Verbindung trennen</h2>
-<p class="note">Löscht den Refresh Token auf diesem Server. Die Zugangsdaten
-bleiben, sodass ein erneutes Verbinden ohne Eingaben auskommt. Der Zugriff
-des Google-Kontos wird damit nicht widerrufen — das geschieht unter
-<a href="https://myaccount.google.com/permissions" target="_blank"
-rel="noopener">myaccount.google.com/permissions</a>.</p>
-<form method="post" action="/setup/disconnect">
-<button class="danger" type="submit">Refresh Token löschen</button>
-</form></div>""")
+        teile.append(sh.karte(
+            "Verbindung trennen",
+            '<p class="note" style="margin-top:0">Löscht den Refresh Token auf diesem '
+            'Server. Die Zugangsdaten bleiben, sodass ein erneutes Verbinden ohne '
+            'Eingaben auskommt. Der Zugriff des Google-Kontos wird damit nicht '
+            'widerrufen — das geschieht unter <a href='
+            '"https://myaccount.google.com/permissions" target="_blank" '
+            'rel="noopener">myaccount.google.com/permissions</a>.</p>'
+            '<form method="post" action="/setup/disconnect" style="margin-top:18px">'
+            '<button class="danger" type="submit">Refresh Token löschen</button>'
+            '</form>'))
 
-    wer, zwei = viewer()
-    parts.append(f"""<div class="card">
-<h2 style="margin-top:0">Die beiden Türen</h2>
-<table>
-<tr><th>Portal</th><td class="mono">{esc(base_url)}/anmelden<br>
-<span class="note">Benutzerkonto mit Kennwort{', zweiter Faktor an'
-  if zwei else ' — zweiter Faktor noch aus'}</span></td></tr>
-<tr><th>MCP für claude.ai</th><td class="mono">{esc(base_url)}/mcp<br>
-<span class="note">Zugangswort als <code>Authorization: Bearer …</code></span></td></tr>
-</table>
-<p class="note">Zwei Türen, zwei Schlüssel, mit Absicht. claude.ai kann kein
-Anmeldeformular ausfüllen und keinen zweiten Faktor eingeben — der Connector
-braucht deshalb ein festes Wort. Ein Mensch am Bildschirm kann beides, und
-soll es auch. Wer das Zugangswort wechselt, trägt den Connector neu ein; am
-Portal ändert sich dadurch nichts.</p>
-<div class="row">
-<a class="button quiet" href="/konto">Konto und zweiter Faktor</a>
-<a class="button quiet" href="/setup/token">Zugangswort für claude.ai wechseln</a>
-</div></div>""")
-    return page("Status", "".join(parts))
+    teile.append("</div>")
+    return konsole("Übersicht", "Verbindung, Konten und Schutzgrenzen dieses Servers.",
+                   "/dashboard", "".join(teile))
+
+
+def _stufe_hinweis(projekt: str) -> str:
+    """Was zu tun ist, wenn das Cloud-Projekt noch auf Zugriffsstufe Test steht."""
+    return (f'<p class="note"><b>Das ist nicht der Verwaltungskopf.</b> '
+            f'<code>CLOUD_PROJECT_NOT_APPROVED_FOR_PRODUCTION</code> heißt: das '
+            f'Google-Cloud-Projekt <span class="mono">{esc(projekt)}</span> darf noch '
+            f'nicht auf echte Konten zugreifen — es steht auf Zugriffsstufe Test.</p>'
+            f'<p class="note">Freischalten in der Google Cloud Console, in genau '
+            f'diesem Projekt: <b>Google Ads API → Übersicht → Zugriffsstufe '
+            f'hochstufen → Zugriff beantragen</b>. Die Markenprüfung des '
+            f'Zustimmungsbildschirms muss vorher durch sein.</p>'
+            f'<p class="note">Die nächste Stufe ist meist <b>Explorer</b>, und die '
+            f'kommt oft sofort. Sie reicht für alles hier außer dem Keyword-Planer — '
+            f'elf der dreizehn Werkzeuge laufen damit. <b>Basic</b> braucht es erst '
+            f'für den Planer und für mehr als 2.880 Operationen am Tag; darauf kann '
+            f'Google bis zu zehn Werktage prüfen.</p>'
+            f'<p class="note">Schneller geht es, wenn ein <b>anderes, bereits '
+            f'freigeschaltetes Projekt</b> vorhanden ist: den OAuth-Client dort '
+            f'anlegen und die neue Kennung hier eintragen. Dann ist nichts zu '
+            f'beantragen.</p>'
+            f'<div class="row" style="margin-top:16px">'
+            f'<a class="button" href="/setup">Zugangsdaten bearbeiten</a>'
+            f'<a class="button quiet" href="/check/permissions">Trotzdem messen</a>'
+            f'</div>')
 
 
 def credentials_page(message: str = "") -> bytes:
     state = load_state()
     config = state["config"]
-    hinweis = f'<div class="card"><p>{esc(message)}</p></div>' if message else ""
-    return page("Zugangsdaten", f"""
-<h1>Zugangsdaten</h1>
-<p class="lead">Die vier Angaben, die Google verlangt. Zwei davon stellt Google
-einer namentlich bekannten Person aus — sie können nicht erzeugt werden.</p>
-{hinweis}
+    hinweis = sh.warnung(esc(message), "schlecht") if message else ""
+    return konsole("Einrichtung", EINRICHTUNG_LEAD, "/setup",
+                   sh.schiene(SCHIENE, 0) + hinweis + f"""
 <form method="post" action="/setup/credentials"><div class="card">
+<div class="card-kopf"><h2>Die vier Angaben, die Google verlangt</h2></div>
+<p class="note" style="margin-top:0;margin-bottom:20px">Zwei davon stellt Google
+einer namentlich bekannten Person aus — sie können nicht erzeugt werden.</p>
 <label>Client-ID
 <span>Google Cloud Console → Anmeldedaten → OAuth-Client. Für den Weg über
 diese Seite: Typ <b>Webanwendung</b>, mit der Rückadresse, die unten steht.</span>
@@ -699,8 +537,9 @@ erreicht werden.</span>
 <input type="text" name="login_customer_id"
        value="{esc(config.get('login_customer_id',''))}" autocomplete="off"></label>
 
-<button type="submit">Speichern</button>
-<a class="button quiet" href="/setup">Zurück</a>
+<div class="row" style="margin-top:24px">
+<button type="submit">Speichern und weiter</button>
+<a class="button quiet" href="/dashboard">Abbrechen</a></div>
 </div></form>""")
 
 
@@ -713,9 +552,14 @@ def connect_page(base_url: str, force_paste: bool = False) -> bytes:
         if gac.CONFIG_FILE.exists():
             config = json.loads(gac.CONFIG_FILE.read_text(encoding="utf-8"))
     if not config.get("client_id") or not config.get("client_secret"):
-        return page("Verbinden", """<h1>Verbinden</h1>
-<div class="card"><p>Client-ID und Geheimnis fehlen noch.</p>
-<a class="button" href="/setup/credentials">Zugangsdaten eintragen</a></div>""")
+        return konsole("Einrichtung", EINRICHTUNG_LEAD, "/setup",
+                       sh.schiene(SCHIENE, 1)
+                       + sh.karte("Noch nicht so weit",
+                                  '<p class="note" style="margin-top:0">Client-ID und '
+                                  'Geheimnis fehlen noch.</p>'
+                                  '<div class="row" style="margin-top:18px">'
+                                  '<a class="button" href="/setup">Zugangsdaten '
+                                  'eintragen</a></div>', art="akzent"))
 
     verifier, challenge = pkce_pair()
     state_value = secrets.token_urlsafe(24)
@@ -733,11 +577,15 @@ def connect_page(base_url: str, force_paste: bool = False) -> bytes:
     }) + "\n", encoding="utf-8")
     os.chmod(PENDING_FILE, 0o600)
 
-    return page("Verbinden", f"""<h1>Mit Google verbinden</h1>
-<p class="lead">Melde dich mit dem Google-Konto an, das deine Ads-Konten sieht —
-nicht zwingend das des Verwaltungskontos.</p>
-<div class="card">
-<a class="button" href="{esc(url)}">Bei Google anmelden und zustimmen</a>
+    return konsole("Einrichtung", EINRICHTUNG_LEAD, "/setup",
+                   sh.schiene(SCHIENE, 1) + f"""
+<div class="card"><div class="card-kopf"><h2>Mit Google verbinden</h2></div>
+<p class="note" style="margin-top:0">Melde dich mit dem Google-Konto an, das deine
+Ads-Konten sieht — nicht zwingend das des Verwaltungskontos.</p>
+<div class="row" style="margin-top:20px">
+<a class="button" href="{esc(url)}">{symbol("link", 20)}Bei Google anmelden und
+zustimmen</a>
+<a class="button quiet" href="/setup/accounts">Weiter zu den Konten</a></div>
 <p class="note">Danach kommst du hierher zurück. Steht die App noch auf
 „Test“, erscheint eine Warnung; unter „Erweitert“ lässt sie sich
 übergehen. Im Testmodus läuft die Verbindung allerdings nach sieben Tagen
@@ -859,13 +707,15 @@ def result_page(ok: bool, message: str, *, nochmal: str = "",
         marke = ""
     else:
         kopf = "Hat nicht geklappt"
-        marke = '<span class="state bad">Fehler</span>'
+        marke = sh.zustand("Fehler", "bad")
     zweiter = (f'<a class="button quiet" href="{esc(nochmal)}">{esc(nochmal_text)}</a>'
                if nochmal else "")
-    return page(kopf, f"""<h1>{esc(kopf)} {marke}</h1>
-<div class="card"><p style="margin-top:0">{esc(message)}</p>
-<div class="row"><a class="button" href="/setup">Zurück zur Übersicht</a>
-{zweiter}</div></div>""")
+    return konsole(kopf, "", "/dashboard", sh.karte(
+        inhalt=f'<p style="margin-top:0">{esc(message)}</p>'
+               f'<div class="row" style="margin-top:18px">'
+               f'<a class="button" href="/dashboard">Zurück zur Übersicht</a>'
+               f'{zweiter}</div>',
+        art="" if ok else "schlecht"))
 
 
 def check_page() -> bytes:
@@ -908,10 +758,13 @@ def check_page() -> bytes:
           else f"Schreiben ein, Konten: "
                f"{', '.join(rails.get('allowed_customer_ids') or ['ALLE']) }")
 
-    return page("Prüfung", f"""<h1>Verbindung geprüft</h1>
-<p class="lead">Dieselben Prüfungen wie <code>google-ads-check.py</code>.</p>
-<div class="card"><table>{''.join(zeilen)}</table></div>
-<a class="button" href="/setup">Zurück zur Übersicht</a>""")
+    return konsole(
+        "Verbindung geprüft",
+        "Dieselben Prüfungen wie google-ads-check.py — gemessen, nicht geraten.",
+        "/check",
+        sh.karte("Ergebnis", f"<table>{''.join(zeilen)}</table>",
+                 aktion='<a class="button quiet klein" href="/check/permissions">'
+                        'Berechtigungen messen</a>'))
 
 
 def diagnose_page() -> bytes:
@@ -1047,18 +900,19 @@ werden will — statt für alle denselben Wert zu raten.</p>
     else:
         uebernehmen = ""
 
-    return page("Berechtigungen", f"""
-<h1>Welcher Verwaltungskopf öffnet welches Konto</h1>
-<p class="lead">Gemessen, nicht geraten: für jedes Konto wurde eine Zeile
-gelesen — ohne Verwaltungskopf, mit sich selbst und mit jedem anderen
-zugänglichen Konto, bis eines ging.</p>
+    return konsole(
+        "Berechtigungen",
+        "Welcher Verwaltungskopf öffnet welches Konto — für jedes Konto wurde eine "
+        "Zeile gelesen: ohne Kopf, mit sich selbst und mit jedem anderen "
+        "zugänglichen Konto, bis eines ging.",
+        "/check", f"""<div class="stack">
 <div class="card"><table>{"".join(zeilen)}</table></div>
 <div class="card akzent"><p style="margin-top:0">{schluss}</p></div>
 {uebernehmen}
+</div>
 <p class="note">Eingestellt ist derzeit
 <span class="mono">{esc(eingestellt) or "(kein Verwaltungskonto)"}</span>.
-Die Messung selbst verändert nichts — sie liest je Konto eine Zeile.</p>
-<a class="button quiet" href="/setup">Zurück zur Übersicht</a>""")
+Die Messung selbst verändert nichts — sie liest je Konto eine Zeile.</p>""")
 
 
 def save_account_logins(form: dict) -> tuple[bool, str]:
@@ -1142,6 +996,80 @@ def env_overrides() -> dict:
             if (os.environ.get(name) or "").strip()}
 
 
+def _kontenkaesten(state: dict, erlaubt: set, fest: dict) -> str:
+    """Die zugaenglichen Konten zum Anhaken, statt Nummern zu tippen.
+
+    Der Merker konten_gestellt sagt dem Speichern, dass diese Liste
+    wirklich gestellt wurde. Ohne ihn bliebe eine gescheiterte Abfrage als
+    "kein Haken" stehen — und kein Haken heisst ALLE Konten.
+    """
+    def kasten(wert: str, titel: str, zusatz: list, an: bool,
+               lesbar: bool = True) -> str:
+        gesperrt = "allowed_customer_ids" in fest or not lesbar
+        zeile = sh.ankreuzzeile("konto", titel, " · ".join(zusatz), wert=wert, an=an,
+                                gesperrt=gesperrt, kennung=wert)
+        # Ein gesperrtes Ankreuzfeld schickt seinen Wert nicht mit. Stand das
+        # Konto schon in der Berechtigung, verschwaende es beim Speichern
+        # still — also faehrt der Wert versteckt mit. Ankreuzen laesst sich
+        # so trotzdem nichts, was gerade nicht lesbar ist.
+        if gesperrt and an:
+            zeile += f'<input type="hidden" name="konto" value="{esc(wert)}">'
+        return zeile
+
+    kaesten = []
+    for account in state["accounts"]:
+        zusatz = []
+        if account.get("currency"):
+            zusatz.append(account["currency"])
+        if account.get("manager"):
+            zusatz.append("Verwaltungskonto")
+        if account["problem"]:
+            zusatz.append("nicht lesbar")
+        kaesten.append(kasten(account["id"], account["name"] or "ohne Namen",
+                              zusatz, account["id"] in erlaubt,
+                              lesbar=not account["problem"]))
+    for verwaist in sorted(erlaubt - {a["id"] for a in state["accounts"]}):
+        kaesten.append(kasten(verwaist, "steht gerade nicht in der Liste", [], True))
+
+    if state["accounts"]:
+        return ("".join(kaesten)
+                + '<input type="hidden" name="konten_gestellt" value="1">')
+    if kaesten:
+        grund = f' ({esc(state["error"].splitlines()[0])})' if state["error"] else ""
+        return (sh.warnung(f"Die Kontenliste ließ sich gerade nicht lesen{grund}. Was "
+                           f"berechtigt ist, steht unten und bleibt beim Speichern "
+                           f"unverändert. Zum Ändern zuerst die Verbindung prüfen.")
+                + "".join(kaesten))
+    return ('<p class="note">Noch keine Konten gelesen. Erst verbinden, dann stehen '
+            'sie hier zum Anhaken.</p>')
+
+
+def accounts_page(message: str = "") -> bytes:
+    """Schritt 3 der Schiene: welche Konten überhaupt beschrieben werden dürfen."""
+    state = load_state()
+    fest = env_overrides()
+    erlaubt = set(state["guardrails"].get("allowed_customer_ids") or [])
+    return konsole(
+        "Einrichtung", EINRICHTUNG_LEAD, "/setup",
+        sh.schiene(SCHIENE, 2)
+        + (sh.warnung(esc(message), "gut") if message else "")
+        + '<form method="post" action="/setup/accounts">'
+        + sh.karte(
+            "Gelesene Konten",
+            '<p class="note" style="margin-top:0;margin-bottom:16px">Alles, was das '
+            'verbundene Google-Konto sieht. Ein Haken heißt: hier darf später auch '
+            'geschrieben werden. Kein Haken bei keinem Konto heißt '
+            '<b>alle zugänglichen</b> — bei eingeschaltetem Schreiben ist das selten '
+            'gemeint.</p>'
+            + _kontenkaesten(state, erlaubt, fest)
+            + '<div class="row" style="margin-top:22px">'
+              '<button type="submit">Weiter zu den Schutzgrenzen</button>'
+              '<a class="button quiet" href="/setup/connect">Zurück</a></div>',
+            aktion='<a class="button quiet klein" href="/check/permissions">'
+                   'Berechtigungen messen</a>')
+        + "</form>")
+
+
 def guardrails_page(message: str = "") -> bytes:
     """The page that replaces editing the .env by hand."""
     state = load_state()
@@ -1156,103 +1084,102 @@ def guardrails_page(message: str = "") -> bytes:
                 f'(<code>{esc(fest[field])}</code>) und ist hier nicht änderbar. '
                 f'Aus der <code>.env</code> entfernen, um ihn hier zu setzen.</span>')
 
-    # Die Konten zum Anhaken, statt Nummern zu tippen.
-    def kasten(wert: str, titel: str, zusatz: list[str], an: bool) -> str:
-        sperre = " disabled" if "allowed_customer_ids" in fest else ""
-        rand = f'<span class="note">{esc(" · ".join(zusatz))}</span>' if zusatz else ""
-        return (f'<label class="kasten"><input type="checkbox" name="konto" '
-                f'value="{esc(wert)}"{" checked" if an else ""}{sperre}>'
-                f'<span class="kasten-text"><b>{esc(titel)}</b>'
-                f'<span class="mono">{esc(wert)}</span>{rand}</span></label>')
+    def sperre(field: str) -> str:
+        return " disabled" if field in fest else ""
 
-    kaesten = []
-    for account in state["accounts"]:
-        zusatz = []
-        if account.get("currency"):
-            zusatz.append(account["currency"])
-        if account.get("manager"):
-            zusatz.append("Verwaltungskonto")
-        if account["problem"]:
-            zusatz.append("nicht lesbar")
-        kaesten.append(kasten(account["id"], account["name"] or "ohne Namen",
-                              zusatz, account["id"] in erlaubt))
-    # Berechtigte Konten, die gerade nicht in der Liste stehen, gingen sonst
-    # beim Speichern still verloren.
-    for verwaist in sorted(erlaubt - {a["id"] for a in state["accounts"]}):
-        kaesten.append(kasten(verwaist, "steht gerade nicht in der Liste", [], True))
-
-    if state["accounts"]:
-        konten_feld = ("".join(kaesten)
-                       + '<input type="hidden" name="konten_gestellt" value="1">')
-    elif kaesten:
-        # Die Liste liess sich nicht lesen. Ohne den Merker rührt das Speichern
-        # die Berechtigung nicht an — sonst hiesse ein Klick nach einer
-        # Störung plötzlich "alle Konten", und das in die andere Richtung.
-        grund = f' ({esc(state["error"].splitlines()[0])})' if state["error"] else ""
-        konten_feld = (f'<p class="warnung">Die Kontenliste liess sich gerade nicht '
-                       f'lesen{grund}. Was berechtigt ist, steht unten und bleibt beim '
-                       f'Speichern unverändert. Zum Ändern zuerst die Verbindung '
-                       f'prüfen.</p>' + "".join(kaesten))
-    else:
-        konten_feld = ('<p class="note">Noch keine Konten gelesen. Erst verbinden, '
-                       'dann stehen sie hier zum Anhaken.</p>')
-
-    hinweis = f'<div class="card akzent"><p>{esc(message)}</p></div>' if message else ""
     deckel = rails.get("max_daily_budget_micros") or 0
-    schreibt = "checked" if rails.get("write_enabled") else ""
-
-    return page("Schutzgrenzen", f"""
-<h1>Schutzgrenzen</h1>
-<p class="lead">Was überhaupt möglich ist. Ob eine einzelne Änderung dann
-geschieht, entscheidet die Freigabe im Gespräch — jeder Schreibaufruf ist
-zuerst ein Trockenlauf.</p>
-{hinweis}
-<form method="post" action="/setup/guardrails">
-
-<div class="card">
-<h2 style="margin-top:0">Schreiben</h2>
-<label class="kasten"><input type="checkbox" name="write_enabled" {schreibt}
-  {'disabled' if 'write_enabled' in fest else ''}>
-<span class="kasten-text"><b>Schreiben erlauben</b>
-<span class="note">Ohne diesen Haken sind nur Trockenläufe möglich. Lesen
-geht immer.</span></span></label>
-{gesperrt('write_enabled')}
+    lesbar = [a for a in state["accounts"] if not a["problem"]]
+    inhalt = f"""{sh.warnung(esc(message), "gut") if message else ""}
+<div class="grid-3 gleich" style="margin-bottom:24px">
+{sh.kennzahl("Konten mit Schreibrecht",
+             f'{len(erlaubt) if erlaubt else len(lesbar)} '
+             f'<span style="color:var(--faint);font-weight:400">'
+             f'/ {len(state["accounts"])}</span>',
+             neon=bool(rails.get("write_enabled")))}
+{sh.kennzahl("Höchstes Tagesbudget",
+             geldbetrag(deckel) if deckel else "ohne Deckel")}
+{sh.kennzahl("Größter Sprung",
+             f"×{esc(rails.get('max_budget_increase_factor'))}")}
 </div>
+<form method="post" action="/guardrails"><div class="stack">
 
-<div class="card">
-<h2 style="margin-top:0">Konten, in die geschrieben werden darf</h2>
-<p class="note" style="margin-top:0">Kein Haken heißt <b>alle zugänglichen</b> —
-bei eingeschaltetem Schreiben ist das selten gemeint.</p>
-{konten_feld}
-{gesperrt('allowed_customer_ids')}
-</div>
+{sh.karte("Schreiben",
+          sh.ankreuzzeile("write_enabled", "Schreiben erlauben",
+                          "Ohne diesen Haken sind nur Trockenläufe möglich. Lesen "
+                          "geht immer.",
+                          an=bool(rails.get("write_enabled")),
+                          gesperrt="write_enabled" in fest)
+          + gesperrt("write_enabled"),
+          zustand=(sh.zustand("eingeschaltet", "warn")
+                   if rails.get("write_enabled") else sh.zustand("aus", "ok")))}
 
-<div class="card">
-<h2 style="margin-top:0">Budget</h2>
-<label>Höchstes Tagesbudget je Budget
+{sh.karte("Konten, in die geschrieben werden darf",
+          '<p class="note" style="margin-top:0">Kein Haken heißt '
+          '<b>alle zugänglichen</b> — bei eingeschaltetem Schreiben ist das selten '
+          'gemeint.</p>'
+          + _kontenkaesten(state, erlaubt, fest) + gesperrt("allowed_customer_ids"))}
+
+{sh.karte("Budget und Umfang",
+          '<div class="grid-3" style="align-items:start">'
+          + f'''<label>Höchstes Tagesbudget je Budget
 <span>In deiner Kontowährung. 0 heißt: keine Obergrenze.</span>
 <input type="text" name="max_daily_budget" value="{deckel / 1_000_000:.2f}"
-  {'disabled' if 'max_daily_budget_micros' in fest else ''}></label>
-{gesperrt('max_daily_budget_micros')}
-
+  {sperre("max_daily_budget_micros")}></label>
 <label>Größter Sprung in einem Schritt
 <span>Faktor. 2 heißt: höchstens verdoppeln.</span>
 <input type="text" name="max_budget_increase_factor"
-  value="{esc(rails.get('max_budget_increase_factor'))}"
-  {'disabled' if 'max_budget_increase_factor' in fest else ''}></label>
-{gesperrt('max_budget_increase_factor')}
-
+  value="{esc(rails.get("max_budget_increase_factor"))}"
+  {sperre("max_budget_increase_factor")}></label>
 <label>Operationen je Aufruf
 <span>Begrenzt den Schaden eines einzelnen Fehlgriffs.</span>
 <input type="text" name="max_operations_per_call"
-  value="{esc(rails.get('max_operations_per_call'))}"
-  {'disabled' if 'max_operations_per_call' in fest else ''}></label>
-{gesperrt('max_operations_per_call')}
-</div>
+  value="{esc(rails.get("max_operations_per_call"))}"
+  {sperre("max_operations_per_call")}></label>'''
+          + "</div>"
+          + gesperrt("max_daily_budget_micros")
+          + gesperrt("max_budget_increase_factor")
+          + gesperrt("max_operations_per_call"))}
 
+</div>
+<div class="row" style="margin-top:20px">
 <button type="submit">Speichern</button>
-<a class="button quiet" href="/setup">Abbrechen</a>
-</form>""")
+<a class="button quiet" href="/dashboard">Abbrechen</a></div>
+</form>
+<p class="note">Auch mit Schreibrecht ist jeder Aufruf zuerst ein Trockenlauf —
+scharf wird er erst nach ausdrücklicher Freigabe im Gespräch.</p>"""
+
+    return konsole(
+        "Schutzgrenzen",
+        "Was überhaupt möglich ist. Ob eine einzelne Änderung dann geschieht, "
+        "entscheidet die Freigabe im Gespräch.",
+        "/guardrails", inhalt)
+
+
+def save_accounts(form: dict) -> tuple[bool, str]:
+    """Schritt 3 der Schiene speichert nur die Kontenliste, sonst nichts.
+
+    Die Schutzgrenzen daneben bleiben, wie sie sind: dieser Schritt fragt
+    nach den Konten und darf keine Budgetgrenze mitverstellen, nur weil
+    sein Formular sie nicht mitschickt.
+    """
+    return save_guardrails({"konto": form.get("konto") or [],
+                            "konten_gestellt": form.get("konten_gestellt") or [],
+                            "write_enabled": _bisheriges_schreiben()})
+
+
+def _bisheriges_schreiben() -> list:
+    """Was gerade eingestellt ist — als Formularwert, damit es so bleibt."""
+    try:
+        rails = gac.load_config()["guardrails"]
+    except gac.GoogleAdsError:
+        rails = dict(gac.DEFAULT_GUARDRAILS)
+        if gac.CONFIG_FILE.exists():
+            try:
+                gespeichert = json.loads(gac.CONFIG_FILE.read_text(encoding="utf-8"))
+                rails.update(gespeichert.get("guardrails") or {})
+            except (OSError, json.JSONDecodeError):
+                pass
+    return ["1"] if rails.get("write_enabled") else []
 
 
 def save_guardrails(form: dict) -> tuple[bool, str]:
@@ -1347,27 +1274,28 @@ def rotate_token(token_file: pathlib.Path) -> tuple[bool, str]:
 
 def token_page(token_file: pathlib.Path, neues: str = "") -> bytes:
     if neues:
-        return page("Zugangswort", f"""<h1>Neues Zugangswort</h1>
-<div class="card akzent">
+        return konsole("Zugangswort", "Ab sofort gilt das neue Wort.",
+                       "/dashboard", f"""<div class="card akzent">
 <p>Ab sofort gilt dieses Wort. Das alte ist ungültig — auch für den
 Connector in claude.ai, der neu eingetragen werden muss.</p>
 <pre>{esc(neues)}</pre>
 <p class="note">Jetzt in einen Passwortspeicher übernehmen. Diese Seite zeigt
 es kein zweites Mal; danach steht es nur noch in
 <code>{esc(token_file)}</code> auf dem Server.</p>
-<a class="button" href="/setup">Zurück zur Übersicht</a></div>""")
-    return page("Zugangswort", """<h1>Zugangswort wechseln</h1>
-<p class="lead">Der Schlüssel des MCP-Endpunkts — das, was claude.ai als
-<code>Authorization: Bearer …</code> mitschickt.</p>
-<div class="card">
+<div class="row" style="margin-top:18px">
+<a class="button" href="/dashboard">Zurück zur Übersicht</a></div></div>""")
+    return konsole("Zugangswort",
+                   "Der Schlüssel des MCP-Endpunkts — das, was claude.ai als "
+                   "Authorization: Bearer … mitschickt.",
+                   "/dashboard", """<div class="card">
 <p>Mit deiner Anmeldung an diesem Portal hat das Wort nichts zu tun. Ein
 Wechsel sperrt niemanden hier aus; er macht nur das alte Wort sofort
 ungültig. Der Connector in claude.ai trägt das alte und muss danach neu
 eingetragen werden — bis dahin antwortet der Server ihm mit einer
 Abweisung.</p>
-<form method="post" action="/setup/token">
+<form method="post" action="/setup/token" class="row" style="margin-top:18px">
 <button class="danger" type="submit">Neues Zugangswort erzeugen</button>
-<a class="button quiet" href="/setup">Abbrechen</a>
+<a class="button quiet" href="/dashboard">Abbrechen</a>
 </form></div>""")
 
 

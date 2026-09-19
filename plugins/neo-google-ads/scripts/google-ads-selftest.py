@@ -718,10 +718,11 @@ def test_http() -> None:
         case("und traegt den Namen aus dem Zustimmungsbildschirm",
              f"<title>{gac.PORTAL_NAME}</title>" in koerper,
              koerper.split("<title>")[1].split("</title>")[0] if "<title>" in koerper else "")
-        for pfad in ("/setup", "/konto", "/setup/diagnose"):
+        for pfad in ("/dashboard", "/setup", "/guardrails", "/check",
+                     "/check/permissions", "/account"):
             status, _, ort = hole_roh(pfad)
             case(f"{pfad} bleibt hinter der Anmeldung",
-                 status == 303 and (ort or "").endswith("/anmelden"),
+                 status == 303 and (ort or "").endswith("/login"),
                  f"HTTP {status} -> {ort}")
         http_mod.Handler.setup_enabled = False
     finally:
@@ -1182,7 +1183,7 @@ def Handler_open_paths_guard() -> set:
     Brandings die Anwendung ab.
     """
     http_mod = load_http()
-    return {p for p in ("/", "/setup", "/konto", "/anmelden")
+    return {p for p in ("/", "/dashboard", "/setup", "/account", "/login")
             if http_mod.Handler._is_portal_path(p)}  # noqa: SLF001
 
 
@@ -1218,7 +1219,7 @@ def test_portal_door() -> None:
                        "Origin": "https://ads.mcp.neo-digital.at"})._same_origin())
     case("a Referer is accepted when there is no Origin",
          handler_with({"Host": "ads.mcp.neo-digital.at",
-                       "Referer": "https://ads.mcp.neo-digital.at/anmelden"})._same_origin())
+                       "Referer": "https://ads.mcp.neo-digital.at/login"})._same_origin())
     case("A FORM FROM ANOTHER SITE IS STILL REFUSED",
          not handler_with({"Host": "ads.mcp.neo-digital.at",
                            "Origin": "https://boeser.example"})._same_origin())
@@ -1230,7 +1231,7 @@ def test_portal_door() -> None:
          not handler_with({"Host": "ads.mcp.neo-digital.at"})._same_origin())
     case("an opaque origin falls through to the Referer",
          handler_with({"Host": "ads.mcp.neo-digital.at", "Origin": "null",
-                       "Referer": "https://ads.mcp.neo-digital.at/konto"})._same_origin())
+                       "Referer": "https://ads.mcp.neo-digital.at/account"})._same_origin())
     case("and an opaque origin with no Referer is refused",
          not handler_with({"Host": "ads.mcp.neo-digital.at",
                            "Origin": "null"})._same_origin())
@@ -1267,8 +1268,9 @@ def test_portal_door() -> None:
     # --anthropic-only locks the operator out of their own server.
     case("the portal paths are recognised",
          all(http_mod.Handler._is_portal_path(p) for p in
-             ("/anmelden", "/anmelden/code", "/abmelden", "/konto", "/konto/2fa",
-              "/setup", "/setup/guardrails")))
+             ("/login", "/login/code", "/logout", "/account", "/account/2fa",
+              "/dashboard", "/setup", "/guardrails", "/check",
+              "/check/permissions", "/setup/accounts")))
     case("and /mcp is not one of them",
          not http_mod.Handler._is_portal_path("/mcp")
          and not http_mod.Handler._is_portal_path("/health"))
@@ -1282,12 +1284,13 @@ def test_portal_door() -> None:
     # dort zurueck, also wird er hier festgehalten.
     import google_ads_setup as ui_mod
     import portal_pages as pp
-    seite = ui_mod.page("Beispiel", "<p>x</p>").decode("utf-8")
+    ui_mod.set_viewer("jemand")
+    seite = ui_mod.konsole("Beispiel", "kurz", "/dashboard", "<p>x</p>").decode("utf-8")
     titel = seite.split("<title>")[1].split("</title>")[0]
     case("THE PAGE TITLE CARRIES NO GOOGLE TRADEMARK",
          "google" not in titel.lower(),
          f"<title>{titel}</title> — Google refuses an app name containing 'Google'")
-    kopf = seite.split('class="wo">')[1].split("</span>")[0]
+    kopf = seite.split('class="eyebrow">')[1].split("</span>")[0]
     case("nor does the name beside the word mark",
          "google" not in kopf.lower(), kopf)
     anmeldung = pp.login_page().decode("utf-8")
@@ -1348,7 +1351,7 @@ def test_portal_door() -> None:
          and not any(fremd in startseite for fremd in
                      ("fonts.googleapis", "fonts.gstatic", "cdn.", "<script")))
     case("and offers the way in at the top",
-         'href="/anmelden"' in startseite)
+         'href="/login"' in startseite)
     case("it links out to the imprint and the privacy notice",
          gac.PORTAL_IMPRESSUM in startseite and gac.PORTAL_DATENSCHUTZ in startseite,
          f"{gac.PORTAL_IMPRESSUM} / {gac.PORTAL_DATENSCHUTZ}")
@@ -1370,15 +1373,15 @@ def test_portal_door() -> None:
     handler._client_ip = lambda: None
     handler._account = lambda *a: gegangen.append(("account", a[1]))
     fake_user = {"username": "erich", "id": 1, "totp_confirmed": 0, "must_change": 0}
-    for pfad in ("/anmelden", "/anmelden/code", "/abbrechen"):
+    for pfad in ("/login", "/login/code", "/login/cancel"):
         gegangen.clear()
         handler._portal_closed(None, pfad, "GET", fake_user, {"token_hash": "x"})
         case(f"{pfad} leads somewhere useful once signed in",
-             gegangen == [("redirect", "/setup")], str(gegangen))
+             gegangen == [("redirect", "/dashboard")], str(gegangen))
     gegangen.clear()
-    handler._portal_closed(None, "/setup/guardrails", "GET", fake_user, {"token_hash": "x"})
+    handler._portal_closed(None, "/guardrails", "GET", fake_user, {"token_hash": "x"})
     case("and the Google pages still go where they went",
-         gegangen == [("setup", "/setup/guardrails")], str(gegangen))
+         gegangen == [("setup", "/guardrails")], str(gegangen))
 
 
 # --------------------------------------------------------------------------
@@ -1458,7 +1461,7 @@ def test_permission_matrix() -> None:
                                       "CLOUD_PROJECT_NOT_APPROVED_FOR_PRODUCTION"}],
                 "guardrails": dict(gac.DEFAULT_GUARDRAILS),
                 "config": json.loads(konfig.read_text(encoding="utf-8"))}
-            seite = setup_mod.status_page("https://x.at").decode("utf-8")
+            seite = setup_mod.dashboard_page("https://x.at").decode("utf-8")
             case("AN UNAPPROVED CLOUD PROJECT IS NAMED AS SUCH",
                  "Das ist nicht der Verwaltungskopf" in seite
                  and "918722857235" in seite, "")
@@ -1612,6 +1615,110 @@ def test_permission_matrix() -> None:
          client.config["login_customer_id"] == MANAGER)
 
 
+
+# --------------------------------------------------------------------------
+# Passkeys
+#
+# Die Vektoren unten sind echt: erzeugt mit OpenSSL, nicht mit dem Modul,
+# das sie hier prueft. Ein Fehler in der eigenen Rechnung faellt damit auf,
+# ein gemeinsamer Fehler in beiden nicht — deshalb ist das Gegenueber eine
+# fremde Bibliothek und kein zweiter Durchlauf derselben Zeilen.
+# --------------------------------------------------------------------------
+WA_RP = 'ads.mcp.neo-digital.at'
+WA_ORIGIN = 'https://ads.mcp.neo-digital.at'
+WA_CHALLENGE = 'Q2hhbGxlbmdlLWZ1ZXItZGVuLVNlbGJzdHRlc3QtMDAx'
+WA_CRED = 'EBESExQVFhcYGRobHB0eHyAhIiMkJSYnKCkqKywtLi8'
+WA_EC_REG_CLIENT = ('eyJ0eXBlIjoid2ViYXV0aG4uY3JlYXRlIiwiY2hhbGxlbmdlIjoiUTJoaGJHeGxibWRsTFdaMVpYSXRaR1Z1TFZObGJHSnpkSFJsYzNRdE1EQXgiLCJvcmlnaW4iOiJodHRwczovL2Fkcy5tY3AubmVvLWRpZ2l0YWwuYXQiLCJjcm9zc09yaWdpbiI6ZmFsc2V9')
+WA_EC_REG_ZEUGNIS = ('o2NmbXRkbm9uZWdhdHRTdG10oGhhdXRoRGF0YVikRwYXmND2CxN6nmxjVMNDe1rXj9AQD8pWMal7Bx55GRZFAAAAAAAAAAAAAAAAAAAAAAAAAAAAIBAREhMUFRYXGBkaGxwdHh8gISIjJCUmJygpKissLS4vpQECAyYgASFYIPtIXMjjuz7x6izWs7v1TWEqdT5SoSKzq-d9uBtXAIFoIlggHZQkVBCWqc9qg5Vf0SOjemRUaqLK6ZRAcxMVQEYbqMM')
+WA_EC_AN_CLIENT = ('eyJ0eXBlIjoid2ViYXV0aG4uZ2V0IiwiY2hhbGxlbmdlIjoiUTJoaGJHeGxibWRsTFdaMVpYSXRaR1Z1TFZObGJHSnpkSFJsYzNRdE1EQXgiLCJvcmlnaW4iOiJodHRwczovL2Fkcy5tY3AubmVvLWRpZ2l0YWwuYXQiLCJjcm9zc09yaWdpbiI6ZmFsc2V9')
+WA_EC_AN_AUTH = ('RwYXmND2CxN6nmxjVMNDe1rXj9AQD8pWMal7Bx55GRYFAAAABw')
+WA_EC_AN_SIG = ('MEUCIDWmktixIV4pC0qXNLo-nprgEHkkxX8aWSrpqZ9vcrS3AiEAkbUqf2mB46O0sPEl26kaZHBpI-QoLX876HDyqk8qfjw')
+WA_RSA_REG_ZEUGNIS = ('o2NmbXRkbm9uZWdhdHRTdG10oGhhdXRoRGF0YVkBZ0cGF5jQ9gsTep5sY1TDQ3ta14_QEA_KVjGpewceeRkWRQAAAAAAAAAAAAAAAAAAAAAAAAAAACAQERITFBUWFxgZGhscHR4fICEiIyQlJicoKSorLC0uL6QBAwM5AQAgWQEAuuSE49_kwSUfSClC4kYlR_UaL0myfwohdnMN_4YTDpwhyvpRK-KqajJ8wyzeWQIa0i_waUSwDa3mzz6HeTtxOdpnAVPYDnxod5u7sJiZO7IS46lTLDP1MDXpL_-UcVT87WJjOAp-0zBHaCGwW50rmjS0o__Hd2DKtLp9rM2gu4nuqItyRfBPeNBk8OLgpMHW_fS5qBTJ7WXUS6-qYSCVi3xruL6ZHVIuOs_2LLp-ZbHDn6UuBwu--NsG6CSRKsjnNICrRv7w5GDPLMJVnLq-uZEOkrBAsn5Ng7z9-GIppG0rU3eJgY0ol3tG80ezLwfdaXxfWWlS7-8sndgDSK7OlSFDAQAB')
+WA_RSA_AN_SIG = ('RdkIwVz6PRBqWfhEziE6Jb4PnfEmP8VVdK0wi7L0hHLXz1vACphn3iZZ5_UjBY7REZtaF9ZDfH6pnsyl2Qfp8kequAT1N0UeKNdpoDgup8R5H9mvhvtohZR49WQBW5ZdM-2h8LCHq_bjGn3VrzzDSiV8GbrqMQZhmgcBy3dEtPO9m-rZbYgnRTWV5Y2n7WYKTOr27tPMU5umKO2-yt3jeXohevxI80G98bCgv899WhHgzXJuxARyS3lqKoEFNr_KE6coWyCx24sdCK0md3dwVSU9mirmhZM2w4va4wXPU7tldi_BYQFwkc5rMV1KWHKXAEf1KABmDk_3UfMsTdAhIA')
+
+
+def test_passkeys():
+    import portal_webauthn as wa
+
+    roh = wa.b64url_decode
+    kennung, schluessel, zaehler = wa.registrierung_pruefen(
+        client_daten=roh(WA_EC_REG_CLIENT), zeugnis=roh(WA_EC_REG_ZEUGNIS),
+        challenge=WA_CHALLENGE, herkunft=WA_ORIGIN, rp_id=WA_RP)
+    case("A PASSKEY REGISTRATION IS READ BACK AS THE DEVICE SENT IT",
+         kennung == WA_CRED and zaehler == 0, kennung)
+    case("and the public key comes out in a form that survives the database",
+         json.loads(schluessel)["alg"] == -7)
+
+    neuer_zaehler = wa.anmeldung_pruefen(
+        client_daten=roh(WA_EC_AN_CLIENT), authenticator=roh(WA_EC_AN_AUTH),
+        signatur=roh(WA_EC_AN_SIG), gespeicherter_schluessel=schluessel,
+        challenge=WA_CHALLENGE, herkunft=WA_ORIGIN, rp_id=WA_RP, zaehler=0)
+    case("AN ES256 SIGNATURE MADE BY OPENSSL IS ACCEPTED", neuer_zaehler == 7,
+         neuer_zaehler)
+
+    _, rsa_schluessel, _ = wa.registrierung_pruefen(
+        client_daten=roh(WA_EC_REG_CLIENT), zeugnis=roh(WA_RSA_REG_ZEUGNIS),
+        challenge=WA_CHALLENGE, herkunft=WA_ORIGIN, rp_id=WA_RP)
+    case("AN RS256 SIGNATURE MADE BY OPENSSL IS ACCEPTED",
+         wa.anmeldung_pruefen(
+             client_daten=roh(WA_EC_AN_CLIENT), authenticator=roh(WA_EC_AN_AUTH),
+             signatur=roh(WA_RSA_AN_SIG), gespeicherter_schluessel=rsa_schluessel,
+             challenge=WA_CHALLENGE, herkunft=WA_ORIGIN, rp_id=WA_RP,
+             zaehler=0) == 7)
+
+    def verweigert(name, **aenderung):
+        felder = dict(client_daten=roh(WA_EC_AN_CLIENT),
+                      authenticator=roh(WA_EC_AN_AUTH),
+                      signatur=roh(WA_EC_AN_SIG),
+                      gespeicherter_schluessel=schluessel, challenge=WA_CHALLENGE,
+                      herkunft=WA_ORIGIN, rp_id=WA_RP, zaehler=0)
+        felder.update(aenderung)
+        try:
+            wa.anmeldung_pruefen(**felder)
+        except wa.PasskeyError as exc:
+            case(name, True, str(exc)[:70])
+            return
+        case(name, False, "NICHT VERWEIGERT — die Unterschrift ging durch")
+
+    verbogen = bytearray(roh(WA_EC_AN_SIG))
+    verbogen[-1] ^= 1
+    verweigert("a signature with one bit flipped is refused",
+               signatur=bytes(verbogen))
+    verweigert("a signature for another server is refused", rp_id="boese.example")
+    verweigert("a signature made on another site is refused",
+               herkunft="https://boese.example")
+    verweigert("a reply to a different challenge is refused",
+               challenge="TjBOLUNoYWxsZW5nZS1kaWUtbmllLWF1c2dlZ2ViZW4td3VyZGU")
+    verweigert("A REPLAYED SIGNATURE IS REFUSED, BECAUSE THE COUNTER STOOD STILL",
+               zaehler=7)
+    verweigert("and one from before the last use is refused too", zaehler=9)
+    verweigert("a registration response is not accepted as a sign-in",
+               client_daten=roh(WA_EC_REG_CLIENT))
+
+    anderes_auth = bytearray(roh(WA_EC_AN_AUTH))
+    anderes_auth[32] &= ~0x01  # das Merkmal "jemand war da" geloescht
+    verweigert("a device that reports nobody touched it is refused",
+               authenticator=bytes(anderes_auth))
+
+    # Der abgeschnittene Datensatz: frueher las das CBOR ueber das Ende
+    # hinaus und lieferte Unsinn, statt zu widersprechen.
+    try:
+        wa.cbor_decode(roh(WA_EC_REG_ZEUGNIS)[:40])
+        case("a truncated record is refused, not guessed at", False, "kein Fehler")
+    except wa.PasskeyError:
+        case("a truncated record is refused, not guessed at", True)
+
+    faelle = [("00", 0), ("1818", 24), ("1903e8", 1000), ("20", -1), ("3863", -100),
+              ("4401020304", b"\x01\x02\x03\x04"), ("6449455446", "IETF"),
+              ("83010203", [1, 2, 3]), ("a201020304", {1: 2, 3: 4}), ("f4", False),
+              ("f5", True), ("f6", None), ("a26161016162820203", {"a": 1, "b": [2, 3]}),
+              ("1a000f4240", 1000000), ("1b000000e8d4a51000", 1000000000000)]
+    falsch = [name for name, erwartet in faelle
+              if wa.cbor_decode(bytes.fromhex(name)) != erwartet]
+    case("the CBOR reader agrees with the examples in RFC 8949",
+         not falsch, ", ".join(falsch))
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Prove the Google Ads guardrails hold.")
     parser.add_argument("--verbose", action="store_true", help="show the detail of every case")
@@ -1630,7 +1737,8 @@ def main() -> int:
                        ("qr code", test_qr), ("two factor", test_two_factor),
                        ("portal accounts", test_portal),
                        ("portal door", test_portal_door),
-                       ("permission matrix", test_permission_matrix)):
+                       ("permission matrix", test_permission_matrix),
+                       ("passkeys", test_passkeys)):
         start = len(RESULTS)
         run()
         failed = sum(1 for _, ok, _ in RESULTS[start:] if not ok)
