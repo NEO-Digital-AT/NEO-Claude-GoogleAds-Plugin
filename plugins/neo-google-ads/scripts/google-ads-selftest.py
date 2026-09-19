@@ -1425,10 +1425,37 @@ def test_portal_door() -> None:
          # Vergleich also weg, sonst prueft man die Bruchstellen.
          gac.OAUTH_SCOPE in startseite.replace("<wbr>", ""), gac.OAUTH_SCOPE)
     case("it names the operator", gac.PORTAL_OPERATOR in startseite)
+    # Die E-Mail-Adresse steht auf der Seite, aber nicht als eine: im
+    # Quelltext liegen die beiden Haelften getrennt, das Zeichen dazwischen
+    # kommt aus dem Stilblatt. Damit laufen die Erntemaschinen ins Leere,
+    # die Seiten mit einem Muster nach Adressen absuchen.
+    import oeffentliche_seite as oeff
+    adresse = gac.PORTAL_CONTACT or "hallo@neo-digital.at"
+    kopf, _, rumpf = adresse.partition("@")
+    case("NO E-MAIL ADDRESS IS SPELLED OUT IN THE PAGE SOURCE",
+         not re.search(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", startseite),
+         str(re.findall(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}",
+                        startseite)[:3]))
+    case("nor is there a mailto: for a collector to pick up",
+         "mailto:" not in startseite)
+    case("but both halves are there, so the page can still show it",
+         f'data-k="{kopf}"' in startseite and f'data-d="{rumpf}"' in startseite)
+    case("and the style sheet supplies the character between them",
+         '"\\0040"' in startseite, "CSS-Escape fuer @")
+    case("an address without an at sign is passed through, not cut in half",
+         oeff.postfach("nur-ein-name") == "nur-ein-name")
+
+    # Die Seite laedt von keinem fremden Rechner. Das eine Skript, das sie
+    # hat, steht in ihr drin — geprueft wird deshalb auf Quellenangaben,
+    # nicht mehr auf das Wort <script>.
     case("it brings its own picture along instead of fetching one",
          "<svg" in startseite and "http://www.w3.org/2000/svg" in startseite
          and not any(fremd in startseite for fremd in
-                     ("fonts.googleapis", "fonts.gstatic", "cdn.", "<script")))
+                     ("fonts.googleapis", "fonts.gstatic", "cdn.")))
+    case("AND LOADS NOTHING FROM ANYWHERE: no script or style has a source",
+         not re.search(r"<script[^>]*\ssrc\s*=", startseite)
+         and not re.search(r'<link[^>]*rel="stylesheet"', startseite),
+         "kein src= am Skript, kein fremdes Stilblatt")
     case("and offers the way in at the top",
          'href="/login"' in startseite)
     case("it links out to the imprint and the privacy notice",

@@ -29,7 +29,11 @@ DREI STELLEN WEICHEN AB, jede aus einem Grund:
                 Hier steht sie vollständig: auf einer Seite, die Auskunft
                 über Daten gibt, ist die ganze Angabe das Mindeste.
 
-Kein Aufbauschritt, keine Fremdbibliothek, kein JavaScript.
+Kein Aufbauschritt, keine Fremdbibliothek, nichts von einem fremden
+Rechner. JavaScript steht genau an einer Stelle: die E-Mail-Adresse wird
+zerlegt ausgeliefert, damit im Quelltext kein x@y steht, und die paar
+Zeilen setzen sie wieder zu einem anklickbaren Verweis zusammen. Ohne sie
+ist die Adresse trotzdem zu lesen — das Stilblatt setzt sie zusammen.
 """
 from __future__ import annotations
 
@@ -54,6 +58,44 @@ UID = "ATU57275308"
 NEO = "https://neo-digital.at"
 
 
+def postfach(adresse: str) -> str:
+    """Eine E-Mail-Adresse, die im Quelltext der Seite nicht als eine dasteht.
+
+    WAS DAS KANN UND WAS NICHT. Eine Adresse, die auf der Seite zu lesen
+    sein soll, laesst sich nicht verschluesseln: der Browser muss sie
+    anzeigen, also geht sie im Klartext ueber die Leitung. Verschleiern
+    laesst sie sich, und zwar in zwei Stufen:
+
+        im Quelltext   steht kein Stueck, das wie eine Adresse aussieht —
+                       kein x@y. Das Zeichen dazwischen kommt aus dem
+                       Stilblatt, die beiden Haelften aus Attributen.
+                       Damit laufen alle Erntemaschinen ins Leere, die
+                       den Seitenquelltext mit einem Muster absuchen, und
+                       das sind fast alle.
+        im Seitenbaum  steht auch nach dem Laden kein mailto:. Wer einen
+                       Browser laufen laesst und danach alle Verweise
+                       einsammelt — der zweithaeufigste Weg — findet
+                       ebenfalls nichts. Die Adresse entsteht erst beim
+                       Klick, und nur als Ziel des Sprungs.
+
+    WAS BLEIBT: wer genau diese Seite ansieht, liest die Adresse, wie
+    jeder Besucher sie liest, und setzt sie von Hand zusammen. Dagegen
+    hilft nur, sie gar nicht anzuzeigen — und das verlangt Googles
+    Pruefung ausdruecklich nicht. Weiter reicht Verschleierung nicht, und
+    Behauptungen darueber hinaus waeren unehrlich.
+
+    Ohne JavaScript steht die Adresse trotzdem lesbar da, nur nicht
+    anklickbar: das Stilblatt setzt sie zusammen. Das ist Absicht — ein
+    Pruefer, der kein Skript laufen laesst, muss den Kontakt finden.
+    """
+    kopf, _, rumpf = adresse.partition("@")
+    if not rumpf:
+        return esc(adresse)
+    return (f'<span class="postfach" role="link" tabindex="0" '
+            f'title="E-Mail-Adresse — anklicken zum Schreiben" '
+            f'data-k="{esc(kopf)}" data-d="{esc(rumpf)}"></span>')
+
+
 def beiwort() -> str:
     """Was neben der Wortmarke steht: der Name ohne das, was das Logo schon sagt."""
     name = gac.PORTAL_NAME
@@ -66,6 +108,14 @@ def beiwort() -> str:
 # --------------------------------------------------------------------------
 SEITEN_CSS = """
 html{scroll-behavior:smooth;overflow-x:clip}
+/* Die E-Mail-Adresse steht in zwei Attributen; das Zeichen dazwischen
+   kommt von hier. Im Quelltext der Seite steht damit kein x@y. */
+.postfach::after{content:attr(data-k) "\\0040" attr(data-d)}
+.postfach{color:var(--neon);cursor:pointer;
+  text-decoration:underline;text-decoration-color:color-mix(in srgb,var(--neon) 45%,transparent);
+  text-underline-offset:.22em}
+.postfach:hover{color:var(--neon-up);text-decoration-color:currentColor}
+.postfach:focus-visible{outline:2px solid var(--neon-up);outline-offset:2px}
 .kopf{position:sticky;top:0;z-index:10;border-bottom:1px solid var(--line);
   background:color-mix(in srgb, var(--ink-900) 82%, transparent);backdrop-filter:blur(12px)}
 .kopf .innen{max-width:var(--measure-site);margin:0 auto;padding:14px 28px;
@@ -438,7 +488,9 @@ def _transparenz() -> str:
         _zeile("Firma", esc(FIRMA), INHABER)
         + _zeile("Anschrift", esc(ANSCHRIFT))
         + _zeile("Telefon", f'<a href="tel:{esc(TELEFON_WAHL)}">{esc(TELEFON_TEXT)}</a>')
-        + _zeile("E-Mail", f'<a href="mailto:{esc(EMAIL)}">{esc(EMAIL)}</a>')
+        + _zeile("E-Mail", postfach(EMAIL) if EMAIL else
+                 '<span class="note">nicht gesetzt — '
+                 'GOOGLE_ADS_PORTAL_CONTACT in der .env</span>')
         + _zeile("UID-Nr.", f'<span class="mono">{esc(UID)}</span>')
         + _zeile("Zugang", 'Nicht öffentlich. '
                            '<span class="state neutral">nur Mitarbeiter</span>'))
@@ -490,6 +542,28 @@ def _fuss(logo: str) -> str:
 # --------------------------------------------------------------------------
 # Die ganze Seite
 # --------------------------------------------------------------------------
+# Die einzigen JavaScript-Zeilen dieser Seite. Sie laden nichts und
+# rechnen nichts; sie haengen einen Klickgriff an den Platzhalter der
+# E-Mail-Adresse. Die Adresse selbst entsteht erst im Griff, beim Klick —
+# nicht beim Laden. Siehe postfach() weiter oben.
+POSTFACH_JS = """
+(function () {
+  document.querySelectorAll('.postfach').forEach(function (platz) {
+    var springen = function () {
+      // Erst hier entsteht die Adresse — vorher steht sie nirgends im
+      // Seitenbaum, also findet sie auch kein Sammler, der den Browser
+      // laufen laesst und danach die Verweise abgreift.
+      location.href = 'mail' + 'to:' + platz.dataset.k
+        + String.fromCharCode(64) + platz.dataset.d;
+    };
+    platz.addEventListener('click', springen);
+    platz.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); springen(); }
+    });
+  });
+})();
+"""
+
 BESCHREIBUNG = ("Google Ads im Gespräch steuern: Konten lesen, auswerten und "
                 f"nach ausdrücklicher Freigabe ändern. Betrieben von {FIRMA}.")
 
@@ -521,4 +595,5 @@ def seite(*, logo: str, favicon: str, anmelden_url: str = "/login") -> bytes:
             f"{_transparenz()}\n"
             "</main>\n"
             f"{_fuss(logo)}\n"
+            f"<script>{POSTFACH_JS}</script>\n"
             "</body></html>").encode("utf-8")
