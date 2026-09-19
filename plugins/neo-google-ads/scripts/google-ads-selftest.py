@@ -40,6 +40,7 @@ import hashlib
 import json
 import os
 import pathlib
+import re
 import sys
 import tempfile
 import urllib.error
@@ -1313,15 +1314,39 @@ def test_portal_door() -> None:
     case("the home page is titled exactly like the consent screen",
          startseite.split("<title>")[1].split("</title>")[0] == gac.PORTAL_NAME,
          startseite.split("<title>")[1].split("</title>")[0])
-    case("and carries that same name as its heading",
-         startseite.split("<h1>")[1].split("</h1>")[0] == gac.PORTAL_NAME)
-    fliessend = " ".join(startseite.split())
+    # Die Ueberschrift ist seit dem Umbau nach dem Designsystem ein Satz,
+    # kein Name. Googles Pruefung verlangt den Namen auf der Seite, nicht in
+    # einem bestimmten Element — er steht im Titel, in der Kopfleiste und im
+    # ersten Absatz. Geprueft wird, dass er im sichtbaren Text vorkommt.
+    rumpf = startseite.split("<body>", 1)[-1]
+    sichtbar = " ".join(re.sub(r"<[^>]+>", " ", rumpf).split())
+    case("and the same name stands in the visible text",
+         gac.PORTAL_NAME in sichtbar, sichtbar[:120])
+    # Der Name darf nicht im Fliesstext festgeschrieben sein: sonst nennt
+    # der Titel den einen und der Absatz darunter den anderen, und genau
+    # diese Abweichung hat Googles Pruefung schon einmal beanstandet.
+    merker = gac.PORTAL_NAME
+    try:
+        gac.PORTAL_NAME = "Probename Leitstand"
+        fremd = ui_mod.startseite("https://x.at").decode("utf-8")
+    finally:
+        gac.PORTAL_NAME = merker
+    case("the name comes from the configuration, not from the prose",
+         "AdsManagment" not in fremd and fremd.count("Probename Leitstand") >= 3,
+         f"{fremd.count('Probename Leitstand')}x gesetzt, "
+         f"{fremd.count('AdsManagment')}x fest verdrahtet")
     case("it explains what the application is for",
-         "Wozu diese Anwendung dient" in fliessend
-         and "is an internal tool operated by" in fliessend)
+         "verbindet Google Ads mit Claude" in sichtbar
+         and "connects Google Ads to Claude" in sichtbar)
     case("it names the scope it asks for",
-         gac.OAUTH_SCOPE in startseite, gac.OAUTH_SCOPE)
+         # <wbr> bricht die URL um und steht in keinem Text — vor dem
+         # Vergleich also weg, sonst prueft man die Bruchstellen.
+         gac.OAUTH_SCOPE in startseite.replace("<wbr>", ""), gac.OAUTH_SCOPE)
     case("it names the operator", gac.PORTAL_OPERATOR in startseite)
+    case("it brings its own picture along instead of fetching one",
+         "<svg" in startseite and "http://www.w3.org/2000/svg" in startseite
+         and not any(fremd in startseite for fremd in
+                     ("fonts.googleapis", "fonts.gstatic", "cdn.", "<script")))
     case("and offers the way in at the top",
          'href="/anmelden"' in startseite)
     case("it links out to the imprint and the privacy notice",

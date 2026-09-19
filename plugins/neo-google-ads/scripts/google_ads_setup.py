@@ -56,6 +56,7 @@ import urllib.parse
 import urllib.request
 
 import google_ads_client as gac
+import oeffentliche_seite
 
 AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 PENDING_FILE = gac.CONFIG_FILE.parent / "pending-auth.json"
@@ -74,8 +75,8 @@ MARKE = gac.PORTAL_NAME
 
 
 def marke_beiwort() -> str:
-    """Was neben der Wortmarke steht: der Name ohne das, was das Logo schon sagt."""
-    return MARKE[4:].strip() if MARKE.upper().startswith("NEO ") else MARKE
+    """Was neben der Wortmarke steht — dieselbe Regel wie auf der oeffentlichen Seite."""
+    return oeffentliche_seite.beiwort()
 
 # Das Favicon, wie geliefert: grünes Zeichen auf dem Markenviolett. Als
 # data:-URI eingebettet, damit die Seite eine Datei weniger ausliefern muss
@@ -479,81 +480,19 @@ def startseite(base_url: str = "") -> bytes:
          der Startseite ueberein."
 
     Also: erreichbar ohne Anmeldung, der Name im Wortlaut des
-    Zustimmungsbildschirms als Ueberschrift, und darunter in Saetzen, was
-    die Anwendung tut und welche Daten sie warum anfasst. Sie zeigt
-    nichts an, was nicht jeder sehen darf — kein Kontostand, keine
-    Kennzahl, keine Kundennummer.
+    Zustimmungsbildschirms als Titel, und darunter in Saetzen, was die
+    Anwendung tut und welche Daten sie warum anfasst. Sie zeigt nichts an,
+    was nicht jeder sehen darf — kein Kontostand, keine Kennzahl, keine
+    Kundennummer, und nichts aus der Konfiguration.
+
+    Gebaut wird sie in oeffentliche_seite.py, nach dem NEO-Designsystem.
+    Sie bringt ihr eigenes Aussehen mit und benutzt page() deshalb nicht:
+    die Verwaltung dahinter ist ein Arbeitsgeraet, diese Seite ist eine
+    Visitenkarte, und beide duerfen unterschiedlich aussehen.
     """
-    kontakt = (f'<a href="mailto:{esc(gac.PORTAL_CONTACT)}">'
-               f'{esc(gac.PORTAL_CONTACT)}</a>' if gac.PORTAL_CONTACT else
-               '<span class="note">(GOOGLE_ADS_PORTAL_CONTACT ist nicht gesetzt)</span>')
     set_viewer("")
-    return page(MARKE, f"""
-<h1>{esc(MARKE)}</h1>
-<p class="lead">Ein Werkzeug zur Verwaltung von Google-Ads-Konten,
-betrieben von {esc(gac.PORTAL_OPERATOR)} für die eigenen Konten und die
-betreuter Kunden.</p>
-
-<div class="card">
-<h2 style="margin-top:0">Wozu diese Anwendung dient</h2>
-<p style="margin-top:0">{esc(MARKE)} liest Kampagnen, Anzeigengruppen,
-Keywords, Suchbegriffe, Budgets und Kennzahlen aus den Google-Ads-Konten,
-zu denen der angemeldete Nutzer bereits Zugang hat, und bereitet sie zur
-Auswertung auf. Nach ausdrücklicher Freigabe im Einzelfall schreibt sie
-auch zurück: Keywords und ausschließende Keywords pflegen, Status von
-Kampagnen und Anzeigengruppen ändern, Budgets und Gebote anpassen.</p>
-<p>Jeder schreibende Aufruf läuft zuerst als Trockenlauf gegen Googles
-eigene Regelprüfung und verändert dabei nichts. Scharf wird er nur, wenn
-er einzeln bestätigt wird. Budgetobergrenzen und eine Liste erlaubter
-Konten begrenzen, was überhaupt möglich ist; jeder Versuch steht mit
-Zeitpunkt, Konto, Begründung und Ergebnis im Änderungsprotokoll.</p>
-</div>
-
-<div class="card">
-<h2 style="margin-top:0">Welche Google-Daten verwendet werden</h2>
-<table>
-<tr><th>Berechtigung</th><td class="mono">{esc(gac.OAUTH_SCOPE)}</td></tr>
-<tr><th>Wofür</th><td>Zugriff auf die Google Ads API, um die oben
-genannten Daten zu lesen und — nach Freigabe — zu ändern.</td></tr>
-<tr><th>Wo die Daten liegen</th><td>Ausschließlich auf dem Server, auf
-dem diese Anwendung läuft. Es gibt keine Weitergabe an Dritte und keine
-Auswertung über Konten hinweg.</td></tr>
-</table>
-<p class="note">Die Anwendung greift nur auf Konten zu, für die das
-verbundene Google-Konto ohnehin schon berechtigt ist. Sie kann keine
-Berechtigung erteilen, die nicht bereits in Google Ads besteht.</p>
-</div>
-
-<div class="card">
-<h2 style="margin-top:0">Wer sie betreibt</h2>
-<table>
-<tr><th>Betreiber</th><td>{esc(gac.PORTAL_OPERATOR)}</td></tr>
-<tr><th>Kontakt</th><td>{kontakt}</td></tr>
-<tr><th>Zugang</th><td>Nicht öffentlich. Die Verwaltung steht nur
-Mitarbeitern des Betreibers offen.</td></tr>
-</table>
-</div>
-
-<div class="row">
-<a class="button" href="/anmelden">Zur Verwaltung anmelden</a>
-<a class="button quiet" href="{esc(gac.PORTAL_IMPRESSUM)}"
-   target="_blank" rel="noopener">Impressum</a>
-<a class="button quiet" href="{esc(gac.PORTAL_DATENSCHUTZ)}"
-   target="_blank" rel="noopener">Datenschutz</a>
-</div>
-
-<div class="card">
-<h2 style="margin-top:0">In English</h2>
-<p class="note" style="margin-top:0"><b>{esc(MARKE)}</b> is an internal
-tool operated by {esc(gac.PORTAL_OPERATOR)} to manage Google Ads accounts
-— its own and those of the clients it looks after. It reads campaigns, ad
-groups, keywords, search terms, budgets and performance figures from the
-accounts the signed-in user already has access to, and writes back only
-after an explicit, case-by-case approval. Every write runs as a dry run
-against Google's own validation first. Data stays on the server this runs
-on and is never shared with third parties. Access is restricted to staff
-of the operator.</p>
-</div>""", kopf_rechts=OEFFENTLICHER_KOPF)
+    return oeffentliche_seite.seite(logo=logo_markup(), favicon=FAVICON,
+                                    anmelden_url="/anmelden")
 
 
 def status_page(base_url: str) -> bytes:
