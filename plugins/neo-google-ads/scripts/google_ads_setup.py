@@ -48,6 +48,7 @@ HTML as text.
 from __future__ import annotations
 
 import base64
+import copy
 import datetime
 import hashlib
 import html
@@ -982,21 +983,32 @@ def save_credentials(form: dict) -> tuple[bool, str]:
     return True, "Gespeichert."
 
 
-def env_overrides() -> dict:
-    """Which guardrails come from the environment and are therefore fixed here.
+def env_startwerte() -> dict:
+    """Welche Schutzgrenzen die Umgebung fuer eine frische Anlage mitbringt.
 
-    A value set in the container's .env wins over the configuration file.
-    Editing it on this page would write something that never takes effect,
-    so the form shows it as locked and names where it comes from instead of
-    quietly losing the change.
+    Sie gelten nur, solange die Konsole noch nie gespeichert hat. Danach
+    steht in der Konfiguration ein eigener Block, und der entscheidet —
+    die Variablen werden dann nicht mehr angesehen. Diese Liste dient
+    also nur dem Hinweis auf der Seite, nicht mehr der Sperre.
     """
-    # Leere Variablen zaehlen nicht: sonst sperrt eine leer gelassene
-    # Zeile aus der Vorlage das Feld, ohne etwas vorzugeben.
+    # Leere Variablen zaehlen nicht: eine leer gelassene Zeile aus der
+    # Vorlage ist keine Angabe.
     return {field: name for field, name in gac.GUARDRAIL_ENV.items()
             if (os.environ.get(name) or "").strip()}
 
 
-def _kontenkaesten(state: dict, erlaubt: set, fest: dict) -> str:
+def grenzen_gespeichert() -> bool:
+    """Ob in der Konfigurationsdatei schon ein eigener Block steht."""
+    if not gac.CONFIG_FILE.exists():
+        return False
+    try:
+        gespeichert = json.loads(gac.CONFIG_FILE.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    return bool(gespeichert.get("guardrails"))
+
+
+def _kontenkaesten(state: dict, erlaubt: set) -> str:
     """Die zugaenglichen Konten zum Anhaken, statt Nummern zu tippen.
 
     Der Merker konten_gestellt sagt dem Speichern, dass diese Liste
@@ -1005,14 +1017,13 @@ def _kontenkaesten(state: dict, erlaubt: set, fest: dict) -> str:
     """
     def kasten(wert: str, titel: str, zusatz: list, an: bool,
                lesbar: bool = True) -> str:
-        gesperrt = "allowed_customer_ids" in fest or not lesbar
         zeile = sh.ankreuzzeile("konto", titel, " · ".join(zusatz), wert=wert, an=an,
-                                gesperrt=gesperrt, kennung=wert)
+                                gesperrt=not lesbar, kennung=wert)
         # Ein gesperrtes Ankreuzfeld schickt seinen Wert nicht mit. Stand das
         # Konto schon in der Berechtigung, verschwaende es beim Speichern
         # still — also faehrt der Wert versteckt mit. Ankreuzen laesst sich
         # so trotzdem nichts, was gerade nicht lesbar ist.
-        if gesperrt and an:
+        if not lesbar and an:
             zeile += f'<input type="hidden" name="konto" value="{esc(wert)}">'
         return zeile
 
@@ -1047,7 +1058,6 @@ def _kontenkaesten(state: dict, erlaubt: set, fest: dict) -> str:
 def accounts_page(message: str = "") -> bytes:
     """Schritt 3 der Schiene: welche Konten überhaupt beschrieben werden dürfen."""
     state = load_state()
-    fest = env_overrides()
     erlaubt = set(state["guardrails"].get("allowed_customer_ids") or [])
     return konsole(
         "Einrichtung", EINRICHTUNG_LEAD, "/setup",
@@ -1061,7 +1071,7 @@ def accounts_page(message: str = "") -> bytes:
             'geschrieben werden. Kein Haken bei keinem Konto heißt '
             '<b>alle zugänglichen</b> — bei eingeschaltetem Schreiben ist das selten '
             'gemeint.</p>'
-            + _kontenkaesten(state, erlaubt, fest)
+            + _kontenkaesten(state, erlaubt)
             + '<div class="row" style="margin-top:22px">'
               '<button type="submit">Weiter zu den Schutzgrenzen</button>'
               '<a class="button quiet" href="/setup/connect">Zurück</a></div>',
@@ -1070,89 +1080,236 @@ def accounts_page(message: str = "") -> bytes:
         + "</form>")
 
 
+def _grenzfelder(kennung: str, eigene: dict, standard: dict, aktiv: bool) -> str:
+    """Die drei Zahlen eines Kontos. Ohne eigene Grenzen zeigen sie den Standard."""
+    def wert(feld: str) -> str:
+        roh = eigene.get(feld, standard.get(feld))
+        if feld == "max_daily_budget_micros":
+            return f"{(roh or 0) / 1_000_000:.2f}"
+        return esc(roh)
+
+    sperre = "" if aktiv else " disabled"
+    geerbt = "Aus dem Standard geerbt."
+    felder = (
+        ("Tagesbudget je Budget", f"budget_{kennung}", "max_daily_budget_micros",
+         "In der Kontowährung. 0 heißt: keine Obergrenze."),
+        ("Größter Sprung", f"faktor_{kennung}", "max_budget_increase_factor",
+         "Faktor. 2 heißt: höchstens verdoppeln."),
+        ("Operationen je Aufruf", f"ops_{kennung}", "max_operations_per_call",
+         "Begrenzt den Schaden eines Fehlgriffs."),
+    )
+    zeilen = "".join(
+        f'<label>{esc(beschriftung)}'
+        f'<span>{esc(hinweis if aktiv else geerbt)}</span>'
+        f'<input type="text" name="{esc(name)}" value="{wert(feld)}"{sperre}></label>'
+        for beschriftung, name, feld, hinweis in felder)
+    return f'<div class="grid-3" style="align-items:start;margin-top:16px">{zeilen}</div>'
+
+
+def _kontogrenze(konto: dict, eigene: dict, standard: dict, erlaubt: set) -> str:
+    """Eine Karte je Konto: darf es beschrieben werden, und mit welchen Grenzen.
+
+    Die versteckte Zeile grenze_gestellt sagt dem Speichern, welche Konten
+    diese Seite ueberhaupt gezeigt hat. Nur die darf es anfassen — was
+    gerade nicht in der Liste stand, bleibt, wie es war.
+    """
+    kaputt = bool(konto["problem"])
+    hat_eigene = bool(eigene)
+    kennung = konto["id"]
+    if kaputt:
+        schild = sh.zustand("nicht lesbar", "bad")
+    elif kennung in erlaubt:
+        schild = sh.zustand("Schreiben ein", "warn")
+    else:
+        schild = sh.zustand("nur lesen", "ok")
+    woher = sh.zustand("eigene Grenzen" if hat_eigene else "erbt Standard", "neutral")
+
+    dabei = [konto.get("currency") or ""]
+    if konto.get("manager"):
+        dabei.append("Verwaltungskonto")
+    beiwerk = " · ".join(teil for teil in dabei if teil)
+    kopf = (f'<div class="card-kopf" style="flex-wrap:wrap">'
+            f'<h2 class="werkzeile">'
+            f'{symbol("account_tree" if konto.get("manager") else "description", 20)}'
+            f'{esc(konto["name"] or "ohne Namen")}'
+            f'<span class="mono leise">{esc(kennung)}</span>'
+            f'<span class="leise">{esc(beiwerk)}</span></h2>'
+            f'<div class="rechts">{schild} {woher}</div></div>')
+    merker = f'<input type="hidden" name="grenze_gestellt" value="{esc(kennung)}">'
+
+    if kaputt:
+        # Nicht lesbar heisst: hier laesst sich nichts einstellen. Was
+        # eingestellt WAR, faehrt versteckt mit, statt still zu verschwinden.
+        bleibt = ""
+        if kennung in erlaubt:
+            bleibt += f'<input type="hidden" name="konto" value="{esc(kennung)}">'
+        if hat_eigene:
+            bleibt += f'<input type="hidden" name="eigene" value="{esc(kennung)}">'
+            for feld, name in (("max_daily_budget_micros", "budget"),
+                               ("max_budget_increase_factor", "faktor"),
+                               ("max_operations_per_call", "ops")):
+                if feld in eigene:
+                    roh = (f"{eigene[feld] / 1_000_000:.2f}"
+                           if feld == "max_daily_budget_micros" else eigene[feld])
+                    bleibt += (f'<input type="hidden" name="{name}_{esc(kennung)}" '
+                               f'value="{esc(roh)}">')
+        return (f'<div class="card flach">{kopf}'
+                f'<p class="note" style="margin-top:0">Dieses Konto lässt sich derzeit '
+                f'nicht lesen — Grenzen greifen erst, wenn der Zugriff steht.</p>'
+                f'{merker}{bleibt}</div>')
+
+    return (f'<div class="card{" akzent" if hat_eigene else ""}">{kopf}'
+            f'<div class="row" style="gap:20px">'
+            f'<div style="flex:1 1 260px">'
+            + sh.ankreuzzeile("konto", "Schreiben erlauben",
+                              "Ohne Haken sind für dieses Konto nur Trockenläufe "
+                              "möglich.", wert=kennung, an=kennung in erlaubt)
+            + '</div><div style="flex:1 1 260px">'
+            + sh.ankreuzzeile("eigene", "Eigene Grenzen",
+                              "Ohne Haken gilt der Standard weiter unten.",
+                              wert=kennung, an=hat_eigene)
+            + '</div></div>'
+            + _grenzfelder(kennung, eigene, standard, hat_eigene)
+            + merker + "</div>")
+
+
+def _standardkarte(rails: dict) -> str:
+    deckel = rails.get("max_daily_budget_micros") or 0
+    felder = (
+        ("Höchstes Tagesbudget je Budget", "max_daily_budget",
+         f"{deckel / 1_000_000:.2f}",
+         "In der Kontowährung. 0 heißt: keine Obergrenze."),
+        ("Größter Sprung in einem Schritt", "max_budget_increase_factor",
+         esc(rails.get("max_budget_increase_factor")),
+         "Faktor. 2 heißt: höchstens verdoppeln."),
+        ("Operationen je Aufruf", "max_operations_per_call",
+         esc(rails.get("max_operations_per_call")),
+         "Begrenzt den Schaden eines einzelnen Fehlgriffs."),
+    )
+    zeilen = "".join(
+        f'<label>{esc(beschriftung)}<span>{esc(hinweis)}</span>'
+        f'<input type="text" name="{name}" value="{wert}"></label>'
+        for beschriftung, name, wert, hinweis in felder)
+    return sh.karte(
+        "Gilt für jedes Konto ohne eigene Grenzen",
+        '<p class="note" style="margin-top:0;margin-bottom:4px">Auch neue Konten '
+        'starten mit diesen Werten.</p>'
+        f'<div class="grid-3" style="align-items:start;margin-top:16px">{zeilen}</div>')
+
+
 def guardrails_page(message: str = "") -> bytes:
-    """The page that replaces editing the .env by hand."""
+    """Die Seite, die das Bearbeiten der .env von Hand ersetzt."""
     state = load_state()
     rails = state["guardrails"]
-    fest = env_overrides()
+    je_konto = rails.get("per_account") or {}
     erlaubt = set(rails.get("allowed_customer_ids") or [])
-
-    def gesperrt(field: str) -> str:
-        if field not in fest:
-            return ""
-        return (f'<span class="note">Kommt aus der Umgebung '
-                f'(<code>{esc(fest[field])}</code>) und ist hier nicht änderbar. '
-                f'Aus der <code>.env</code> entfernen, um ihn hier zu setzen.</span>')
-
-    def sperre(field: str) -> str:
-        return " disabled" if field in fest else ""
-
     deckel = rails.get("max_daily_budget_micros") or 0
     lesbar = [a for a in state["accounts"] if not a["problem"]]
-    inhalt = f"""{sh.warnung(esc(message), "gut") if message else ""}
-<div class="grid-3 gleich" style="margin-bottom:24px">
-{sh.kennzahl("Konten mit Schreibrecht",
-             f'{len(erlaubt) if erlaubt else len(lesbar)} '
-             f'<span style="color:var(--faint);font-weight:400">'
-             f'/ {len(state["accounts"])}</span>',
-             neon=bool(rails.get("write_enabled")))}
-{sh.kennzahl("Höchstes Tagesbudget",
-             geldbetrag(deckel) if deckel else "ohne Deckel")}
-{sh.kennzahl("Größter Sprung",
-             f"×{esc(rails.get('max_budget_increase_factor'))}")}
-</div>
-<form method="post" action="/guardrails"><div class="stack">
+    schreibend = [a for a in lesbar if not erlaubt or a["id"] in erlaubt]
+    hoechstes = max([je_konto.get(a["id"], {}).get("max_daily_budget_micros", deckel)
+                     for a in state["accounts"]] + [deckel])
 
-{sh.karte("Schreiben",
-          sh.ankreuzzeile("write_enabled", "Schreiben erlauben",
-                          "Ohne diesen Haken sind nur Trockenläufe möglich. Lesen "
-                          "geht immer.",
-                          an=bool(rails.get("write_enabled")),
-                          gesperrt="write_enabled" in fest)
-          + gesperrt("write_enabled"),
-          zustand=(sh.zustand("eingeschaltet", "warn")
-                   if rails.get("write_enabled") else sh.zustand("aus", "ok")))}
+    karten = "".join(_kontogrenze(konto, je_konto.get(konto["id"]) or {}, rails,
+                                  erlaubt)
+                     for konto in state["accounts"])
+    if not karten and erlaubt:
+        grund = (f' ({esc(state["error"].splitlines()[0])})' if state.get("error")
+                 else "")
+        liste = "".join(f'<li class="mono">{esc(kennung)}</li>'
+                        for kennung in sorted(erlaubt))
+        karten = (sh.warnung(f"Die Kontenliste ließ sich gerade nicht lesen{grund}. "
+                             f"Berechtigt ist unverändert, was hier steht; zum Ändern "
+                             f"zuerst die Verbindung prüfen.")
+                  + sh.karte("Derzeit berechtigt",
+                             f'<ol class="codes">{liste}</ol>', art="flach"))
+    elif not karten:
+        karten = sh.karte(inhalt='<p class="note" style="margin-top:0">Noch keine '
+                                 'Konten gelesen. Erst verbinden, dann steht hier je '
+                                 'Konto eine Karte.</p>', art="flach")
 
-{sh.karte("Konten, in die geschrieben werden darf",
-          '<p class="note" style="margin-top:0">Kein Haken heißt '
-          '<b>alle zugänglichen</b> — bei eingeschaltetem Schreiben ist das selten '
-          'gemeint.</p>'
-          + _kontenkaesten(state, erlaubt, fest) + gesperrt("allowed_customer_ids"))}
+    # Der Hinweis auf die .env steht nur, solange sie noch etwas zu sagen hat.
+    startwerte = ""
+    if not grenzen_gespeichert() and env_startwerte():
+        startwerte = sh.hinweis(
+            "Diese Werte stammen aus der <code>.env</code> und sind Anfangswerte. "
+            "Sobald hier einmal gespeichert wurde, entscheidet diese Seite — die "
+            "Variablen werden dann nicht mehr angesehen.")
 
-{sh.karte("Budget und Umfang",
-          '<div class="grid-3" style="align-items:start">'
-          + f'''<label>Höchstes Tagesbudget je Budget
-<span>In deiner Kontowährung. 0 heißt: keine Obergrenze.</span>
-<input type="text" name="max_daily_budget" value="{deckel / 1_000_000:.2f}"
-  {sperre("max_daily_budget_micros")}></label>
-<label>Größter Sprung in einem Schritt
-<span>Faktor. 2 heißt: höchstens verdoppeln.</span>
-<input type="text" name="max_budget_increase_factor"
-  value="{esc(rails.get("max_budget_increase_factor"))}"
-  {sperre("max_budget_increase_factor")}></label>
-<label>Operationen je Aufruf
-<span>Begrenzt den Schaden eines einzelnen Fehlgriffs.</span>
-<input type="text" name="max_operations_per_call"
-  value="{esc(rails.get("max_operations_per_call"))}"
-  {sperre("max_operations_per_call")}></label>'''
-          + "</div>"
-          + gesperrt("max_daily_budget_micros")
-          + gesperrt("max_budget_increase_factor")
-          + gesperrt("max_operations_per_call"))}
-
-</div>
-<div class="row" style="margin-top:20px">
-<button type="submit">Speichern</button>
-<a class="button quiet" href="/dashboard">Abbrechen</a></div>
-</form>
-<p class="note">Auch mit Schreibrecht ist jeder Aufruf zuerst ein Trockenlauf —
-scharf wird er erst nach ausdrücklicher Freigabe im Gespräch.</p>"""
+    zaehler = (f'{len(schreibend)} <span style="color:var(--faint);font-weight:400">'
+               f'/ {len(state["accounts"])}</span>' if state["accounts"] else "—")
+    inhalt = (
+        (sh.warnung(esc(message), "gut") if message else "")
+        + startwerte
+        + sh.hinweis("Grenzen gelten <b>je Konto</b>. Ein kampagnenstarker Kunde darf "
+                     "120 am Tag bewegen, ein kleiner 8 — der Standard unten greift "
+                     "nur, wo ein Konto keine eigenen Werte gesetzt hat.")
+        + '<div class="grid-3 gleich" style="margin-bottom:24px">'
+        + sh.kennzahl("Konten mit Schreibrecht", zaehler,
+                      neon=bool(rails.get("write_enabled")))
+        + sh.kennzahl("Höchstes Tagesbudget",
+                      geldbetrag(hoechstes) if hoechstes else "ohne Deckel")
+        + sh.kennzahl("Eigene Grenzen gesetzt",
+                      f"{len(je_konto)} {'Konto' if len(je_konto) == 1 else 'Konten'}")
+        + '</div>'
+        + '<form method="post" action="/guardrails">'
+        + sh.karte("Schreiben",
+                   sh.ankreuzzeile("write_enabled", "Schreiben erlauben",
+                                   "Der Hauptschalter über allem. Ohne diesen Haken "
+                                   "sind nur Trockenläufe möglich, gleich was je "
+                                   "Konto steht. Lesen geht immer.",
+                                   an=bool(rails.get("write_enabled"))),
+                   zustand=(sh.zustand("eingeschaltet", "warn")
+                            if rails.get("write_enabled")
+                            else sh.zustand("aus", "ok")))
+        + '<span class="eyebrow neon" style="margin-top:32px;display:block">Je Konto'
+          '</span>'
+        + '<p class="note" style="margin:8px 0 0">Kein Haken bei <b>keinem</b> Konto '
+          'heißt <b>alle zugänglichen</b> — bei eingeschaltetem Schreiben ist das '
+          'selten gemeint.</p>'
+        + f'<div class="stack" style="margin:14px 0 32px">{karten}</div>'
+        + '<span class="eyebrow neon" style="display:block;margin-bottom:14px">'
+          'Standard</span>'
+        + _standardkarte(rails)
+        + '<div class="row" style="margin-top:20px">'
+          '<button type="submit">Speichern</button>'
+          '<a class="button quiet" href="/dashboard">Abbrechen</a></div>'
+        + '</form>'
+        + '<p class="note">Auch mit Schreibrecht ist jeder Aufruf zuerst ein '
+          'Trockenlauf — scharf wird er erst nach ausdrücklicher Freigabe im '
+          'Gespräch.</p>')
 
     return konsole(
         "Schutzgrenzen",
         "Was überhaupt möglich ist. Ob eine einzelne Änderung dann geschieht, "
         "entscheidet die Freigabe im Gespräch.",
         "/guardrails", inhalt)
+
+
+def _zahl_aus(form: dict, name: str, faktor: int, ganzzahlig: bool):
+    """Eine Zahl aus dem Formular. Gibt (gefunden, Wert, Klage) zurueck.
+
+    Ein leeres Feld ist keine Null, sondern keine Angabe: sonst macht ein
+    versehentlich geleertes Feld aus einem Budgetdeckel ein "kein Deckel".
+    """
+    roh = (form.get(name) or [""])[0].strip().replace(",", ".")
+    if not roh:
+        return False, None, ""
+    try:
+        wert = float(roh) * faktor
+    except ValueError:
+        return False, None, f"„{roh}“ ist keine Zahl."
+    if wert < 0:
+        return False, None, "Negative Werte ergeben hier keinen Sinn."
+    return True, (int(wert) if ganzzahlig else wert), ""
+
+
+# Formularfeld, Ziel in den Schutzgrenzen, Faktor, ganzzahlig
+STANDARDFELDER = (("max_daily_budget", "max_daily_budget_micros", 1_000_000, True),
+                  ("max_budget_increase_factor", "max_budget_increase_factor", 1, False),
+                  ("max_operations_per_call", "max_operations_per_call", 1, True))
+KONTOFELDER = (("budget", "max_daily_budget_micros", 1_000_000, True),
+               ("faktor", "max_budget_increase_factor", 1, False),
+               ("ops", "max_operations_per_call", 1, True))
 
 
 def save_accounts(form: dict) -> tuple[bool, str]:
@@ -1169,24 +1326,38 @@ def save_accounts(form: dict) -> tuple[bool, str]:
 
 def _bisheriges_schreiben() -> list:
     """Was gerade eingestellt ist — als Formularwert, damit es so bleibt."""
-    try:
-        rails = gac.load_config()["guardrails"]
-    except gac.GoogleAdsError:
-        rails = dict(gac.DEFAULT_GUARDRAILS)
-        if gac.CONFIG_FILE.exists():
-            try:
-                gespeichert = json.loads(gac.CONFIG_FILE.read_text(encoding="utf-8"))
-                rails.update(gespeichert.get("guardrails") or {})
-            except (OSError, json.JSONDecodeError):
-                pass
-    return ["1"] if rails.get("write_enabled") else []
+    return ["1"] if _gespeicherte_grenzen().get("write_enabled") else []
+
+
+def _gespeicherte_grenzen() -> dict:
+    """Die Grenzen, wie sie in der Datei stehen — ohne die Umgebung.
+
+    Gespeichert wird gegen die Datei, nicht gegen den zusammengesetzten
+    Stand: sonst schriebe der erste Klick in der Konsole die Anfangswerte
+    aus der .env fest, auch wo der Betreiber nichts angefasst hat.
+    """
+    rails = copy.deepcopy(gac.DEFAULT_GUARDRAILS)
+    if gac.CONFIG_FILE.exists():
+        try:
+            gespeichert = json.loads(gac.CONFIG_FILE.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return rails
+        if gespeichert.get("guardrails"):
+            rails.update(gespeichert["guardrails"])
+        else:
+            # Noch nie gespeichert: was die Umgebung vorgibt, ist der Stand,
+            # den der Betreiber gerade vor sich sieht.
+            rails = gac._guardrails_from_env(rails)  # noqa: SLF001
+    return rails
 
 
 def save_guardrails(form: dict) -> tuple[bool, str]:
-    """Writes the guardrails to the configuration file.
+    """Schreibt die Schutzgrenzen in die Konfigurationsdatei.
 
-    Values that the environment sets are skipped: writing them would
-    produce a file that says one thing while the server does another.
+    Jeder Abschnitt des Formulars traegt einen Merker. Fehlt er, laesst
+    das Speichern diesen Abschnitt unberuehrt — ein Formular, das die
+    Konten nicht anzeigen konnte, darf die Berechtigung nicht als "kein
+    Haken" lesen, denn kein Haken heisst ALLE Konten.
     """
     config = {}
     if gac.CONFIG_FILE.exists():
@@ -1194,22 +1365,11 @@ def save_guardrails(form: dict) -> tuple[bool, str]:
             config = json.loads(gac.CONFIG_FILE.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             config = {}
-    rails = dict(gac.DEFAULT_GUARDRAILS, **(config.get("guardrails") or {}))
-    fest = env_overrides()
-    uebergangen = []
-
-    if "write_enabled" in fest:
-        uebergangen.append(gac.GUARDRAIL_ENV["write_enabled"])
-    else:
-        rails["write_enabled"] = bool(form.get("write_enabled"))
+    rails = _gespeicherte_grenzen()
+    rails["write_enabled"] = bool(form.get("write_enabled"))
 
     unberuehrt = False
-    if "allowed_customer_ids" in fest:
-        uebergangen.append(gac.GUARDRAIL_ENV["allowed_customer_ids"])
-    elif not form.get("konten_gestellt"):
-        # Das Formular kam von einer Seite, die die Konten nicht anzeigen
-        # konnte. Kein Haken hiesse dort nicht "keine Einschränkung", sondern
-        # nur "nichts gesehen" — also wird hier nichts angerührt.
+    if not form.get("konten_gestellt") and not form.get("grenze_gestellt"):
         unberuehrt = True
     else:
         konten = []
@@ -1220,24 +1380,47 @@ def save_guardrails(form: dict) -> tuple[bool, str]:
                 return False, exc.message
         rails["allowed_customer_ids"] = konten
 
-    # Formularfeld, Ziel in den Schutzgrenzen, Faktor, ganzzahlig
-    zahlen = (("max_daily_budget", "max_daily_budget_micros", 1_000_000, True),
-              ("max_budget_increase_factor", "max_budget_increase_factor", 1, False),
-              ("max_operations_per_call", "max_operations_per_call", 1, True))
-    for feldname, ziel, faktor, ganzzahlig in zahlen:
-        if ziel in fest:
-            uebergangen.append(gac.GUARDRAIL_ENV[ziel])
-            continue
-        roh = (form.get(feldname) or [""])[0].strip().replace(",", ".")
-        if not roh:
-            continue
+    for feldname, ziel, faktor, ganzzahlig in STANDARDFELDER:
+        gefunden, wert, klage = _zahl_aus(form, feldname, faktor, ganzzahlig)
+        if klage:
+            return False, klage
+        if gefunden:
+            rails[ziel] = wert
+
+    # -- Grenzen je Konto --------------------------------------------------
+    gezeigt = []
+    for roh in form.get("grenze_gestellt") or []:
         try:
-            wert = float(roh) * faktor
-        except ValueError:
-            return False, f"„{roh}“ ist keine Zahl."
-        if wert < 0:
-            return False, "Negative Werte ergeben hier keinen Sinn."
-        rails[ziel] = int(wert) if ganzzahlig else wert
+            gezeigt.append(gac.normalize_customer_id(roh))
+        except gac.GoogleAdsError as exc:
+            return False, exc.message
+    if gezeigt:
+        mit_eigenen = set()
+        for roh in form.get("eigene") or []:
+            try:
+                mit_eigenen.add(gac.normalize_customer_id(roh))
+            except gac.GoogleAdsError as exc:
+                return False, exc.message
+        je_konto = dict(gac.per_account_sauber(rails.get("per_account")))
+        for kennung in gezeigt:
+            if kennung not in mit_eigenen:
+                je_konto.pop(kennung, None)
+                continue
+            eintrag = {}
+            for vorsilbe, ziel, faktor, ganzzahlig in KONTOFELDER:
+                gefunden, wert, klage = _zahl_aus(form, f"{vorsilbe}_{kennung}",
+                                                  faktor, ganzzahlig)
+                if klage:
+                    return False, f"Konto {kennung}: {klage}"
+                if gefunden:
+                    eintrag[ziel] = wert
+            # Ein Haken ohne eine einzige Zahl waere eine Zusage ohne Inhalt.
+            # Dann gilt weiter der Standard, und die Karte sagt das auch.
+            if eintrag:
+                je_konto[kennung] = eintrag
+            else:
+                je_konto.pop(kennung, None)
+        rails["per_account"] = je_konto
 
     config["guardrails"] = rails
     config.setdefault("api_version", gac.DEFAULT_API_VERSION)
@@ -1250,10 +1433,10 @@ def save_guardrails(form: dict) -> tuple[bool, str]:
     if unberuehrt:
         meldung += (" Die Kontenberechtigung blieb unverändert, weil die Kontenliste "
                     "beim Aufbau der Seite nicht lesbar war.")
-    if uebergangen:
-        meldung += (" Übergangen wurde, was die Umgebung vorgibt: "
-                    + ", ".join(sorted(set(uebergangen)))
-                    + ". Diese Werte gelten weiter aus der .env.")
+    eigene = len(rails.get("per_account") or {})
+    if eigene:
+        meldung += (f" {eigene} {'Konto' if eigene == 1 else 'Konten'} "
+                    f"mit eigenen Grenzen.")
     return True, meldung
 
 

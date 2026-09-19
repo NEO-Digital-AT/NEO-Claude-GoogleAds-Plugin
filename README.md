@@ -43,9 +43,17 @@ Darunter sitzen vier Schutzgrenzen im Werkzeug, nicht in der Absicht:
 | `max_daily_budget_micros` | 0 | Obergrenze je Tagesbudget | `GOOGLE_ADS_MAX_DAILY_BUDGET` (in Währung) |
 | `max_budget_increase_factor` | 3.0 | Größter Sprung in einem Schritt | `GOOGLE_ADS_MAX_BUDGET_INCREASE_FACTOR` |
 
-Sie stehen in der Konfigurationsdatei oder in der Umgebung — ein Container
-hat keine Datei zum Bearbeiten, und ein schreibender Server ohne Kontoliste
-und Budgetdeckel ist genau das, was diese Grenzen verhindern sollen.
+Die drei Zahlen gelten **je Konto**: was unter `per_account` für ein Konto
+steht, gilt dort, alles andere erbt es aus den Werten oben. Ein
+kampagnenstarker Kunde darf damit 120 am Tag bewegen, ein kleiner 8, ohne
+dass eine Grenze für alle gelockert werden muss.
+
+Die Umgebungsvariablen gelten **für die erste Inbetriebnahme**: ein
+Container startet ohne Konfigurationsdatei, und ein schreibender Server
+ohne Kontoliste und Budgetdeckel ist genau das, was diese Grenzen
+verhindern sollen. Sobald die Konsole einmal gespeichert hat, steht in der
+Konfiguration ein eigener Block — ab dann entscheidet die Konsole, und die
+Variablen werden nicht mehr angesehen.
 
 Jeder Versuch — Trockenlauf eingeschlossen — steht mit Zeitstempel,
 Konto, Begründung und Ergebnis im Änderungsprotokoll.
@@ -85,9 +93,10 @@ sich auf dem Server mit `--set-password` oder `--disable-2fa`.
 Dahinter liegt die Verwaltung des Google-Zugangs: Status, Konten,
 Zugriffsstufe, Änderungsprotokoll — und die Handgriffe, die sonst in der
 `.env` anfallen. Zugangsdaten ändern, neu verbinden, weitere Konten zum
-Schreiben berechtigen (zum Anhaken, nicht zum Tippen), Budgetdeckel setzen,
-Verbindung trennen. Was die Umgebung vorgibt, zeigt die Seite gesperrt samt
-Variablennamen, statt eine Änderung anzunehmen, die nie greift.
+Schreiben berechtigen (zum Anhaken, nicht zum Tippen), Budgetdeckel setzen
+— je Konto oder als Standard für alle —, Verbindung trennen. Die Seite ist
+die Stelle, an der entschieden wird: was in der `.env` steht, sind die
+Anfangswerte einer frischen Anlage, nicht ein Riegel gegen die Konsole.
 
 Der MCP-Endpunkt behält sein eigenes Zugangswort: claude.ai kann kein
 Anmeldeformular ausfüllen. Zwei Türen, zwei Schlüssel, keiner öffnet die
@@ -150,7 +159,7 @@ Alle laufen ohne Abhängigkeiten und taugen als Tor in einer CI.
 | `google-ads-http.py` | Derselbe MCP-Server über Streamable HTTP, damit claude.ai im Browser und am Handy ihn als Connector erreichen kann. Zugangswort mit `--new-token`, `--anthropic-only` lässt nur Aufrufe aus Anthropics veröffentlichtem Adressbereich durch. TLS gehört vor den Prozess, in einen Reverse Proxy. |
 | `google-ads-auth.py` | Verbinden über OAuth mit PKCE. `--paste-url` für Maschinen ohne Browser, `--allow-write` setzt die Schutzgrenzen, `--show` zeigt den Stand ohne Geheimnisse, `--env` gibt sie als Übergabeblock für eine Cloud-Sitzung aus. |
 | `google-ads-check.py` | Misst die Verbindung in acht Prüfungen. Prüfung 7 verrät die Zugriffsstufe, die die API nie ausspricht — ein Explorer-Token hat die Planungswerkzeuge gesperrt. Prüfung 8 ist ein Trockenlauf gegen das echte Konto, der nichts verändert. Jede fehlgeschlagene Prüfung nennt die Abhilfe. |
-| `google-ads-selftest.py` | Weist ohne Netz und ohne Zugangsdaten nach, dass die Handbremse hält: 260 Fälle in siebzehn Gruppen, von den Schutzgrenzen über die Gestalt des Anfragekörpers bis zu Portal, Zwei-Faktor und QR-Code. Gegen sabotierte Fassungen geprüft — jede fiel auf. |
+| `google-ads-selftest.py` | Weist ohne Netz und ohne Zugangsdaten nach, dass die Handbremse hält: 270 Fälle in siebzehn Gruppen, von den Schutzgrenzen über die Gestalt des Anfragekörpers bis zu Portal, Zwei-Faktor und QR-Code. Gegen sabotierte Fassungen geprüft — jede fiel auf. |
 
 ## Regeln
 

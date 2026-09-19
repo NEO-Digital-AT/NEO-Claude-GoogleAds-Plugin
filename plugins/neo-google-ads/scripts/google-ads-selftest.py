@@ -144,7 +144,7 @@ def test_guardrails() -> None:
         lambda: make_client(write_enabled=True,
                             max_daily_budget_micros=50_000_000).check_write_allowed(
             "1234567890", budget_operation(80_000_000), dry_run=False),
-        "above the agreed ceiling",
+        "is above the ceiling of",
     )
     expect_allowed(
         "budget below the ceiling passes",
@@ -159,14 +159,14 @@ def test_guardrails() -> None:
         lambda: make_client(write_enabled=True,
                             max_daily_budget_micros=100_000_000).check_write_allowed(
             "1234567890", budget_operation(25_000_000_000_000), dry_run=False),
-        "above the agreed ceiling",
+        "is above the ceiling of",
     )
     expect_refused(
         "too many operations in one call is refused",
         lambda: make_client(write_enabled=True,
                             max_operations_per_call=10).check_write_allowed(
             "1234567890", status_op * 11, dry_run=False),
-        "the limit is 10",
+        "the limit for account 1234567890 is 10",
     )
     expect_refused(
         "a bad customer ID is refused",
@@ -186,7 +186,7 @@ def test_guardrails() -> None:
             "1234567890",
             budget_operation(50_000_000, "customers/1234567890/campaignBudgets/1"),
             dry_run=False),
-        "more than the agreed factor",
+        "more than the factor of 2.0",
     )
     expect_allowed(
         "budget step within the agreed factor passes",
@@ -252,7 +252,7 @@ def test_guardrails_from_env() -> None:
             "a budget above the environment ceiling is refused",
             lambda: client.check_write_allowed(
                 "1234567890", budget_operation(60_000_000), dry_run=False),
-            "above the agreed ceiling",
+            "is above the ceiling of",
         )
 
     with environment(GOOGLE_ADS_CONFIG="/does/not/exist.json",
@@ -303,8 +303,8 @@ def test_empty_env() -> None:
              rails["allowed_customer_ids"] == ["5691007627", "6286913360"],
              str(rails["allowed_customer_ids"]))
         case("and it does not lock the tick boxes in the console",
-             "allowed_customer_ids" not in ui_mod.env_overrides(),
-             str(sorted(ui_mod.env_overrides())))
+             "allowed_customer_ids" not in ui_mod.env_startwerte(),
+             str(sorted(ui_mod.env_startwerte())))
 
         os.environ[gac.GUARDRAIL_ENV["allowed_customer_ids"]] = "   "
         case("whitespace counts as empty too",
@@ -317,7 +317,7 @@ def test_empty_env() -> None:
              rails["allowed_customer_ids"] == ["5691007627"],
              str(rails["allowed_customer_ids"]))
         case("and then the console does lock the tick boxes",
-             "allowed_customer_ids" in ui_mod.env_overrides())
+             "allowed_customer_ids" in ui_mod.env_startwerte())
 
         del os.environ[gac.GUARDRAIL_ENV["allowed_customer_ids"]]
         for feld, leer in (("write_enabled", ""), ("max_daily_budget_micros", ""),
@@ -328,7 +328,7 @@ def test_empty_env() -> None:
             case(f"an empty {gac.GUARDRAIL_ENV[feld]} leaves {feld} alone",
                  rails[feld] == eigene[feld], f"{rails[feld]} statt {eigene[feld]}")
             case(f"and {gac.GUARDRAIL_ENV[feld]} does not count as set",
-                 feld not in ui_mod.env_overrides())
+                 feld not in ui_mod.env_startwerte())
             del os.environ[gac.GUARDRAIL_ENV[feld]]
 
         os.environ[gac.GUARDRAIL_ENV["write_enabled"]] = "false"
@@ -790,16 +790,22 @@ def test_console() -> None:
     """
     setup = load_setup()
 
-    def mit_konten(accounts, rails, env=None, form=None):
-        """Renders the page and optionally saves a form, in an empty home."""
+    def mit_konten(accounts, rails, env=None, form=None, frisch=False):
+        """Renders the page and optionally saves a form, in an empty home.
+
+        frisch=True laesst den Grenzblock weg: so sieht eine Anlage aus,
+        die noch nie gespeichert hat, und nur dann reden die Variablen aus
+        der Umgebung mit.
+        """
         with tempfile.TemporaryDirectory() as folder:
             heim = pathlib.Path(folder)
             konfig = heim / "config.json"
-            konfig.write_text(json.dumps({
-                "client_id": "test", "client_secret": "test",
-                "refresh_token": "test", "developer_token": "test",
-                "api_version": "v25",
-                "guardrails": dict(gac.DEFAULT_GUARDRAILS, **rails)}), encoding="utf-8")
+            inhalt = {"client_id": "test", "client_secret": "test",
+                      "refresh_token": "test", "developer_token": "test",
+                      "api_version": "v25"}
+            if not frisch:
+                inhalt["guardrails"] = dict(gac.DEFAULT_GUARDRAILS, **rails)
+            konfig.write_text(json.dumps(inhalt), encoding="utf-8")
             echte_datei, gac.CONFIG_FILE = gac.CONFIG_FILE, konfig
             echter_stand = setup.load_state
             gesetzt = []
@@ -858,8 +864,8 @@ def test_console() -> None:
     html, rails, meldung = mit_konten(
         [], {"allowed_customer_ids": ["5691007627"], "write_enabled": True},
         form={"write_enabled": ["on"], "max_daily_budget": ["10"]})
-    case("an unreadable account list still shows what is authorised",
-         html.count('value="5691007627" checked') == 1)
+    case("an unreadable account list still names what is authorised",
+         "5691007627" in html)
     case("and says so instead of pretending there is nothing",
          'class="warnung"' in html)
     case("saving from that page does NOT widen the authorisation to every account",
@@ -877,31 +883,104 @@ def test_console() -> None:
     case("unticking every box from a working page does clear the restriction",
          rails["allowed_customer_ids"] == [], str(rails["allowed_customer_ids"]))
 
-    # What the environment sets, the page must not pretend to own.
+    # DIE UMGEBUNG GIBT NUR DEN ANFANGSSTAND VOR. Solange noch nie
+    # gespeichert wurde, gelten ihre Werte; danach entscheidet die Konsole,
+    # und die Variablen werden nicht mehr angesehen.
+    umgebung = {"GOOGLE_ADS_ALLOW_WRITE": "true", "GOOGLE_ADS_MAX_DAILY_BUDGET": "10"}
     html, rails, meldung = mit_konten(
-        CONSOLE_ACCOUNTS, {"allowed_customer_ids": ["5691007627"], "write_enabled": False},
-        env={"GOOGLE_ADS_ALLOW_WRITE": "false", "GOOGLE_ADS_MAX_DAILY_BUDGET": "10"},
+        CONSOLE_ACCOUNTS, {}, env=umgebung, frisch=True,
         form={"konten_gestellt": ["1"], "write_enabled": ["on"],
-              "konto": ["5691007627", "6286913360"], "max_daily_budget": ["999"],
+              "konto": ["5691007627"], "max_daily_budget": ["999"],
               "max_budget_increase_factor": ["3"]})
-    case("a guardrail fixed by the environment is shown locked",
-         "disabled" in feld(html, "write_enabled")
-         and "disabled" in feld(html, "max_daily_budget"),
-         feld(html, "write_enabled"))
-    case("a guardrail the environment leaves alone stays editable",
-         "disabled" not in feld(html, "max_budget_increase_factor"),
-         feld(html, "max_budget_increase_factor"))
-    case("and the page names the variable it comes from",
-         "GOOGLE_ADS_ALLOW_WRITE" in html and "GOOGLE_ADS_MAX_DAILY_BUDGET" in html)
-    case("a form that submits a locked field anyway changes nothing",
-         rails["write_enabled"] is not True
-         and rails["max_daily_budget_micros"] != 999_000_000,
-         f"{rails['write_enabled']} / {rails['max_daily_budget_micros']}")
-    case("a field the environment does not set is still editable",
+    case("ON A FRESH SERVER THE ENVIRONMENT SUPPLIES THE STARTING VALUES",
+         'value="10.00"' in html, feld(html, "max_daily_budget"))
+    case("and the page says they only hold until the first save",
+         "Anfangswerte" in html)
+    case("but they are editable, not locked",
+         "disabled" not in feld(html, "max_daily_budget")
+         and "disabled" not in feld(html, "write_enabled"),
+         feld(html, "max_daily_budget"))
+    case("SAVING BEATS THE ENVIRONMENT, IT DOES NOT BOUNCE OFF IT",
+         rails["max_daily_budget_micros"] == 999_000_000,
+         str(rails["max_daily_budget_micros"]))
+    # Und die Gegenprobe: steht der Block schon in der Datei, schweigt die
+    # Umgebung — auch wenn die Variable noch gesetzt ist.
+    html, _, _ = mit_konten(CONSOLE_ACCOUNTS, {"max_daily_budget_micros": 999_000_000},
+                            env=umgebung)
+    case("ONCE SAVED, THE ENVIRONMENT NO LONGER OVERRIDES THE CONSOLE",
+         'value="999.00"' in html, feld(html, "max_daily_budget"))
+    case("and the page stops pointing at the .env",
+         "Anfangswerte" not in html)
+    case("a value the environment never set is saved all the same",
          rails["max_budget_increase_factor"] == 3.0,
          str(rails["max_budget_increase_factor"]))
-    case("and the page says which values it passed over",
-         "Übergangen" in meldung, meldung[:90])
+
+    # -- Grenzen je Konto --------------------------------------------------
+    _, rails, meldung = mit_konten(
+        CONSOLE_ACCOUNTS, {"max_daily_budget_micros": 8_000_000},
+        form={"konten_gestellt": ["1"], "write_enabled": ["on"],
+              "konto": ["5691007627", "6286913360"],
+              "grenze_gestellt": ["5691007627", "6286913360"],
+              "eigene": ["5691007627"],
+              "budget_5691007627": ["120"], "faktor_5691007627": ["2"],
+              "ops_5691007627": ["50"],
+              "budget_6286913360": ["8.00"], "faktor_6286913360": ["3.0"],
+              "ops_6286913360": ["200"],
+              "max_daily_budget": ["8"]})
+    je_konto = rails.get("per_account") or {}
+    case("AN ACCOUNT CAN CARRY ITS OWN LIMITS",
+         je_konto.get("5691007627", {}).get("max_daily_budget_micros") == 120_000_000,
+         json.dumps(je_konto))
+    case("and an account without the tick stays out of the list",
+         "6286913360" not in je_konto, json.dumps(je_konto))
+    case("the default is untouched by what one account set",
+         rails["max_daily_budget_micros"] == 8_000_000,
+         str(rails["max_daily_budget_micros"]))
+    case("and the page says how many accounts carry their own",
+         "eigenen Grenzen" in meldung, meldung[:90])
+
+    # Ein Haken ohne eine einzige Zahl ist eine Zusage ohne Inhalt.
+    _, rails, _ = mit_konten(
+        CONSOLE_ACCOUNTS, {},
+        form={"konten_gestellt": ["1"], "grenze_gestellt": ["5691007627"],
+              "eigene": ["5691007627"], "budget_5691007627": [""],
+              "faktor_5691007627": [""], "ops_5691007627": [""]})
+    case("a tick with no number at all does not become an empty limit",
+         "5691007627" not in (rails.get("per_account") or {}),
+         json.dumps(rails.get("per_account")))
+
+    # Was die Seite gar nicht gezeigt hat, darf sie auch nicht loeschen.
+    _, rails, _ = mit_konten(
+        CONSOLE_ACCOUNTS,
+        {"per_account": {"9999999999": {"max_daily_budget_micros": 5_000_000}}},
+        form={"konten_gestellt": ["1"], "grenze_gestellt": ["5691007627"]})
+    case("limits of an account the page never showed are left alone",
+         (rails.get("per_account") or {}).get("9999999999", {})
+         .get("max_daily_budget_micros") == 5_000_000,
+         json.dumps(rails.get("per_account")))
+
+    # Und sie muessen beissen, nicht nur dastehen.
+    client = gac.Client({"client_id": "x", "client_secret": "x", "refresh_token": "x",
+                         "developer_token": "x", "api_version": "v25",
+                         "guardrails": dict(gac.DEFAULT_GUARDRAILS,
+                                            write_enabled=True,
+                                            max_daily_budget_micros=8_000_000,
+                                            per_account={"5691007627": {
+                                                "max_daily_budget_micros": 120_000_000}})})
+    expect_allowed(
+        "A BUDGET WITHIN THE ACCOUNT'S OWN CEILING PASSES, ABOVE THE DEFAULT",
+        lambda: client.check_write_allowed(
+            "5691007627", budget_operation(100_000_000), dry_run=False))
+    expect_refused(
+        "above its own ceiling it is refused, and the account is named",
+        lambda: client.check_write_allowed(
+            "5691007627", budget_operation(130_000_000), dry_run=False),
+        "for account 5691007627")
+    expect_refused(
+        "an account without its own limits keeps the default",
+        lambda: client.check_write_allowed(
+            "6286913360", budget_operation(9_000_000), dry_run=False),
+        "the default, guardrails.max_daily_budget_micros")
 
     # Rubbish in the number fields.
     for eingabe, erwartet in (("viel", "ist keine Zahl"), ("-5", "Negative Werte")):

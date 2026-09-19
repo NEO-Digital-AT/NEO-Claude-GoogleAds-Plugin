@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import datetime
 import json
+import copy
 import os
 import pathlib
 import time
@@ -111,12 +112,36 @@ DEFAULT_GUARDRAILS = {
     "max_budget_increase_factor": 3.0,
     "max_operations_per_call": 200,
     "log_changes": True,
+    # Grenzen je Konto. Wer mehrere Kunden betreut, hat fuer jeden andere
+    # Zahlen: ein kampagnenstarker darf am Tag 120 bewegen, ein kleiner 8.
+    # Was hier nicht steht, erbt das Konto aus den Werten darueber.
+    #
+    #   "per_account": {"5691007627": {"max_daily_budget_micros": 120000000}}
+    #
+    # Der Schreibschalter und die Kontenliste stehen bewusst NICHT hier:
+    # ob ein Konto ueberhaupt beschrieben werden darf, entscheidet
+    # allowed_customer_ids, und das an einer Stelle statt an zweien.
+    "per_account": {},
 }
 
-# Every guardrail can also come from the environment, because a container
-# has no configuration file to edit. Without these a server in Docker that
-# is allowed to write would run with no account list and no budget ceiling
-# — the two limits that matter most when it may spend money.
+# Welche der drei Zahlen ein Konto fuer sich setzen darf. Der Schalter und
+# die Kontenliste fehlen mit Absicht — siehe oben.
+PER_ACCOUNT_FIELDS = ("max_daily_budget_micros", "max_budget_increase_factor",
+                      "max_operations_per_call")
+
+# Die Schutzgrenzen koennen auch aus der Umgebung kommen: ein Container
+# startet ohne Konfigurationsdatei, und ohne diese Variablen liefe ein
+# Server in Docker, der schreiben darf, ohne Kontenliste und ohne
+# Budgetdeckel an.
+#
+# SIE GELTEN NUR FUER DIE ERSTE INBETRIEBNAHME. Sobald die Konsole die
+# Schutzgrenzen einmal gespeichert hat, steht in der Konfiguration ein
+# eigener Block, und dann gilt der — die Umgebung wird nicht mehr
+# angesehen. Vorher war es umgekehrt: die Variable gewann bei jedem Start
+# und die Konsole zeigte das Feld gesperrt. Das passt zu einem Server,
+# dessen Betreiber die .env nie anfasst; hier bedient derselbe Mensch
+# beides, und eine Einstellung, die sich nicht einstellen laesst, ist
+# dann nur im Weg.
 GUARDRAIL_ENV = {
     "write_enabled": "GOOGLE_ADS_ALLOW_WRITE",
     "allowed_customer_ids": "GOOGLE_ADS_ALLOWED_CUSTOMER_IDS",
@@ -125,6 +150,51 @@ GUARDRAIL_ENV = {
     "max_operations_per_call": "GOOGLE_ADS_MAX_OPERATIONS_PER_CALL",
     "log_changes": "GOOGLE_ADS_LOG_CHANGES",
 }
+
+
+def per_account_sauber(roh) -> dict:
+    """Reads guardrails.per_account and throws away what is not a limit.
+
+    A hand-edited file is the normal case here, so a typo must not become
+    a limit that quietly does not apply. Anything unreadable is dropped —
+    the account then inherits the values above it, which is the stricter
+    reading of a broken line.
+    """
+    sauber: dict = {}
+    if not isinstance(roh, dict):
+        return sauber
+    for kennung, werte in roh.items():
+        if not isinstance(werte, dict):
+            continue
+        try:
+            konto = normalize_customer_id(kennung)
+        except GoogleAdsError:
+            continue
+        eintrag = {}
+        for feld in PER_ACCOUNT_FIELDS:
+            if feld not in werte or werte[feld] in (None, ""):
+                continue
+            try:
+                zahl = float(werte[feld])
+            except (TypeError, ValueError):
+                continue
+            if zahl < 0:
+                continue
+            eintrag[feld] = (zahl if feld == "max_budget_increase_factor"
+                             else int(zahl))
+        if eintrag:
+            sauber[konto] = eintrag
+    return sauber
+
+
+def env_seeds() -> set:
+    """Which guardrails the environment would start a fresh server with.
+
+    Only interesting until the console has saved once: from then on the
+    configuration file answers, and this set is no longer consulted.
+    """
+    return {feld for feld, name in GUARDRAIL_ENV.items()
+            if (os.environ.get(name) or "").strip()}
 
 
 def _guardrails_from_env(guardrails: dict) -> dict:
@@ -219,9 +289,19 @@ def load_config(path: pathlib.Path | None = None) -> dict:
         if value:
             data[field] = value
 
-    guardrails = dict(DEFAULT_GUARDRAILS)
-    guardrails.update(data.get("guardrails") or {})
-    data["guardrails"] = _guardrails_from_env(guardrails)
+    # copy.deepcopy, nicht dict(): sonst teilen sich alle Aufrufe dieselbe
+    # Liste und dasselbe per_account-Verzeichnis aus DEFAULT_GUARDRAILS.
+    guardrails = copy.deepcopy(DEFAULT_GUARDRAILS)
+    gespeichert = data.get("guardrails")
+    if gespeichert:
+        guardrails.update(gespeichert)
+    else:
+        # Erste Inbetriebnahme: es gibt noch keine gespeicherten Grenzen,
+        # also gelten die aus der Umgebung. Ab dem ersten Speichern in der
+        # Konsole steht der Block in der Datei und die Umgebung schweigt.
+        guardrails = _guardrails_from_env(guardrails)
+    guardrails["per_account"] = per_account_sauber(guardrails.get("per_account"))
+    data["guardrails"] = guardrails
     data.setdefault("api_version", DEFAULT_API_VERSION)
 
     missing = [f for f in ("client_id", "client_secret", "refresh_token", "developer_token")
@@ -302,6 +382,17 @@ def error_code_of(exc: "GoogleAdsError") -> str:
         if "=" in stripped and " — " in stripped:
             return stripped.split(" — ")[0]
     return ""
+
+
+def _woher(rails: dict, feld: str) -> str:
+    """Says whether a limit is this account's own or the one above it.
+
+    A refusal that does not say where the number came from sends the
+    reader to the wrong file.
+    """
+    if feld in (rails.get("_eigene_felder") or ()):
+        return " (the account's own limit, guardrails.per_account)"
+    return f" (the default, guardrails.{feld})"
 
 
 class Client:
@@ -597,6 +688,22 @@ class Client:
 
     # -- guardrails --------------------------------------------------------
 
+    def rails_for(self, customer_id: str) -> dict:
+        """The guardrails as they apply to one account.
+
+        Everything the account does not set for itself comes from the
+        values above it, and nothing else is consulted: what the console
+        stored is what applies.
+        """
+        rails = dict(self.guardrails)
+        eigene = (self.guardrails.get("per_account") or {}).get(
+            normalize_customer_id(customer_id)) or {}
+        for feld in PER_ACCOUNT_FIELDS:
+            if feld in eigene:
+                rails[feld] = eigene[feld]
+        rails["_eigene_felder"] = sorted(f for f in PER_ACCOUNT_FIELDS if f in eigene)
+        return rails
+
     def check_write_allowed(self, customer_id: str, operations: list[dict],
                             *, dry_run: bool) -> None:
         """Four questions before anything leaves the machine.
@@ -605,7 +712,7 @@ class Client:
         that would be refused live must be refused now, otherwise the dry
         run answers a question nobody asked.
         """
-        rails = self.guardrails
+        rails = self.rails_for(customer_id)
 
         if not rails.get("write_enabled") and not dry_run:
             raise GoogleAdsError(
@@ -624,14 +731,17 @@ class Client:
         limit = int(rails.get("max_operations_per_call") or 0)
         if limit and len(operations) > limit:
             raise GoogleAdsError(
-                f"{len(operations)} operations in one call, the limit is {limit}. "
+                f"{len(operations)} operations in one call, the limit for account "
+                f"{customer_id} is {limit}"
+                f"{_woher(rails, 'max_operations_per_call')}. "
                 "Split the change into smaller steps so each one can be reviewed."
             )
 
         for operation in operations:
-            self._check_budget(operation, customer_id)
+            self._check_budget(operation, customer_id, rails)
 
-    def _check_budget(self, operation: dict, customer_id: str) -> None:
+    def _check_budget(self, operation: dict, customer_id: str,
+                      rails: dict | None = None) -> None:
         """Stops a budget from leaving the agreed range.
 
         Two ways to lose money by one keystroke: writing euros where the
@@ -647,24 +757,28 @@ class Client:
             return
         amount = int(amount)
 
-        ceiling = int(self.guardrails.get("max_daily_budget_micros") or 0)
+        rails = rails if rails is not None else self.rails_for(customer_id)
+        ceiling = int(rails.get("max_daily_budget_micros") or 0)
         if ceiling and amount > ceiling:
             raise GoogleAdsError(
-                f"Budget {amount / 1_000_000:.2f} per day is above the agreed ceiling of "
-                f"{ceiling / 1_000_000:.2f} (guardrails.max_daily_budget_micros). "
+                f"Budget {amount / 1_000_000:.2f} per day is above the ceiling of "
+                f"{ceiling / 1_000_000:.2f} for account {customer_id}"
+                f"{_woher(rails, 'max_daily_budget_micros')}. "
                 "Raise the ceiling deliberately or lower the budget."
             )
 
-        factor = float(self.guardrails.get("max_budget_increase_factor") or 0)
+        factor = float(rails.get("max_budget_increase_factor") or 0)
         name = budget_op.get("update", {}).get("resourceName")
         if not factor or not name:
             return
         current = self._current_budget_micros(customer_id, name)
         if current and amount > current * factor:
             raise GoogleAdsError(
-                f"Budget would go from {current / 1_000_000:.2f} to {amount / 1_000_000:.2f} "
-                f"per day, more than the agreed factor of {factor}. Take a smaller step, or "
-                "raise guardrails.max_budget_increase_factor after agreeing on it."
+                f"Budget would go from {current / 1_000_000:.2f} to "
+                f"{amount / 1_000_000:.2f} per day, more than the factor of {factor} "
+                f"for account {customer_id}"
+                f"{_woher(rails, 'max_budget_increase_factor')}. Take a smaller step, "
+                "or raise the factor after agreeing on it."
             )
 
     def _current_budget_micros(self, customer_id: str, resource_name: str) -> int:

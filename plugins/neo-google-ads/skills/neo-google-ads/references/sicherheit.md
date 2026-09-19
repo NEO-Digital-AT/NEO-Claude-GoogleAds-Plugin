@@ -10,12 +10,20 @@ Gesetzt werden sie auf drei Wegen, und in dieser Rangfolge:
 
 | Weg | Wann |
 | --- | --- |
-| Umgebungsvariablen (`GOOGLE_ADS_ALLOW_WRITE` und die übrigen) | im Container; gewinnen gegen die Datei |
-| `/guardrails` in der Verwaltungskonsole | im laufenden Betrieb, Konten zum Anhaken |
+| Umgebungsvariablen (`GOOGLE_ADS_ALLOW_WRITE` und die übrigen) | im Container, für die **erste** Inbetriebnahme |
+| `/guardrails` in der Verwaltungskonsole | im laufenden Betrieb, Konten zum Anhaken, Grenzen je Konto |
 | `google-ads-auth.py --allow-write` | bei der Einrichtung auf der Kommandozeile |
 
-Was die Umgebung setzt, zeigt die Konsole gesperrt an und nimmt es nicht
-entgegen: eine Änderung, die nie greift, ist schlimmer als keine.
+Die Umgebung liefert die Anfangswerte. Sobald die Konsole einmal
+gespeichert hat, steht in der Konfiguration ein eigener Block, und der
+entscheidet — die Variablen werden dann nicht mehr angesehen. Vorher
+gewannen sie bei jedem Start, und die Konsole zeigte die Felder gesperrt;
+das passt zu einem Server, dessen Betreiber die `.env` nie anfasst, nicht
+zu einem, bei dem derselbe Mensch beides bedient.
+
+Die drei Zahlen lassen sich **je Konto** setzen (`per_account` in der
+Konfiguration, eine Karte je Konto in der Konsole). Was ein Konto nicht
+für sich setzt, erbt es aus den Werten darüber.
 
 ```json
 "guardrails": {

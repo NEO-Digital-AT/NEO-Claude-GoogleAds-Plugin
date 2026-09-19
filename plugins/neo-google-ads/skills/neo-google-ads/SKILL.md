@@ -210,7 +210,7 @@ Dazu vier Skripte, die von Hand laufen:
 | `google-ads-auth.py` | Verbinden, Schutzgrenzen setzen (`--allow-write`), Stand zeigen (`--show`), Zugangsdaten für eine Cloud-Sitzung ausgeben (`--env`) |
 | `/check/permissions` im Portal | Misst, welcher `login-customer-id` welches Konto lesbar macht, statt aus `USER_PERMISSION_DENIED` zu raten. Ist **kein** Konto lesbar, liegt es nicht an der Verknüpfung, sondern an der Zugriffsstufe des Cloud-Projekts. |
 | `google-ads-check.py` | Misst die Verbindung in acht Prüfungen, darunter Zugriffsstufe und Schreibweg |
-| `google-ads-selftest.py` | Weist ohne Netz nach, dass Schutzgrenzen, Portal und Zwei-Faktor, Passkeys und QR-Code greifen — 260 Fälle |
+| `google-ads-selftest.py` | Weist ohne Netz nach, dass Schutzgrenzen, Portal und Zwei-Faktor, Passkeys und QR-Code greifen — 270 Fälle |
 | `portal_store.py` | Konten, Sitzungen, Sperre und Prüfspur des Portals (SQLite, ohne Fremdbibliothek) |
 | `portal_totp.py` | Zweiter Faktor nach RFC 6238, mit Wiederholungsschutz |
 | `portal_webauthn.py` | Passkeys: CBOR, COSE, ES256 und RS256 in reinem Python. Prüft Challenge, Herkunft, Serverkennung, Unterschrift und Zähler |
