@@ -352,8 +352,14 @@ def consent_page(anfrage: dict, *, username: str, roh: str, message: str = "") -
     """
     # Als Tabelle, nicht als Aufzaehlung: Der Bestand hat kein Stilbild fuer
     # <ul>, und eine ungestylte Liste faellt auf dieser Seite auf.
+    #
+    # Ohne Beschriftung: Auf der schmalen Seite stehen die Beschriftungen
+    # ueber dem Wert, und ein zweimal wiederholtes „darf" ueber einer
+    # Aufzaehlung, deren Ueberschrift schon „Diese Anwendung darf dann:"
+    # lautet, sagt nichts und kostet zwei Zeilen.
     rechte = "".join(
-        sh.zeile("darf", esc(SCOPES[s])) for s in anfrage["scope"].split() if s in SCOPES)
+        f"<tr><td>{esc(SCOPES[s])}</td></tr>"
+        for s in anfrage["scope"].split() if s in SCOPES)
     warnung = ""
     if "ads:write" in anfrage["scope"].split():
         warnung = ('<p class="note" style="margin:14px 0 0">Darunter ist das Recht, '
@@ -383,7 +389,8 @@ def consent_page(anfrage: dict, *, username: str, roh: str, message: str = "") -
 </form>""",
         oben=(f'<div class="warnung"><span>{esc(message)}</span></div>' if message else ""),
         fuss='<span class="note" style="font-size:.82rem">Erteilte Zugriffe stehen '
-             'unter „Konto" und lassen sich dort jederzeit wieder entziehen.</span>')
+             'unter „Verbundene Apps“ und lassen sich dort jederzeit wieder '
+             'entziehen.</span>')
 
 
 # --------------------------------------------------------------------------

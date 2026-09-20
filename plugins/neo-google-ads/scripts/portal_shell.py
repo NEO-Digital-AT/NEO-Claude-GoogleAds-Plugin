@@ -101,6 +101,31 @@ body.laedt{cursor:progress}
 .schmal .titel h1{font-size:var(--size-h1-sm)}
 .schmal .titel .lead{margin:8px auto 0;font-size:.95rem}
 .schmal .fuss{text-align:center;margin-top:26px}
+/* Angabentabellen auf den schmalen Seiten stapeln: Beschriftung OBEN, Wert
+   darunter, beides ueber die volle Breite.
+
+   Nebeneinander funktioniert nur auf den breiten Konsolenseiten. Hier ist
+   die Spalte rund 500 px breit, und `th{white-space:nowrap}` nagelt die
+   Beschriftungsspalte auf ihre Textbreite fest — dem Wert bleibt der Rest.
+   Eine Rueckadresse brach dadurch mitten im Wort um
+   ("https://claud / e.ai/api/mcp/ / auth_callback") und die Karte wurde
+   dreimal so hoch wie noetig. Gestapelt hat der Wert die ganze Breite. */
+.schmal table,.schmal tbody,.schmal tr,.schmal th,.schmal td{display:block;
+  width:auto}
+.schmal tr{border-bottom:1px solid var(--line-soft);padding:var(--space-3) 0}
+.schmal tr:last-child{border-bottom:none;padding-bottom:0}
+.schmal tr:first-child{padding-top:0}
+.schmal th,.schmal td{border-bottom:none;padding:0;white-space:normal}
+.schmal th{margin-bottom:6px}
+.schmal td .notiz{display:block;margin-top:4px}
+/* Etwas kleinere Festbreitenschrift in der schmalen Spalte. Gemessen: die
+   Karte gibt rund 312 px her, die uebliche Rueckadresse
+   „https://claude.ai/api/mcp/auth_callback" braucht 308 px bei .82rem und
+   300 px bei .8rem. Vorher brach sie nach „auth_callbac" um und liess ein
+   einzelnes „k" auf der naechsten Zeile stehen. Laengere Adressen brechen
+   weiterhin um — das ist unvermeidbar; ein einzelnes Zeichen als ganze
+   Zeile ist es nicht. */
+.schmal code,.schmal .mono{font-size:.8rem}
 .trenner{display:flex;align-items:center;gap:14px;margin:20px 0;color:var(--faint);
   font-size:.78rem;letter-spacing:var(--tracking-eyebrow);text-transform:uppercase}
 .trenner::before,.trenner::after{content:"";flex:1;height:1px;background:var(--line)}
