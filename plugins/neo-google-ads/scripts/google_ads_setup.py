@@ -55,6 +55,7 @@ import html
 import json
 import os
 import threading
+import time
 import pathlib
 import secrets
 import urllib.error
@@ -182,7 +183,31 @@ def esc(value) -> str:
 # Reading the current state
 # --------------------------------------------------------------------------
 
-def load_state() -> dict:
+# Der Stand kostet bei jedem Aufruf eine Kontenliste und eine Zeile je
+# Konto bei Google — mehrere Sekunden. Zwischen Uebersicht, Schutzgrenzen
+# und Pruefung hin und her zu klicken fragte das jedes Mal neu ab. Eine
+# Minute Gedaechtnis nimmt das weg; alles, was etwas aendert, vergisst es.
+_STAND: dict = {"zeit": 0.0, "wert": None}
+STAND_GILT = 60.0
+
+
+def vergiss_stand() -> None:
+    """Nach jeder Aenderung: der naechste Aufruf fragt Google wieder."""
+    _STAND["zeit"] = 0.0
+    _STAND["wert"] = None
+
+
+def load_state(frisch: bool = False) -> dict:
+    """Der Stand, hoechstens eine Minute alt. frisch=True fragt neu."""
+    if not frisch and _STAND["wert"] is not None:
+        if time.monotonic() - _STAND["zeit"] < STAND_GILT:
+            return _STAND["wert"]
+    wert = _stand_lesen()
+    _STAND["zeit"], _STAND["wert"] = time.monotonic(), wert
+    return wert
+
+
+def _stand_lesen() -> dict:
     """Everything the status page shows, gathered in one place."""
     state: dict = {"configured": False, "connected": False, "error": "",
                    "accounts": [], "guardrails": {}, "config": {}}
@@ -306,9 +331,9 @@ def geldbetrag(micros: int) -> str:
     return f"{micros / 1_000_000:.2f}".replace(".", ",")
 
 
-def dashboard_page(base_url: str) -> bytes:
+def dashboard_page(base_url: str, frisch: bool = False) -> bytes:
     """Was dieser Server gerade kann: Verbindung, Konten, Grenzen, Protokoll."""
-    state = load_state()
+    state = load_state(frisch)
     config = state["config"]
     rails = state["guardrails"]
     konten = state["accounts"]
@@ -478,7 +503,9 @@ def dashboard_page(base_url: str) -> bytes:
 
     teile.append("</div>")
     return konsole("Übersicht", "Verbindung, Konten und Schutzgrenzen dieses Servers.",
-                   "/dashboard", "".join(teile))
+                   "/dashboard", "".join(teile),
+                   aktionen='<a class="button quiet klein" href="/dashboard?frisch=1">'
+                            + symbol("refresh", 18) + 'Neu abfragen</a>')
 
 
 def _stufe_hinweis(projekt: str) -> str:
@@ -640,6 +667,7 @@ def pkce_pair() -> tuple[str, str]:
 
 def exchange_code(pasted_or_query: str) -> tuple[bool, str]:
     """Trades an authorisation code for a refresh token. Returns (ok, message)."""
+    vergiss_stand()
     if not PENDING_FILE.exists():
         return False, ("Keine offene Anmeldung. Der Vorgang muss über „Mit Google "
                        "verbinden“ beginnen.")
@@ -938,6 +966,7 @@ Die Messung selbst verändert nichts — sie liest je Konto eine Zeile.</p>""")
 
 def save_account_logins(form: dict) -> tuple[bool, str]:
     """Schreibt die gemessene Zuordnung in die Konfiguration."""
+    vergiss_stand()
     zuordnung = {}
     for eintrag in form.get("zuordnung") or []:
         konto, _, login = eintrag.partition(":")
@@ -966,6 +995,7 @@ def save_account_logins(form: dict) -> tuple[bool, str]:
 
 def save_credentials(form: dict) -> tuple[bool, str]:
     """Writes the four values, keeping stored secrets when a field is left empty."""
+    vergiss_stand()
     config = {}
     if gac.CONFIG_FILE.exists():
         try:
@@ -1393,6 +1423,7 @@ def save_guardrails(form: dict) -> tuple[bool, str]:
     Konten nicht anzeigen konnte, darf die Berechtigung nicht als "kein
     Haken" lesen, denn kein Haken heisst ALLE Konten.
     """
+    vergiss_stand()
     config = {}
     if gac.CONFIG_FILE.exists():
         try:
@@ -1518,6 +1549,7 @@ Abweisung.</p>
 
 def disconnect() -> tuple[bool, str]:
     """Forgets the refresh token, keeps everything else."""
+    vergiss_stand()
     if not gac.CONFIG_FILE.exists():
         return False, "Es gibt keine Konfiguration."
     config = json.loads(gac.CONFIG_FILE.read_text(encoding="utf-8"))

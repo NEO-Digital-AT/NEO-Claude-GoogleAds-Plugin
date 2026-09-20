@@ -926,7 +926,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
     def _setup_get(self, path: str):
         if path == "/dashboard":
-            self._send_html(setup.dashboard_page(self._base_url()))
+            frisch = "frisch" in urllib.parse.parse_qs(
+                urllib.parse.urlparse(self.path).query)
+            self._send_html(setup.dashboard_page(self._base_url(), frisch))
         elif path == "/setup":
             self._send_html(setup.credentials_page())
         elif path == "/setup/connect":

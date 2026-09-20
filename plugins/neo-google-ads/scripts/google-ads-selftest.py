@@ -813,7 +813,7 @@ def test_console() -> None:
                 gesetzt.append(name)
                 os.environ[name] = wert
             try:
-                setup.load_state = lambda: {
+                setup.load_state = lambda *a, **k: {
                     "configured": True, "connected": bool(accounts),
                     "error": "" if accounts else "Verbindung nicht möglich",
                     "accounts": list(accounts),
@@ -1568,7 +1568,7 @@ def test_permission_matrix() -> None:
         echt_datei, gac.CONFIG_FILE = gac.CONFIG_FILE, konfig
         echt_stand = setup_mod.load_state
         try:
-            setup_mod.load_state = lambda: {
+            setup_mod.load_state = lambda *a, **k: {
                 "configured": True, "connected": True, "error": "",
                 "accounts": [{"id": A, "name": "", "currency": "", "manager": False,
                               "problem": "The caller does not have permission",

@@ -41,6 +41,22 @@ WEGE = (
 
 
 ANWENDUNG_CSS = """
+/* Der Ladebalken. Eine Seite dieser Konsole entsteht am Server und fragt
+   dabei Google ab; das dauert. Der Browser zeigt bis dahin die alte Seite,
+   also sah ein Klick aus wie nichts. Der Balken laeuft sofort los und
+   verschwindet mit der neuen Seite. */
+.laeuft{position:fixed;top:0;left:0;right:0;height:3px;z-index:200;
+  pointer-events:none;overflow:hidden}
+.laeuft::after{content:"";display:block;height:100%;width:0;
+  background:var(--grad-accent);box-shadow:0 0 12px var(--neon);
+  transition:width 6s cubic-bezier(.05,.8,.1,1)}
+body.laedt .laeuft::after{width:92%}
+body.laedt{cursor:progress}
+@media (prefers-reduced-motion: reduce){
+  .laeuft::after{transition:none}
+  body.laedt .laeuft::after{width:100%}
+}
+
 .app{display:flex;min-height:100vh;background:var(--ink-950)}
 .leiste{width:var(--sidebar-width);flex:none;padding:22px 14px;
   border-right:1px solid var(--line);background:var(--ink-900);display:flex;
@@ -194,6 +210,29 @@ OTP_JS = """
 """
 
 
+NAVIGATION_JS = """
+(function () {
+  var koerper = document.body;
+  var an = function () { koerper.classList.add('laedt'); };
+  document.addEventListener('click', function (e) {
+    var verweis = e.target.closest && e.target.closest('a[href]');
+    if (!verweis || e.defaultPrevented || e.button !== 0) return;
+    if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+    if (verweis.target === '_blank' || verweis.hasAttribute('download')) return;
+    var ziel = verweis.getAttribute('href') || '';
+    if (!ziel || ziel.charAt(0) === '#') return;
+    if (/^(mailto|tel|javascript):/i.test(ziel)) return;
+    if (verweis.origin && verweis.origin !== location.origin) return;
+    an();
+  });
+  document.addEventListener('submit', an);
+  // Zurueck aus dem Zwischenspeicher zeigt die alte Seite samt Balken.
+  window.addEventListener('pageshow', function () {
+    koerper.classList.remove('laedt');
+  });
+})();
+"""
+
 GRENZEN_JS = """
 (function () {
   document.querySelectorAll('.kontogrenze').forEach(function (karte) {
@@ -326,7 +365,9 @@ def schiene(schritte, jetzt: int) -> str:
 # Die beiden Rahmen
 # --------------------------------------------------------------------------
 def _kopf(titel: str, favicon: str, marke: str, skript: str = "") -> str:
-    js = f"<script>{skript}</script>" if skript else ""
+    # Der Ladebalken haengt an jeder Seite, das uebrige Skript nur dort,
+    # wo die Seite es braucht.
+    js = f"<script>{NAVIGATION_JS}{skript}</script>"
     return (f"<!doctype html>\n"
             f'<html lang="de"><head><meta charset="utf-8">\n'
             f'<meta name="viewport" content="width=device-width, initial-scale=1">\n'
@@ -357,7 +398,8 @@ def rahmen(*, titel: str, lead: str, weg: str, inhalt: str, benutzer: str,
     rechts = f'<div class="rechts">{aktionen}</div>' if aktionen else ""
     # Ein leerer Vorspann hinterliess eine leere Zeile unter der Ueberschrift.
     vorspann = f'<p class="lead">{esc(lead)}</p>' if lead else ""
-    return (kopf + f"""<body><div class="app">
+    return (kopf + f"""<body><div class="laeuft" aria-hidden="true"></div>
+<div class="app">
 <aside class="leiste">
 <a class="marke" href="/dashboard">{logo}<span class="eyebrow">{esc(beiwort)}</span></a>
 <nav>{nav}</nav>
@@ -387,7 +429,8 @@ def schmale_seite(*, titel: str, lead: str, inhalt: str, logo: str, favicon: str
     """
     kopf, js = _kopf(titel, favicon, marke, skript)
     unten = f'<div class="fuss">{fuss}</div>' if fuss else ""
-    return (kopf + f"""<body><main class="schmal">
+    return (kopf + f"""<body><div class="laeuft" aria-hidden="true"></div>
+<main class="schmal">
 <div class="marke">{logo}</div>
 <div class="titel"><h1>{esc(titel)}</h1><p class="lead">{esc(lead)}</p></div>
 {oben}{inhalt}{unten}
