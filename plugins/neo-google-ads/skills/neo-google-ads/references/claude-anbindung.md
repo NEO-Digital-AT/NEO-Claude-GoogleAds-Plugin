@@ -276,13 +276,26 @@ Adressbereich kommt — und dasselbe gilt für `/authorize`, `/token` und
 `/register`: Der Bestätigungsbildschirm wird von einem Browser aufgerufen,
 nicht von Anthropic.
 
-⚠️ **Was `--anthropic-only` aber sehr wohl trifft:** Claude Desktop und
-Claude Code rufen `/mcp` vom Rechner des Benutzers aus auf, nicht aus
-Anthropics Bereich. Mit dem Schalter kommen sie nicht durch — auch nicht
-mit einem gültigen OAuth-Token. Die Claude-Apps im Browser und am Handy
-sind nicht betroffen, weil dort Anthropics Server den Aufruf machen. Wer
-beides will, lässt den Schalter weg; das Zugangswort und die Tokenprüfung
-bleiben ja.
+**Und er gilt nur für das feste Zugangswort, nicht für OAuth-Token.**
+
+Claude Desktop und Claude Code rufen `/mcp` vom Rechner des Benutzers aus
+auf, nicht aus Anthropics Bereich. Mit einem OAuth-Token kommen sie
+trotzdem durch — dafür ist es da. Mit dem festen Zugangswort kommen sie von
+dort nicht durch, solange `--anthropic-only` steht.
+
+| Schlüssel | von Anthropics Adressen | von überall sonst |
+| --- | --- | --- |
+| festes Zugangswort | geht | abgewiesen |
+| OAuth-Token | geht | **geht** |
+
+Das ist Absicht und in `google-ads-selftest.py` belegt (`test_oauth`, die
+Fälle „--anthropic-only still shuts out the fixed token from elsewhere" und
+„but an OAuth token gets through"). Der Grund für den Unterschied: Das
+feste Wort ist *ein* Geheimnis, das nie abläuft und für jeden dasselbe ist
+— da hilft eine Adressprüfung wirklich. Ein OAuth-Token gehört zu einem
+Menschen und einem Client, wurde erst nach der Anmeldung im Portal
+ausgestellt, läuft nach einer Stunde ab und gilt nur für diesen Server. Es
+bringt seinen Beweis selbst mit.
 
 ### Wie der Aufbau sich schützt
 

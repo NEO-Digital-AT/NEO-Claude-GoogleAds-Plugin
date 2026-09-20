@@ -2020,6 +2020,26 @@ def test_oauth() -> None:
                  kopf={"Content-Type": "application/json",
                        "Authorization": "Bearer nichtsdavon"})[0] == 401)
 
+        # -- Der Adressfilter gilt NICHT fuer OAuth-Token ---------------------
+        # Der Testclient ruft von 127.0.0.1 an, also ausserhalb von
+        # Anthropics Bereich. Mit --anthropic-only muss das feste Wort
+        # scheitern und das OAuth-Token trotzdem durchkommen: Claude Desktop
+        # und Claude Code rufen genau so an.
+        http_mod.Handler.anthropic_only = True
+        try:
+            case("oauth: --anthropic-only still shuts out the fixed token "
+                 "from elsewhere",
+                 ruf("/mcp", daten=b'{"jsonrpc":"2.0","id":1,"method":"tools/list"}',
+                     kopf={"Content-Type": "application/json",
+                           "Authorization": "Bearer " + "f" * 60})[0] == 401)
+            case("oauth: but an OAuth token gets through — that is what it is for",
+                 ruf("/mcp", daten=b'{"jsonrpc":"2.0","id":1,"method":"tools/list"}',
+                     kopf={"Content-Type": "application/json",
+                           "Authorization": "Bearer " + token["access_token"]})[0]
+                 == 200)
+        finally:
+            http_mod.Handler.anthropic_only = False
+
         # -- Ein Nur-Lese-Token darf nicht schreiben --------------------------
         v2, c2 = pkce()
         frage2 = urllib.parse.urlencode({

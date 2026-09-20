@@ -196,7 +196,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if body:
             self.wfile.write(body)
 
-    def _authorized(self) -> bool:
+    def _authorized(self, *, leise: bool = False) -> bool:
         """Address first, then token — both in constant time where it matters.
 
         Only the MCP endpoint goes through here. The portal pages have
@@ -207,7 +207,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if self.anthropic_only:
             address = self._client_ip()
             if address is None or address not in ANTHROPIC_EGRESS:
-                self.log_line(f"refused: address {address} outside the Anthropic range")
+                if not leise:
+                    self.log_line(f"refused: address {address} outside the Anthropic range")
                 return False
         header = self.headers.get("Authorization", "")
         presented = header[7:].strip() if header.lower().startswith("bearer ") else ""
@@ -215,34 +216,57 @@ class Handler(http.server.BaseHTTPRequestHandler):
             presented = self.headers.get("X-Api-Key", "").strip()
         if presented and hmac.compare_digest(presented, self.token):
             return True
-        self.log_line("refused: bad or missing token")
+        if not leise:
+            self.log_line("refused: bad or missing token")
         return False
 
     def _mcp_access(self) -> tuple[bool, str]:
         """(erlaubt, Scope) fuer den MCP-Endpunkt — zwei Schluessel, eine Tuer.
 
-        Das feste Zugangswort bleibt und darf alles: Es steht in einer Datei
-        auf dem Server, wer sie lesen kann, ist ohnehin drin. Ein
-        OAuth-Token dagegen traegt seine Rechte mit sich und gilt nur fuer
-        genau diesen Server (siehe portal_oauth, Punkt 3).
+        ⚠️ DER ADRESSFILTER GILT NUR FUER DAS FESTE ZUGANGSWORT, NICHT FUER
+        OAUTH-TOKEN. Das ist eine Entscheidung und kein Nebeneffekt der
+        Reihenfolge; wer hier umbaut, dreht sie bewusst um oder gar nicht.
+        Belegt in google-ads-selftest.py, test_oauth, die beiden Faelle
+        „--anthropic-only still shuts out the fixed token from elsewhere"
+        und „but an OAuth token gets through".
+
+        Warum der Unterschied:
+
+        Das feste Wort ist EIN Geheimnis, das nie ablaeuft und fuer jeden
+        Aufrufer dasselbe ist. Dagegen hilft --anthropic-only wirklich: ein
+        erratenes oder abgeflossenes Wort nuetzt von einer anderen Adresse
+        aus nichts.
+
+        Ein OAuth-Token ist etwas anderes. Es gehoert zu einem Menschen und
+        einem Client, wurde erst nach der Anmeldung im Portal ausgestellt,
+        laeuft nach einer Stunde ab, traegt seine Rechte und gilt nur fuer
+        diesen einen Server. Es bringt seinen Beweis selbst mit.
+
+        Und eine Adresspruefung darauf wuerde genau das verhindern, wofuer
+        OAuth hier ueberhaupt gebaut wurde: Claude Desktop und Claude Code
+        rufen /mcp vom Rechner des Menschen aus auf, nicht aus Anthropics
+        Bereich (Erichs Ansage 20.9.2026: „claude desktop und claude code
+        muessen durch! genau fuer die soll das ja sein").
         """
-        if self._authorized():
+        # Das feste Wort — mit Adressfilter. Leise, weil danach noch der
+        # OAuth-Weg kommt: Sonst stuende vor jedem erfolgreichen
+        # OAuth-Aufruf ein „refused" im Protokoll und wuerde beim Suchen
+        # nach echten Abweisungen in die Irre fuehren.
+        if self._authorized(leise=self.oauth_enabled):
             return True, oauth.DEFAULT_SCOPE
-        if not self.oauth_enabled or self.database_path is None:
-            return False, ""
+
         header = self.headers.get("Authorization", "")
-        if not header.lower().startswith("bearer "):
-            return False, ""
-        presented = header[7:].strip()
-        if not presented:
-            return False, ""
-        ziel = oauth.resource_url(self._base_url(), self.path_prefix)
-        with store.open_database(self.database_path) as connection:
-            zeile = oauth.token_for_resource(connection, presented, ziel)
-            if zeile is None:
-                return False, ""
-            self.log_line(f"mcp: OAuth-Token von {zeile['client_id']}")
-            return True, zeile["scope"]
+        presented = header[7:].strip() if header.lower().startswith("bearer ") else ""
+        if self.oauth_enabled and self.database_path is not None and presented:
+            ziel = oauth.resource_url(self._base_url(), self.path_prefix)
+            with store.open_database(self.database_path) as connection:
+                zeile = oauth.token_for_resource(connection, presented, ziel)
+                if zeile is not None:
+                    self.log_line(f"mcp: OAuth-Token von {zeile['client_id']}")
+                    return True, zeile["scope"]
+        if self.oauth_enabled:
+            self.log_line("refused: weder gueltiges Zugangswort noch gueltiges Token")
+        return False, ""
 
     # -- the portal's own sign-in ------------------------------------------
 
