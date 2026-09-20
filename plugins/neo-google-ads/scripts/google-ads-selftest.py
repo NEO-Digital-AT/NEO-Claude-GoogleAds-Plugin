@@ -2068,6 +2068,21 @@ def test_oauth() -> None:
              "auth_callback" in liste)
         case("clients: it counts the live grant", "1 aktiv" in liste, "")
 
+        # Ein frisch angemeldeter Client darf NICHT wie Abfall aussehen. Genau
+        # daran scheiterte ChatGPT: Der Eintrag entstand beim Verbinden, sah in
+        # der Liste aus wie eine Karteileiche, wurde entfernt — und die
+        # Anmeldung, die er tragen sollte, lief ins Leere (20.9.2026).
+        status, _, frisch_b = ruf("/register", kopf={"Content-Type": "application/json"},
+                                  daten=_json.dumps({"client_name": "Gerade erst",
+                                                     "redirect_uris": [RUECK]}))
+        frisch = _json.loads(frisch_b or b"{}")
+        neue_liste = ruf("/clients", angemeldet=True)[2].decode("utf-8", "replace")
+        case("clients: a just-registered app is marked as awaiting confirmation",
+             "wartet auf Bestätigung" in neue_liste)
+        case("clients: and warns against removing it right now",
+             "nicht entfernen" in neue_liste)
+        ruf("/clients/remove", daten={"client_id": frisch["client_id"]}, angemeldet=True)
+
         # Ein Entfernen-Knopf, der die richtige Kennung mitschickt — wieder
         # aus dem gerenderten HTML gelesen, nicht im Test erfunden.
         formular = verborgene_felder(liste)

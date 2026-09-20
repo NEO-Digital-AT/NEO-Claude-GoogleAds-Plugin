@@ -160,6 +160,22 @@ def authorization_server_metadata(base: str) -> dict:
     }
 
 
+def _gerade_erst(zeitpunkt: str, minuten: int = 60) -> bool:
+    """Wurde das in der letzten Stunde angelegt? Rein zur Anzeige.
+
+    Die Zeitstempel stehen als ISO-Text in der Datenbank und lassen sich
+    als Text vergleichen, solange beide dasselbe Format haben — das tun
+    sie, beide kommen aus portal_store.now().
+    """
+    import datetime
+    try:
+        grenze = (datetime.datetime.now(datetime.timezone.utc)
+                  - datetime.timedelta(minutes=minuten)).isoformat(timespec="seconds")
+        return (zeitpunkt or "") > grenze
+    except (TypeError, ValueError):
+        return False
+
+
 def resource_url(base: str, mcp_path: str) -> str:
     return base.rstrip("/") + "/" + mcp_path.strip("/")
 
@@ -274,8 +290,19 @@ def parse_authorize(connection, query: str, base: str, mcp_path: str) -> dict:
     if client is None:
         # Unbekannter Client: NICHT weiterleiten. Wohin auch — die Adresse
         # in der Anfrage ist dann durch nichts gedeckt.
-        raise OAuthError("invalid_client", "Dieser Client ist hier nicht registriert.",
-                         redirectable=False)
+        # Die Meldung nennt den haeufigsten Grund, weil er sonst nicht zu
+        # erraten ist: Die Anwendung hat sich angemeldet, ihr Eintrag wurde
+        # danach im Portal entfernt, und sie kennt ihre Kennung weiter.
+        # Genau das ist am 20.9.2026 passiert — der Server hatte die Kennung
+        # vergeben, beim Bestaetigen war sie weg.
+        raise OAuthError(
+            "invalid_client",
+            "Diese Anwendung ist hier nicht (mehr) registriert. Das passiert, "
+            "wenn ihr Eintrag unter \u201eVerbundene Apps\u201c entfernt wurde, "
+            "w\u00e4hrend die Anwendung ihre Kennung noch kennt. In der Anwendung "
+            "die Verbindung l\u00f6schen und neu hinzuf\u00fcgen \u2014 dann "
+            "meldet sie sich neu an.",
+            redirectable=False)
 
     erlaubt = store.client_redirect_uris(client)
     redirect_uri = felder.get("redirect_uri", "")
@@ -587,6 +614,13 @@ def clients_page(clients, *, message: str = "", art: str = "",
         if c["nutzer_anzahl"]:
             zugang = sh.zustand(f"{c['nutzer_anzahl']} aktiv", "ok")
             wer = f'<span class="notiz">{esc(c["nutzer"])}</span>'
+        elif _gerade_erst(c["created"]):
+            # Genau dieser Eintrag ist der, den man gerade bestätigen will.
+            # Ohne den Hinweis sieht er aus wie Abfall — und wird weggeräumt,
+            # womit die Anmeldung scheitert, die er tragen sollte.
+            zugang = sh.zustand("wartet auf Bestätigung", "warn")
+            wer = ('<span class="notiz">gerade angemeldet — nicht entfernen, '
+                   'solange du sie verbindest</span>')
         else:
             zugang = sh.zustand("kein Zugang", "neutral")
             wer = '<span class="notiz">nur registriert, nie bestätigt</span>'
