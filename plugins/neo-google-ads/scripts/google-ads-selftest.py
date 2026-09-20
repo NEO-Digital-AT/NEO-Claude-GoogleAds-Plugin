@@ -1897,14 +1897,14 @@ def test_oauth() -> None:
 
     oeffner = urllib.request.build_opener(OhneUmleitung())
 
-    def ruf(pfad, daten=None, kopf=None, angemeldet=False):
+    def ruf(pfad, daten=None, kopf=None, angemeldet=False, verb=None):
         rumpf = None
         if isinstance(daten, dict):
             rumpf = urllib.parse.urlencode(daten).encode()
         elif daten is not None:
             rumpf = daten if isinstance(daten, bytes) else daten.encode()
         anfrage = urllib.request.Request(base + pfad, data=rumpf,
-                                         headers=dict(kopf or {}))
+                                         headers=dict(kopf or {}), method=verb)
         if angemeldet:
             anfrage.add_header("Cookie", f"{_store.SESSION_COOKIE}={sitzung}")
             anfrage.add_header("Origin", base)
@@ -2256,6 +2256,70 @@ def test_oauth() -> None:
         case("oauth: a wrong client secret gets 401", ruf("/token", daten={
             "grant_type": "authorization_code", "code": "erfunden",
             "client_id": client["client_id"], "client_secret": "falsch"})[0] == 401)
+
+        # -- Oeffentliche Clients (ohne Secret) -------------------------------
+        # Die Auskunft nennt "none" als unterstuetzte Methode. Wer sich darauf
+        # verlaesst, muss auch durchkommen — sonst ist die Auskunft gelogen.
+        # Genau daran scheiterte ChatGPT (Erichs Befund 20.9.2026).
+        status, _, rumpf = ruf("/register", kopf={"Content-Type": "application/json"},
+                               daten=_json.dumps({
+                                   "client_name": "Oeffentlicher Client",
+                                   "redirect_uris": [RUECK],
+                                   "token_endpoint_auth_method": "none"}))
+        oeff = _json.loads(rumpf or b"{}")
+        case("public: registration is accepted", status == 201, str(status))
+        case("public: no secret is handed out", "client_secret" not in oeff,
+             str(sorted(oeff)))
+        case("public: the answer echoes the requested method",
+             oeff.get("token_endpoint_auth_method") == "none",
+             str(oeff.get("token_endpoint_auth_method")))
+
+        v3, c3 = pkce()
+        frage3 = urllib.parse.urlencode({
+            "response_type": "code", "client_id": oeff["client_id"],
+            "redirect_uri": RUECK, "code_challenge": c3,
+            "code_challenge_method": "S256", "scope": "ads:read"})
+        _, koepfe, _ = zustimmen(frage3)
+        code3 = urllib.parse.parse_qs(urllib.parse.urlsplit(
+            koepfe.get("Location", "")).query).get("code", [""])[0]
+        status, _, rumpf = ruf("/token", daten={
+            "grant_type": "authorization_code", "code": code3,
+            "redirect_uri": RUECK, "code_verifier": v3,
+            "client_id": oeff["client_id"]})          # KEIN Secret
+        oeff_token = _json.loads(rumpf or b"{}")
+        case("public: the token exchange works without a secret",
+             status == 200 and bool(oeff_token.get("access_token")),
+             f"{status} {rumpf[:110]}")
+        case("public: PKCE still protects it", ruf("/token", daten={
+            "grant_type": "authorization_code", "code": code3,
+            "redirect_uri": RUECK, "code_verifier": "falsch",
+            "client_id": oeff["client_id"]})[0] == 400)
+        case("public: a confidential client still needs its secret",
+             ruf("/token", daten={
+                 "grant_type": "authorization_code", "code": "erfunden",
+                 "client_id": client["client_id"]})[0] == 401)
+
+        # -- Die Verben der Streamable-HTTP-Spezifikation ---------------------
+        status, koepfe, _ = ruf("/mcp", verb="GET")
+        case("transport: GET on the MCP endpoint answers 405, not 404",
+             status == 405, str(status))
+        case("transport: and says which verbs it takes",
+             "POST" in koepfe.get("Allow", ""), koepfe.get("Allow", ""))
+        status, koepfe, _ = ruf("/mcp", verb="OPTIONS",
+                                kopf={"Origin": "https://chatgpt.com",
+                                      "Access-Control-Request-Method": "POST"})
+        case("transport: the CORS preflight is answered", status == 204, str(status))
+        case("transport: and allows the headers a client sends",
+             "Authorization" in koepfe.get("Access-Control-Allow-Headers", ""),
+             koepfe.get("Access-Control-Allow-Headers", ""))
+        case("transport: DELETE answers 405, not 501",
+             ruf("/mcp", verb="DELETE")[0] == 405)
+        # Und das Portal bleibt zu: dort waere CORS die offene Flanke.
+        status, koepfe, _ = ruf("/clients", verb="OPTIONS",
+                                kopf={"Origin": "https://boese.example"})
+        case("transport: the portal gets NO CORS",
+             "Access-Control-Allow-Origin" not in koepfe,
+             str(koepfe.get("Access-Control-Allow-Origin")))
     finally:
         server.shutdown()
         server.server_close()

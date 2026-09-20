@@ -182,6 +182,27 @@ class Handler(http.server.BaseHTTPRequestHandler):
         except ValueError:
             return direct
 
+    # Wege, die ein Programm anspricht und kein Browserformular: Hier ist
+    # CORS richtig und ungefaehrlich, weil sie nicht am Sitzungskeks haengen,
+    # sondern am Token. Die Portalseiten bekommen KEIN CORS — dort wuerde es
+    # genau den Cross-Site-Schutz aufweichen, den _same_origin aufbaut.
+    def _maschinenweg(self, path: str) -> bool:
+        return (path == self.path_prefix.rstrip("/")
+                or path in ("/register", "/token")
+                or path.startswith("/.well-known/"))
+
+    @staticmethod
+    def _cors() -> dict:
+        return {
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
+            "Access-Control-Allow-Headers":
+                "Authorization, Content-Type, Mcp-Session-Id, "
+                "MCP-Protocol-Version, Last-Event-ID",
+            "Access-Control-Expose-Headers": "Mcp-Session-Id, WWW-Authenticate",
+            "Access-Control-Max-Age": "86400",
+        }
+
     def _send(self, status: int, payload: dict | None = None, *, headers: dict | None = None):
         body = json.dumps(payload, ensure_ascii=False, default=str).encode("utf-8") \
             if payload is not None else b""
@@ -513,7 +534,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self._send(fehler.status, fehler.payload())
             return
         self.log_line(f"oauth: Client registriert — {antwort['client_id']}")
-        self._send(201, antwort)
+        self._send(201, antwort, headers=self._cors())
 
     def _oauth_token(self) -> None:
         form = {k: v[0] for k, v in self._read_form().items()}
@@ -527,7 +548,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self._send(fehler.status, fehler.payload())
             return
         self.log_line("oauth: Token ausgestellt")
-        self._send(200, antwort)
+        self._send(200, antwort, headers=self._cors())
 
     def _oauth_clients(self, connection, verb: str, user, address: str) -> None:
         """Die Liste. Der Entfernen-Knopf loescht NICHT, er fuehrt zum Dialog."""
@@ -756,6 +777,34 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
     # -- verbs -------------------------------------------------------------
 
+    def do_OPTIONS(self):  # noqa: N802
+        """Der Preflight. Ohne ihn kommt ein Browser-Client gar nicht erst an.
+
+        Vorher antwortete der Server 501 „Unsupported method" — fuer einen
+        Client, der aus einer Webanwendung heraus verbindet, ist das das
+        Ende der Verbindung, noch bevor ein Token im Spiel ist.
+        """
+        path = urllib.parse.urlparse(self.path).path.rstrip("/") or "/"
+        if not self._maschinenweg(path):
+            self._send(405, {"error": "method not allowed"},
+                       headers={"Allow": "GET, POST"})
+            return
+        self.send_response(204)
+        for schluessel, wert in self._cors().items():
+            self.send_header(schluessel, wert)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    def do_DELETE(self):  # noqa: N802
+        """Sitzungsende laut Streamable HTTP. Dieser Server fuehrt keine
+        Sitzungen — dann ist 405 die richtige Antwort, nicht 501."""
+        path = urllib.parse.urlparse(self.path).path.rstrip("/") or "/"
+        if path == self.path_prefix.rstrip("/"):
+            self._send(405, {"error": "this server keeps no sessions"},
+                       headers={"Allow": "POST, OPTIONS", **self._cors()})
+            return
+        self._send(404, {"error": "not found"})
+
     def do_GET(self):  # noqa: N802
         """Health check and, when switched on, the management pages."""
         path = urllib.parse.urlparse(self.path).path.rstrip("/") or "/"
@@ -783,13 +832,22 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 "/.well-known/oauth-protected-resource",
                 "/.well-known/oauth-protected-resource" + self.path_prefix.rstrip("/")):
             self._send(200, oauth.protected_resource_metadata(
-                self._base_url(), self.path_prefix),
-                headers={"Access-Control-Allow-Origin": "*"})
+                self._base_url(), self.path_prefix), headers=self._cors())
             return
         if self.oauth_enabled and path in ("/.well-known/oauth-authorization-server",
                                            "/.well-known/openid-configuration"):
             self._send(200, oauth.authorization_server_metadata(self._base_url()),
-                       headers={"Access-Control-Allow-Origin": "*"})
+                       headers=self._cors())
+            return
+
+        # GET auf den MCP-Endpunkt ist der Server-zu-Client-Strom der
+        # Streamable-HTTP-Spezifikation. Dieser Server bietet ihn nicht an —
+        # dann ist 405 die vorgesehene Antwort. Vorher stand hier 404, und
+        # das sagt einem Client etwas ganz anderes: dass es den Endpunkt
+        # gar nicht gibt.
+        if path == self.path_prefix.rstrip("/"):
+            self._send(405, {"error": "this server does not offer the SSE stream"},
+                       headers={"Allow": "POST, OPTIONS", **self._cors()})
             return
 
         if self.setup_enabled and self._is_portal_path(path):

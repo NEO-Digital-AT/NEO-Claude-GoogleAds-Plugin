@@ -567,15 +567,32 @@ def count_clients(connection) -> int:
     return connection.execute("SELECT COUNT(*) FROM oauth_clients").fetchone()[0]
 
 
-def register_client(connection, name: str, redirect_uris: list[str]) -> dict:
-    """Legt einen Client an und gibt seine Zugangsdaten EINMAL heraus."""
+def register_client(connection, name: str, redirect_uris: list[str], *,
+                    oeffentlich: bool = False) -> dict:
+    """Legt einen Client an und gibt seine Zugangsdaten EINMAL heraus.
+
+    `oeffentlich` = ein Client, der kein Geheimnis bewahren kann: eine
+    App auf einem fremden Rechner, eine Oberflaeche im Browser. Die
+    Spezifikation kennt dafuer `token_endpoint_auth_method: "none"`, und
+    geschuetzt wird der Ablauf dann allein durch PKCE und die exakte
+    Rueckadresse — was auch bei einem Secret die eigentliche Sicherung ist.
+
+    Ein leeres secret_hash heisst „oeffentlich". Kein zusaetzliches Feld:
+    Ein Client hat ein Geheimnis oder er hat keines.
+    """
     client_id = "neo-" + secrets.token_urlsafe(18)
-    secret = secrets.token_urlsafe(32)
+    secret = "" if oeffentlich else secrets.token_urlsafe(32)
     connection.execute(
         "INSERT INTO oauth_clients (client_id, secret_hash, name, redirect_uris, "
         "created) VALUES (?, ?, ?, ?, ?)",
-        (client_id, _token_hash(secret), name[:80], "\n".join(redirect_uris), now()))
+        (client_id, _token_hash(secret) if secret else "", name[:80],
+         "\n".join(redirect_uris), now()))
+    connection.commit()          # siehe Regel oben: erst festschreiben, dann herausgeben
     return {"client_id": client_id, "client_secret": secret}
+
+
+def client_is_public(row) -> bool:
+    return not row["secret_hash"]
 
 
 def client_by_id(connection, client_id: str):

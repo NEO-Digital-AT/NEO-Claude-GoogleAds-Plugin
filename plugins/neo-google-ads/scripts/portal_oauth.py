@@ -214,23 +214,34 @@ def register(connection, body: bytes, base: str) -> dict:
             redirectable=False, status=403)
 
     name = str(payload.get("client_name") or "Unbenannte Anwendung")[:80]
-    zugang = store.register_client(connection, name, sauber)
+
+    # ⚠️ Die angeforderte Methode ERNST NEHMEN. Vorher vergab der Server
+    # immer ein Secret und antwortete „client_secret_post", egal was der
+    # Client wollte — obwohl die Auskunft „none" als unterstuetzt nennt.
+    # Ein Client, der sich darauf verlaesst und ohne Secret kommt, bekam am
+    # Token-Endpunkt ein 401.
+    oeffentlich = str(payload.get("token_endpoint_auth_method") or "") == "none"
+    zugang = store.register_client(connection, name, sauber,
+                                   oeffentlich=oeffentlich)
     store.log_event(connection, "OAuth-Client registriert",
-                    detail=f"{name} — {sauber[0]}")
-    return {
+                    detail=f"{name} — {sauber[0]}"
+                           + (" (oeffentlich, ohne Secret)" if oeffentlich else ""))
+    antwort = {
         "client_id": zugang["client_id"],
-        "client_secret": zugang["client_secret"],
-        # 0 = läuft nicht ab. Ein Secret, das ohne Vorwarnung ungültig wird,
-        # reisst die Verbindung mitten im Betrieb ab.
-        "client_secret_expires_at": 0,
         "client_id_issued_at": _epoch(),
         "client_name": name,
         "redirect_uris": sauber,
         "grant_types": ["authorization_code", "refresh_token"],
         "response_types": ["code"],
-        "token_endpoint_auth_method": "client_secret_post",
+        "token_endpoint_auth_method": "none" if oeffentlich else "client_secret_post",
         "scope": DEFAULT_SCOPE,
     }
+    if not oeffentlich:
+        antwort["client_secret"] = zugang["client_secret"]
+        # 0 = läuft nicht ab. Ein Secret, das ohne Vorwarnung ungültig wird,
+        # reisst die Verbindung mitten im Betrieb ab.
+        antwort["client_secret_expires_at"] = 0
+    return antwort
 
 
 def _redirect_allowed(uri: str) -> bool:
@@ -421,9 +432,14 @@ def _client_from(connection, felder: dict, basic: tuple[str, str] | None):
     if client is None:
         raise OAuthError("invalid_client", "Unbekannter Client.",
                          redirectable=False, status=401)
-    # Ein Secret haben alle hier registrierten Clients (die Registrierung
-    # vergibt immer eines). Ein Client, der keines mitschickt, ist damit
-    # nicht der, für den er sich ausgibt.
+    # Ein öffentlicher Client hat kein Geheimnis, das er beweisen könnte —
+    # er läuft auf einem fremden Gerät, da bleibt nichts geheim. Ihn trotzdem
+    # danach zu fragen, sperrt ihn nur aus. Gesichert ist der Ablauf über
+    # PKCE und die exakte Rückadresse; beides gilt hier unverändert und ist
+    # auch bei einem Secret die eigentliche Sicherung.
+    if store.client_is_public(client):
+        return client
+
     if not secret or not store.client_secret_matches(client, secret):
         raise OAuthError("invalid_client", "Client-Secret stimmt nicht.",
                          redirectable=False, status=401)
