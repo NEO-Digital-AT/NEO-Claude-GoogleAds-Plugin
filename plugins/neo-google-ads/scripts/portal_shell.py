@@ -227,29 +227,74 @@ PORTAL_CSS = neo_design.BASIS_CSS + ANWENDUNG_CSS
 # Das bisschen JavaScript, das wirklich keine Form ersetzt
 # --------------------------------------------------------------------------
 OTP_JS = """
+/* Sechs Kaesten, ein Code.
+
+   ⚠️ DER SCHWIERIGE TEIL IST NICHT DAS TIPPEN, SONDERN DAS EINFUEGEN.
+   Ein Passwortmanager fuegt auf drei verschiedene Arten ein, und nur eine
+   davon loest ueberhaupt ein `paste`-Ereignis aus:
+
+     1. echtes Einfuegen (Strg+V)        -> paste
+     2. Wert direkt setzen + input       -> input, mit ALLEN Ziffern im Feld
+     3. Wert setzen + change             -> change
+
+   Frueher stand im input-Handler `.slice(-1)`: Was auch immer im Feld
+   landete, wurde auf eine Ziffer zurechtgestutzt. Bei Weg 2 und 3 blieb
+   damit genau eine Ziffer stehen und die anderen fuenf waren weg —
+   „funktioniert bei anderen Programmen problemlos, nur hier nicht"
+   (Erichs Befund 20.9.2026). Jetzt werden mehrere Ziffern verteilt, egal
+   wie sie hineingekommen sind. */
 (function(){
   var kasten = document.querySelector('.otp');
   if (!kasten) return;
   var felder = [].slice.call(kasten.querySelectorAll('input'));
+
+  function verteilen(ziffern, ab) {
+    for (var k = 0; k < felder.length - ab; k++) {
+      felder[ab + k].value = ziffern[k] || felder[ab + k].value;
+    }
+    var voll = felder.filter(function (f) { return f.value; }).length;
+    var ziel = Math.min(ab + ziffern.length, felder.length - 1);
+    felder[ziel].focus();
+    felder[ziel].select();
+    // Vollstaendig? Dann gleich abschicken — sonst muss man nach dem
+    // Einfuegen noch suchen, wo der Knopf war.
+    if (voll === felder.length && felder[0].form
+        && typeof felder[0].form.requestSubmit === 'function') {
+      felder[0].form.requestSubmit();
+    }
+  }
+
+  function aufnehmen(feld, i) {
+    var ziffern = (feld.value || '').replace(/\D/g, '');
+    if (ziffern.length > 1) { verteilen(ziffern, i); return; }
+    feld.value = ziffern;
+    if (ziffern && i < felder.length - 1) {
+      felder[i + 1].focus();
+      felder[i + 1].select();
+    }
+  }
+
   felder.forEach(function (feld, i) {
-    feld.addEventListener('input', function () {
-      feld.value = feld.value.replace(/\\D/g, '').slice(-1);
-      if (feld.value && i < felder.length - 1) felder[i + 1].focus();
-    });
+    feld.addEventListener('input', function () { aufnehmen(feld, i); });
+    // Weg 3: manche Manager melden nur `change`.
+    feld.addEventListener('change', function () { aufnehmen(feld, i); });
+    // Beim Hineinklicken markieren, damit Tippen ueberschreibt statt anzuhaengen.
+    feld.addEventListener('focus', function () { feld.select(); });
     feld.addEventListener('keydown', function (e) {
-      if (e.key === 'Backspace' && !feld.value && i > 0) felder[i - 1].focus();
+      if (e.key === 'Backspace' && !feld.value && i > 0) {
+        felder[i - 1].focus();
+        felder[i - 1].select();
+      }
       if (e.key === 'ArrowLeft' && i > 0) felder[i - 1].focus();
       if (e.key === 'ArrowRight' && i < felder.length - 1) felder[i + 1].focus();
     });
     feld.addEventListener('paste', function (e) {
-      var text = (e.clipboardData || window.clipboardData).getData('text') || '';
-      var ziffern = text.replace(/\\D/g, '').slice(0, felder.length);
-      if (!ziffern) return;
+      var quelle = e.clipboardData || window.clipboardData;
+      var text = quelle ? (quelle.getData('text') || '') : '';
+      var ziffern = text.replace(/\D/g, '').slice(0, felder.length);
+      if (!ziffern) return;          // nichts Brauchbares: normal einfuegen lassen
       e.preventDefault();
-      felder.forEach(function (f, k) { f.value = ziffern[k] || ''; });
-      var letzte = Math.min(ziffern.length, felder.length) - 1;
-      felder[letzte < 0 ? 0 : letzte].focus();
-      if (ziffern.length === felder.length) feld.form.requestSubmit();
+      verteilen(ziffern, i);
     });
   });
 })();

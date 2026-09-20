@@ -2142,6 +2142,47 @@ def test_oauth() -> None:
         case("remove: and still nothing is deleted",
              store_client_da(datenbank, client["client_id"]))
 
+        # -- Die Passkey-Vorgaben fuer das Entfernen --------------------------
+        # WebAuthn braucht einen Namen als Relying Party, ueber eine blosse
+        # IP verweigert der Browser. Der Testserver laeuft auf 127.0.0.1 —
+        # also gibt ihm X-Forwarded-Host fuer diese Aufrufe einen Namen,
+        # genau wie ein Reverse Proxy es taete.
+        NAME = "pruefportal.example"
+        namenskopf = {"X-Forwarded-Host": NAME, "Origin": f"http://{NAME}"}
+
+        with _store.open_database(datenbank) as verbindung:
+            _store.add_passkey(verbindung, nutzer, "pruefkennung", "pruefschluessel",
+                               name="Pruefgeraet", sign_count=0)
+
+        anfrage = urllib.request.Request(
+            base + "/clients/passkey/start", data=b"", method="POST",
+            headers={**namenskopf, "Cookie": f"{_store.SESSION_COOKIE}={sitzung}"})
+        try:
+            with oeffner.open(anfrage, timeout=10) as antwort:
+                status, roh = antwort.status, antwort.read()
+        except urllib.error.HTTPError as exc:
+            status, roh = exc.code, exc.read()
+        vorgaben = _json.loads(roh or b"{}")
+        case("passkey: the step-up challenge is handed out", status == 200,
+             f"{status} {roh[:90]}")
+        case("passkey: and names THIS account's keys",
+             [e.get("id") for e in vorgaben.get("allowCredentials", [])]
+             == ["pruefkennung"], str(vorgaben.get("allowCredentials")))
+
+        # Bei der Anmeldung bleibt die Liste leer — dort ist noch niemand
+        # bekannt, und sie wuerde verraten, welche Geraete das Portal kennt.
+        anfrage = urllib.request.Request(base + "/login/passkey/start", data=b"",
+                                         method="POST", headers=namenskopf)
+        try:
+            with oeffner.open(anfrage, timeout=10) as antwort:
+                roh2 = antwort.read()
+        except urllib.error.HTTPError as exc:
+            roh2 = exc.read()
+        anmeldung = _json.loads(roh2 or b"{}")
+        case("passkey: at sign-in the list stays empty on purpose",
+             anmeldung.get("allowCredentials") == [],
+             str(anmeldung.get("allowCredentials")))
+
         schritt = _totp.current_step()
         guter_code = _totp.code_at(geheim, schritt)
         status, _, nachher_b = ruf("/clients/remove",
