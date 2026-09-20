@@ -218,7 +218,7 @@ Dazu vier Skripte, die von Hand laufen:
 | `neo_design.py` | Tokens, Grundbausteine und Symbole des NEO-Designsystems, geteilt von öffentlicher Seite und Portal |
 | `oeffentliche_seite.py` | Die Startseite ohne Anmeldung, nach dem NEO-Designsystem. Symbole und Hero-Bild liegen als SVG im Quelltext — die Seite lädt von keinem fremden Rechner nach |
 | `portal_qr.py` | Zeichnet den QR-Code für die Authenticator-App auf dem Server, damit das Geheimnis die Maschine nicht verlässt |
-| `google-ads-mcp.py` | Der Server für Claude Code und Claude Desktop (lokaler Prozess); `--list-tools` und `--check-config` zur Diagnose |
+| `google-ads-mcp.py` | Der Server für Claude Desktop (lokaler Prozess); `--list-tools` und `--check-config` zur Diagnose |
 | `google-ads-http.py` | Derselbe Server über HTTP, für claude.ai im Browser und am Handy; `--new-token` erzeugt das Zugangswort |
 
 Darunter liegt `google_ads_client.py`: Konfiguration, Zugangstausch, HTTP,

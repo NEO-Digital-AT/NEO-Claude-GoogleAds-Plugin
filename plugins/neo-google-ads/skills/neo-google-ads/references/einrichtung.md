@@ -325,9 +325,11 @@ Erweiterte Systemeinstellungen → Umgebungsvariablen):
 GOOGLE_ADS_PYTHON=python
 ```
 
-Der Schalter steht in der `.mcp.json` als `${GOOGLE_ADS_PYTHON:-python3}`:
-gesetzt gewinnt der eigene Wert, sonst bleibt `python3`. Claude Code danach
-neu starten — Umgebungsvariablen werden beim Start gelesen.
+Dieser Schalter stand in der `.mcp.json`, solange Claude Code den Server
+selbst startete. Seit das Plugin über HTTP geht, braucht Claude Code kein
+Python mehr — die Einstellung betrifft nur noch Claude Desktop und die
+Skripte, die du von Hand aufrufst. In der Desktop-Konfiguration steht der
+Aufruf ohnehin ausgeschrieben: dort `python` eintragen, nicht `python3`.
 
 Meldet Windows beim Aufruf von `python3` den Store, **obwohl** Python
 installiert ist, ist das der App-Ausführungsalias, der sich vordrängt. Er
@@ -430,8 +432,9 @@ sie und braucht dann keine Datei.
 | *Request contains an invalid argument* bei jeder Abfrage | Die Anfrage enthält ein Feld, das die API-Fassung nicht mehr kennt | Plugin aktualisieren; die Testgruppe `request shape` prüft den Anfrageaufbau |
 | `no refresh token` beim Verbinden | Konto hatte diesem Client schon zugestimmt | Eintrag unter <https://myaccount.google.com/permissions> entfernen |
 | Nur eine Client-ID, kein Geheimnis | Google zeigt es nur einmal beim Erstellen | Client anklicken, **Geheimnis hinzufügen** |
-| Werkzeuge fehlen in Claude Code | Plugin nicht aktiv, oder `python3` nicht im Pfad | `/plugin`, dann `google-ads-mcp.py --check-config` |
-| Werkzeuge fehlen unter Windows | `python3` gibt es dort meist nicht | `GOOGLE_ADS_PYTHON=python` setzen, Claude Code neu starten |
+| Werkzeuge fehlen in Claude Code | Plugin nicht aktiv, Zugangswort fehlt, oder der Server antwortet nicht | `/plugin`, dann `claude mcp list`; `curl <adresse>/health` |
+| Claude Code bekommt 401 | `GOOGLE_ADS_MCP_TOKEN` fehlt oder ist nicht mehr gültig | Zugangswort aus `data/http-token` setzen, Claude Code neu starten |
+| Werkzeuge fehlen in Claude Desktop unter Windows | `python3` gibt es dort meist nicht | In `claude_desktop_config.json` `python` statt `python3` eintragen |
 | In der Cloud-Sitzung keine Verbindung | Netzwerkstufe Trusted kennt die Google-Ads-Hosts nicht | Auf Custom stellen, beide Hosts eintragen |
 
 ## Ohne Konfigurationsdatei betreiben

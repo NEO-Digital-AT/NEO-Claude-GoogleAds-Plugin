@@ -64,14 +64,16 @@ Die Werkzeuge sind überall dieselben, nur die Tür ist eine andere.
 
 | Wo | Wie |
 | --- | --- |
-| **Claude Code** | Plugin installieren, Server läuft als lokaler Prozess |
-| **Claude Desktop** | derselbe Prozess, fünf Zeilen in `claude_desktop_config.json` |
+| **Claude Code** | Plugin installieren, ruft den eigenen Server über HTTP auf |
+| **Claude Desktop** | lokaler Prozess, fünf Zeilen in `claude_desktop_config.json` |
 | **claude.ai im Browser und am Handy** | `docker compose up` aus `deploy/` auf einem VPS, als Connector eingetragen |
 
-Der Grund: Claude Code und die Desktop-App laufen auf deinem Rechner und
-dürfen dort ein Programm starten. Browser und Handy können nur eine
-Adresse aufrufen — dafür ist der HTTP-Weg da, mit Zugangswort und
-optionalem Adressfilter auf Anthropics veröffentlichten Bereich.
+Claude Code und claude.ai gehen denselben Weg: beide rufen
+`google-ads-http.py` über seine Adresse auf, mit Zugangswort und optionalem
+Adressfilter auf Anthropics veröffentlichten Bereich. Ein Server, eine
+Kontenliste, ein Änderungsprotokoll — gleichgültig, ob die Frage aus dem
+Editor kommt oder vom Handy. Die Desktop-App startet den Server weiterhin
+als lokalen Prozess auf deinem Rechner.
 
 Der vollständige Weg für alle drei steht in
 `plugins/neo-google-ads/skills/neo-google-ads/references/claude-anbindung.md`.

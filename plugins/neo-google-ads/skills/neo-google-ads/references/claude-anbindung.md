@@ -6,12 +6,15 @@ weil die drei Claude-Oberflächen verschieden an einen Server kommen.
 | Wo | Wie | Aufwand |
 | --- | --- | --- |
 | **claude.ai im Browser und auf dem Handy** | `google-ads-http.py` läuft bei dir, claude.ai ruft die Adresse auf | eigener Server mit HTTPS |
-| **Claude Code** | Plugin, startet den Server als lokalen Prozess | eingerichtet |
-| **Claude Desktop** | derselbe lokale Prozess, in der Desktop-Konfiguration | fünf Zeilen JSON |
+| **Claude Code** | Plugin, ruft denselben Server über HTTP auf | Adresse und Zugangswort |
+| **Claude Desktop** | lokaler Prozess, in der Desktop-Konfiguration | fünf Zeilen JSON |
 
-Der Grund für den Unterschied: Claude Code und die Desktop-App laufen auf
-deinem Rechner und dürfen dort ein Programm starten. Die Weboberfläche und
-die Handy-App laufen nicht bei dir — sie können nur eine Adresse aufrufen.
+Claude Code könnte beides — ein Programm starten oder eine Adresse
+aufrufen. Dieses Plugin nimmt die Adresse, damit Schutzgrenzen, Kontenliste
+und Änderungsprotokoll an einer einzigen Stelle liegen und nicht zweimal
+gepflegt werden müssen. Die Desktop-App startet den Server als lokalen
+Prozess; die Weboberfläche und die Handy-App laufen nicht bei dir und
+können ohnehin nur eine Adresse aufrufen.
 
 ## claude.ai im Browser und auf dem Handy
 
@@ -342,6 +345,63 @@ git pull && docker compose up -d --build
 
 Die Zugangsdaten liegen im gemounteten `data/` und in der `.env`, nicht im
 Image — ein Neubau verliert nichts.
+
+## Claude Code
+
+Claude Code spricht denselben Server an wie claude.ai. Im Plugin steht
+dafür nur noch die Adresse und das Zugangswort:
+
+```json
+{
+  "mcpServers": {
+    "neo-google-ads": {
+      "type": "http",
+      "url": "${GOOGLE_ADS_MCP_URL:-https://ads.mcp.neo-digital.at/mcp}",
+      "headers": {
+        "Authorization": "Bearer ${GOOGLE_ADS_MCP_TOKEN}"
+      }
+    }
+  }
+}
+```
+
+Zwei Umgebungsvariablen entscheiden, wohin es geht:
+
+| Variable | Pflicht | Wofür |
+| --- | --- | --- |
+| `GOOGLE_ADS_MCP_TOKEN` | ja | Das Zugangswort aus `data/http-token`. Ohne es kommt 401 und sonst nichts |
+| `GOOGLE_ADS_MCP_URL` | nein | Eine andere Adresse als `https://ads.mcp.neo-digital.at/mcp` — ein zweiter Server, ein Testaufbau |
+
+**Das Zugangswort gehört nicht ins Repository.** Es steht in der Umgebung,
+nicht in der `.mcp.json` — diese Datei ist öffentlich.
+
+macOS und Linux, in `~/.zshrc` bzw. `~/.bashrc`:
+
+```bash
+export GOOGLE_ADS_MCP_TOKEN='<das Zugangswort>'
+```
+
+Windows, in den Benutzervariablen (Einstellungen → System → Info →
+Erweiterte Systemeinstellungen → Umgebungsvariablen):
+
+```
+GOOGLE_ADS_MCP_TOKEN=<das Zugangswort>
+```
+
+Claude Code danach neu starten — Umgebungsvariablen werden beim Start
+gelesen. Ob die Strecke steht, sagt:
+
+```bash
+claude mcp list
+```
+
+Dort muss `neo-google-ads` mit `✓ Connected` stehen.
+
+Was damit entfällt: Python auf dem Rechner, der Durchlauf von
+`google-ads-auth.py`, die Zugangsdaten in `~/.config/neo-google-ads/`. Das
+liegt jetzt alles auf dem Server, und die Schutzgrenzen gelten für jede
+Oberfläche gleich. Wer den lokalen Prozess trotzdem will, findet ihn im
+nächsten Abschnitt — dieselbe Datei, andere Tür.
 
 ## Claude Desktop
 

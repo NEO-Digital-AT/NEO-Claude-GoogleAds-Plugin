@@ -1,13 +1,10 @@
 {
   "mcpServers": {
     "neo-google-ads": {
-      "type": "stdio",
-      "command": "${GOOGLE_ADS_PYTHON:-python3}",
-      "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/google-ads-mcp.py"],
-      "env": {
-        "PYTHONUNBUFFERED": "1",
-        "PYTHONDONTWRITEBYTECODE": "1",
-        "PYTHONIOENCODING": "utf-8"
+      "type": "http",
+      "url": "${GOOGLE_ADS_MCP_URL:-https://ads.mcp.neo-digital.at/mcp}",
+      "headers": {
+        "Authorization": "Bearer ${GOOGLE_ADS_MCP_TOKEN}"
       }
     }
   }
