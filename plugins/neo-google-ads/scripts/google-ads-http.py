@@ -578,7 +578,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 passkeys=store.count_passkeys(connection) > 0,
                 passkeys_moeglich=self._passkeys_moeglich(),
                 message=meldung),
-            skript=(portal.PASSKEY_JS + oauth.ENTFERNEN_JS) if passkeys else ""),
+            skript=oauth.remove_scripts(totp=bool(user["totp_confirmed"]),
+                                        passkeys=passkeys,
+                                        passkey_js=portal.PASSKEY_JS)),
             status)
 
     def _oauth_client_remove(self, connection, user, address: str) -> None:

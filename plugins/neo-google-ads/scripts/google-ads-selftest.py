@@ -2114,7 +2114,16 @@ def test_oauth() -> None:
         status, _, roh = ruf("/clients/remove",
                              daten={"client_id": client["client_id"], "code": "000000"},
                              angemeldet=True)
+        mit2fa = roh.decode("utf-8", "replace")
         case("remove: a wrong code is refused", status == 401, str(status))
+        # Das Springen von Feld zu Feld kommt aus sh.OTP_JS. Es fehlte im
+        # Dialog, obwohl die Anmeldeseite es laengst hat — sechs Kaesten
+        # einzeln anzuklicken ist zu Recht aergerlich (Erichs Befund).
+        case("remove: the six digit boxes carry the auto-advance script",
+             "querySelector('.otp')" in mit2fa,
+             "OTP_JS fehlt im Dialog")
+        case("remove: the dialog shows the six boxes, not one text field",
+             mit2fa.count('name="code"') == 6, str(mit2fa.count('name="code"')))
         case("remove: and still nothing is deleted",
              store_client_da(datenbank, client["client_id"]))
 

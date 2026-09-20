@@ -737,36 +737,61 @@ einen Passkey ein und komm dann zurück. Wer auf dem Server arbeitet, kann statt
 <a class="button quiet" href="/clients">Schließen</a></div>"""
         return f'<div class="ueber"><div class="tafel">{kopf}{was}{unten}</div></div>'
 
-    teile = [sh.warnung(esc(message), "schlecht") if message else ""]
-
-    if totp:
-        teile.append(f"""<form method="post" action="/clients/remove">
+    # Die beiden Wege stehen NEBENEINANDER, getrennt durch einen senkrechten
+    # Strich mit „oder". Untereinander waere es eine Reihenfolge — hier ist
+    # aber keiner der beiden der bessere.
+    code_weg = f"""<form method="post" action="/clients/remove">
 <input type="hidden" name="{ENTFERNEN_FELD}" value="{esc(kennung)}">
-<div style="margin-top:20px;padding-top:20px;border-top:1px solid var(--line-soft)">
 <label style="margin-top:0">Code aus der App</label>
 {sh.otp_felder(falsch=bool(message))}
-<p class="note" style="margin-top:10px">Ein Wiederherstellungscode geht auch — dann
-ins erste Feld.</p>
-</div>
-<div class="row" style="margin-top:24px">
-<button class="button danger" type="submit">Endgültig entfernen</button>
-<a class="button quiet" href="/clients">Abbrechen</a>
-</div></form>""")
+<p class="note" style="margin-top:10px">Ein Wiederherstellungscode geht auch —
+dann ins erste Feld.</p>
+<button class="button danger breit" type="submit" style="margin-top:16px">
+Endgültig entfernen</button>
+</form>"""
 
-    if passkeys and passkeys_moeglich:
-        trenner = '<div class="trenner">oder</div>' if totp else ""
-        teile.append(f"""{trenner}
-<div id="passkey-meldung" class="warnung" hidden><span></span></div>
+    passkey_weg = f"""<div id="passkey-meldung" class="warnung" hidden><span></span></div>
 <button id="passkey-knopf" class="button danger breit" type="button">
-{symbol("passkey", 20)}Mit Passkey bestätigen und entfernen</button>
+{symbol("passkey", 20)}Mit Passkey bestätigen</button>
+<p class="note" style="margin-top:10px">Fingerabdruck, Gesicht oder PIN — und die
+Anwendung ist weg.</p>
 <form id="passkey-form" method="post" action="/clients/remove" hidden>
 <input type="hidden" name="{ENTFERNEN_FELD}" value="{esc(kennung)}">
 <input type="hidden" name="kennung"><input type="hidden" name="daten">
 <input type="hidden" name="authenticator"><input type="hidden" name="signatur">
-<input type="hidden" name="benutzerkennung"></form>""")
-        if not totp:
-            teile.append('<div class="row" style="margin-top:20px">'
-                         '<a class="button quiet" href="/clients">Abbrechen</a></div>')
+<input type="hidden" name="benutzerkennung"></form>"""
+
+    hat_passkey = passkeys and passkeys_moeglich
+    if totp and hat_passkey:
+        mitte = f"""<div class="wahl">
+<div>{code_weg}</div>
+<div class="wahl-trenner" aria-hidden="true"><span>oder</span></div>
+<div>{passkey_weg}</div>
+</div>"""
+    else:
+        mitte = ('<div style="margin-top:20px;padding-top:20px;'
+                 'border-top:1px solid var(--line-soft)">'
+                 + (code_weg if totp else passkey_weg) + "</div>")
+
+    unten = ('<div class="row" style="margin-top:22px">'
+             '<a class="button quiet" href="/clients">Abbrechen</a></div>')
 
     return (f'<div class="ueber"><div class="tafel">{kopf}{was}'
-            f'{"".join(teile)}</div></div>')
+            f'{sh.warnung(esc(message), "schlecht") if message else ""}'
+            f'{mitte}{unten}</div></div>')
+
+
+def remove_scripts(*, totp: bool, passkeys: bool, passkey_js: str) -> str:
+    """Was der Dialog an Skript braucht — an einer Stelle entschieden.
+
+    Das Springen von Ziffernfeld zu Ziffernfeld ist NICHT neu: sh.OTP_JS
+    macht das auf der Anmeldeseite seit jeher. Im Entfernen-Dialog fehlte
+    es schlicht, weil ich es nicht eingebunden hatte — sechs Kaesten, in
+    die man einzeln klicken muss, sind zu Recht aergerlich.
+    """
+    teile = []
+    if totp:
+        teile.append(sh.OTP_JS)
+    if passkeys:
+        teile.append(passkey_js + ENTFERNEN_JS)
+    return "".join(teile)

@@ -140,6 +140,26 @@ body.laedt{cursor:progress}
   -webkit-appearance:none;margin:0}
 .otp.falsch input{border-color:var(--bad)}
 
+/* Zwei gleichwertige Wege nebeneinander, mit senkrechtem Trenner dazwischen.
+   Gebraucht, wo derselbe Schritt auf zwei Arten geht — Code aus der App ODER
+   Passkey. Untereinander mit einem waagrechten Trenner waere es eine
+   Reihenfolge, und die gibt es hier nicht: beides ist gleich gut. */
+.wahl{display:grid;grid-template-columns:minmax(0,1fr) auto minmax(0,1fr);
+  gap:22px;align-items:center;margin-top:20px;padding-top:20px;
+  border-top:1px solid var(--line-soft)}
+.wahl-trenner{display:flex;flex-direction:column;align-items:center;gap:10px;
+  align-self:stretch;color:var(--faint);font-size:.78rem;
+  letter-spacing:var(--tracking-eyebrow);text-transform:uppercase}
+.wahl-trenner::before,.wahl-trenner::after{content:"";width:1px;flex:1;
+  min-height:14px;background:var(--line)}
+@media (max-width:760px){
+  /* Nebeneinander waeren die sechs Ziffernkaesten zu schmal zum Tippen. */
+  .wahl{grid-template-columns:minmax(0,1fr);gap:16px}
+  .wahl-trenner{flex-direction:row;width:100%}
+  .wahl-trenner::before,.wahl-trenner::after{width:auto;height:1px;flex:1;
+    min-height:0}
+}
+
 /* Die Schiene der Einrichtung */
 .schiene{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:26px}
 .schiene a{flex:1 1 180px;display:flex;align-items:center;gap:10px;padding:12px 14px;
