@@ -1,12 +1,24 @@
 # NEO Marketing-Plattform — Auftragsrahmen
 
-Stand 2026-09-20 · Entwurf, Fassung 1
-Entscheidungsakte nach `neo-technologiewahl` fehlt noch (siehe Abschnitt 10).
+Stand 2026-09-20 · Fassung 3
+Die Technologie ist entschieden (Abschnitt 2); die schriftliche
+Entscheidungsakte nach `neo-technologiewahl` ist nachzuziehen.
 
 Dieses Dokument ist der Auftragsrahmen für ein neues, eigenständiges
 Produkt. Wer damit zu bauen beginnt, liest Abschnitt 3 (Grenze
 Basis/Plugin) und Abschnitt 9 (Stufenplan). Alles andere ist Begründung
 und kann später gelesen werden.
+
+**Zwei Wörter, die nicht verwechselt werden dürfen:**
+
+| Wort | Was gemeint ist | Wo es liegt | Sprache |
+| --- | --- | --- | --- |
+| **Plugin** | Erweiterung *im* Produkt | beim Betreiber, im Plugin-Ordner | .NET |
+| **Konnektor** | Gegenstück *auf der Kundenseite* | in der Contao- oder WordPress-Installation | PHP |
+
+Ein Plugin ist eine kompilierte Assembly und gehört zum Produkt. Ein
+Konnektor ist ein eigenes kleines Projekt mit eigenem Repository, das
+nichts kann außer mit dem Produkt zu sprechen.
 
 ## 1 Was es heute gibt
 
@@ -40,6 +52,10 @@ Fachlich ist es die Vorlage; technisch wird es nicht weitergebaut.
 | Hintergrundarbeit | Hosted Service, Warteschlange in der Datenbank |
 | Plugins | kompilierte Assemblies, geladen über `AssemblyLoadContext` |
 | Auslieferung | Docker: eine Anwendung, eine Datenbank |
+| Konnektoren | eigene Repositories, eigene Fassungen, PHP (Abschnitt 5) |
+
+Entschieden am 2026-09-20 durch den Eigentümer. Größere Werkzeuge fahren
+auf .NET Core besser — das war der Ausschlag.
 
 ### 2.2 Warum
 
@@ -59,11 +75,9 @@ Fachlich ist es die Vorlage; technisch wird es nicht weitergebaut.
 5. **Der Einwand "zwei Technologien im Haus" zählt hier nicht.**
    Contao-Arbeit fällt als *Ergebnis* an — Datenbankinhalte, Twig-Vorlagen,
    Migrationen —, nicht als Programmierarbeit *in* diesem Produkt.
-   Eine Ausnahme gibt es: das Contao-Bundle (Abschnitt 5) ist PHP. Es ist
-   klein, es liegt beim Kunden, es hat einen eigenen Lebenslauf und es
-   wird gegen eine feste Schnittstelle gebaut. Das ist kein zweiter
-   Stack, sondern ein Zubehörteil — für WordPress käme später ein
-   gleichartiges hinzu.
+   Die Konnektoren sind PHP, aber sie sind nicht Teil dieses Produkts:
+   eigenes Repository, eigener Lebenslauf, eigene Fassungsnummer, ein
+   einziger Zweck. Wer am Produkt arbeitet, öffnet sie nie.
 
 ### 2.3 Verworfen
 
@@ -213,10 +227,15 @@ Lizenzspeicher mit Tarifen, Mandantenzahl, Testzeitraum und monatlicher
 Gebühr ist vorgesehen, wird aber **jetzt nicht gebaut**. Bis dahin genügt
 die Signaturprüfung.
 
-## 5 Das eigene Contao-Bundle
+## 5 Konnektoren: das Gegenstück beim Kunden
 
-Contao hat keine Inhalts-API. Also liefert das Produkt eine mit: ein
+Contao hat keine Inhalts-API. Also liefert NEO eine mit: ein
 Contao-Bundle (Symfony), das auf der Installation des Kunden liegt.
+Es ist kein Teil des Produkts, sondern sein Gegenstück — ein eigenes
+kleines Projekt, das nichts kann außer mit dem Produkt zu sprechen
+(Abschnitt 5.7).
+
+Was hier über Contao steht, gilt später gleichartig für WordPress.
 
 ### 5.1 Was es tut
 
@@ -280,7 +299,7 @@ Der dritte Fall ist der bequemste und der teuerste. Er ist der Grund,
 warum Git-Plugin und Contao-Bundle zusammengehören und keine
 Alternativen sind.
 
-### 5.6 WordPress braucht weniger
+### 5.6 WordPress braucht weniger als Contao
 
 WordPress hat, was Contao fehlt: eine Inhalts-API im Kern
 (`/wp-json/wp/v2/...`) mit Anwendungskennwörtern. Text in Beiträgen und
@@ -293,6 +312,28 @@ ihre Texte in Metafeldern ab, die die Kern-API nicht kennt.
 Für den Vertrieb heißt das: WordPress ist billiger zu erreichen als
 Contao und ist der weit größere Markt. Contao zuerst, weil es im Haus
 eingesetzt wird; WordPress als Zweites, weil es verkauft.
+
+### 5.7 Eigenes Repository, versionierter Vertrag
+
+Jeder Konnektor ist ein eigenes Projekt mit eigenem Repository, eigener
+Fassungsnummer und eigenem Lebenslauf. Er wird nicht zusammen mit dem
+Produkt ausgeliefert und nicht zusammen mit ihm aktualisiert.
+
+Das hat einen Preis, und der wird hier bezahlt statt später:
+**Produkt und Konnektor laufen auseinander.** Ein Kunde fährt Bundle 1.2,
+während das Produkt schon bei 2.0 ist. Deshalb:
+
+- Der Konnektor nennt bei jeder Antwort seine Fassung und die Fassung des
+  Vertrags, den er spricht.
+- Das Produkt prüft das vor dem ersten Schreiben. Passt es nicht, wird
+  nicht geschrieben, sondern gesagt, was zu aktualisieren ist.
+- Der Vertrag wird erweitert, nicht geändert. Ein Feld darf dazukommen,
+  keines darf seine Bedeutung wechseln.
+- Lesen muss auch mit einer älteren Fassung gehen. Nur Schreiben darf am
+  Fassungsstand scheitern.
+
+Geprüft wird jeder Konnektor gegen eine echte Installation im Container —
+eine saubere und eine absichtlich kaputte. Behauptet zählt nicht.
 
 ## 6 KI-Anbindung
 
@@ -403,8 +444,8 @@ antwortet sofort, auch wenn die Arbeit dahinter Minuten dauert.
 
 - Git-Plugin (GitHub und GitLab), zwei Merge-Stufen
 - Contao-Plugin: den gefundenen Inhalt verstehen
-- Contao-Bundle für Live-Textänderungen, samt Composer-Speicher hinter
-  Lizenzanmeldung (Abschnitt 5)
+- Contao-Konnektor für Live-Textänderungen — eigenes Repository, eigene
+  Fassung, Composer-Speicher hinter Lizenzanmeldung (Abschnitt 5)
 - FTP/SFTP-Plugin
 - Screenshots im Freigabeweg
 - Keyword-Planer-Plugin und CSV-Import
@@ -435,7 +476,7 @@ antwortet sofort, auch wenn die Arbeit dahinter Minuten dauert.
 
 | Nr. | Frage | Vorschlag |
 | --- | --- | --- |
-| 1 | .NET 10 endgültig? Entscheidungsakte nach `neo-technologiewahl` | ja |
+| 1 | ~~.NET 10 endgültig?~~ | **entschieden 2026-09-20**, Akte nachziehen |
 | 2 | Google Ads in der Basis oder als erstes Plugin? | Basis |
 | 3 | Name und eigenes Repository für das Produkt | offen |
 | 3a | Contao-Bundle offen oder nur für Kunden? | nur für Kunden |
@@ -456,6 +497,6 @@ antwortet sofort, auch wenn die Arbeit dahinter Minuten dauert.
 | `neo-sicherheit` | Zugangstresor, Protokoll, Rechte |
 | `neo-code` | Regeln deutsch, Code englisch |
 | `neo-doku` | trockene Sprache, IST-Zustand |
-| `neo-contao`, `neo-php` | für das Contao-Bundle und das Contao-Plugin |
+| `neo-contao`, `neo-php` | nur für die Konnektor-Repositories, nicht für das Produkt |
 | `neo-betrieb`, `neo-deployment` | Auslieferung und Betrieb |
 | `neo-recht` | Lizenz, Verkauf, Auftragsverarbeitung |
