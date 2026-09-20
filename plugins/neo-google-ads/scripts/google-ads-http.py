@@ -86,6 +86,7 @@ import portal_pages as portal  # noqa: E402
 import portal_store as store
 import portal_webauthn as webauthn  # noqa: E402
 import portal_totp as totp  # noqa: E402
+import portal_oauth as oauth  # noqa: E402
 
 # Anthropic publishes the range its servers call out from. Restricting to it
 # turns a guessed token into a useless one, because the guess has to come
@@ -136,6 +137,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
     anthropic_only = False
     path_prefix = "/mcp"
     setup_enabled = False
+    # OAuth haengt am Portal: Ohne Anmeldung gibt es niemanden, in dessen
+    # Namen ein Token ausgestellt werden koennte.
+    oauth_enabled = False
     token_path = ""
     database_path = None
     public_url = ""
@@ -192,7 +196,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if body:
             self.wfile.write(body)
 
-    def _authorized(self) -> bool:
+    def _authorized(self, *, leise: bool = False) -> bool:
         """Address first, then token — both in constant time where it matters.
 
         Only the MCP endpoint goes through here. The portal pages have
@@ -203,16 +207,66 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if self.anthropic_only:
             address = self._client_ip()
             if address is None or address not in ANTHROPIC_EGRESS:
-                self.log_line(f"refused: address {address} outside the Anthropic range")
+                if not leise:
+                    self.log_line(f"refused: address {address} outside the Anthropic range")
                 return False
         header = self.headers.get("Authorization", "")
         presented = header[7:].strip() if header.lower().startswith("bearer ") else ""
         if not presented:
             presented = self.headers.get("X-Api-Key", "").strip()
-        if not presented or not hmac.compare_digest(presented, self.token):
+        if presented and hmac.compare_digest(presented, self.token):
+            return True
+        if not leise:
             self.log_line("refused: bad or missing token")
-            return False
-        return True
+        return False
+
+    def _mcp_access(self) -> tuple[bool, str]:
+        """(erlaubt, Scope) fuer den MCP-Endpunkt — zwei Schluessel, eine Tuer.
+
+        ⚠️ DER ADRESSFILTER GILT NUR FUER DAS FESTE ZUGANGSWORT, NICHT FUER
+        OAUTH-TOKEN. Das ist eine Entscheidung und kein Nebeneffekt der
+        Reihenfolge; wer hier umbaut, dreht sie bewusst um oder gar nicht.
+        Belegt in google-ads-selftest.py, test_oauth, die beiden Faelle
+        „--anthropic-only still shuts out the fixed token from elsewhere"
+        und „but an OAuth token gets through".
+
+        Warum der Unterschied:
+
+        Das feste Wort ist EIN Geheimnis, das nie ablaeuft und fuer jeden
+        Aufrufer dasselbe ist. Dagegen hilft --anthropic-only wirklich: ein
+        erratenes oder abgeflossenes Wort nuetzt von einer anderen Adresse
+        aus nichts.
+
+        Ein OAuth-Token ist etwas anderes. Es gehoert zu einem Menschen und
+        einem Client, wurde erst nach der Anmeldung im Portal ausgestellt,
+        laeuft nach einer Stunde ab, traegt seine Rechte und gilt nur fuer
+        diesen einen Server. Es bringt seinen Beweis selbst mit.
+
+        Und eine Adresspruefung darauf wuerde genau das verhindern, wofuer
+        OAuth hier ueberhaupt gebaut wurde: Claude Desktop und Claude Code
+        rufen /mcp vom Rechner des Menschen aus auf, nicht aus Anthropics
+        Bereich (Erichs Ansage 20.9.2026: „claude desktop und claude code
+        muessen durch! genau fuer die soll das ja sein").
+        """
+        # Das feste Wort — mit Adressfilter. Leise, weil danach noch der
+        # OAuth-Weg kommt: Sonst stuende vor jedem erfolgreichen
+        # OAuth-Aufruf ein „refused" im Protokoll und wuerde beim Suchen
+        # nach echten Abweisungen in die Irre fuehren.
+        if self._authorized(leise=self.oauth_enabled):
+            return True, oauth.DEFAULT_SCOPE
+
+        header = self.headers.get("Authorization", "")
+        presented = header[7:].strip() if header.lower().startswith("bearer ") else ""
+        if self.oauth_enabled and self.database_path is not None and presented:
+            ziel = oauth.resource_url(self._base_url(), self.path_prefix)
+            with store.open_database(self.database_path) as connection:
+                zeile = oauth.token_for_resource(connection, presented, ziel)
+                if zeile is not None:
+                    self.log_line(f"mcp: OAuth-Token von {zeile['client_id']}")
+                    return True, zeile["scope"]
+        if self.oauth_enabled:
+            self.log_line("refused: weder gueltiges Zugangswort noch gueltiges Token")
+        return False, ""
 
     # -- the portal's own sign-in ------------------------------------------
 
@@ -345,11 +399,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def _redirect(self, where: str, *, cookie: str = ""):
+    def _redirect(self, where: str, *, cookie: str | list[str] = ""):
+        """cookie nimmt auch eine Liste: Nach der Anmeldung sind es zwei —
+        die neue Sitzung und das Loeschen des Weiter-Kekses."""
         self.send_response(303)
         self.send_header("Location", where)
-        if cookie:
-            self.send_header("Set-Cookie", cookie)
+        for keks in ([cookie] if isinstance(cookie, str) else cookie):
+            if keks:
+                self.send_header("Set-Cookie", keks)
         self.send_header("Content-Length", "0")
         self.end_headers()
 
@@ -361,11 +418,171 @@ class Handler(http.server.BaseHTTPRequestHandler):
         raw = self.rfile.read(length).decode("utf-8", "replace") if length else ""
         return urllib.parse.parse_qs(raw)
 
-    def _unauthorized(self):
-        # The 401 carries the WWW-Authenticate header the MCP spec asks for,
-        # so a client that wants to negotiate knows what it is looking at.
-        self._send(401, {"error": "unauthorized"},
-                   headers={"WWW-Authenticate": 'Bearer realm="neo-google-ads"'})
+    def _unauthorized(self, *, error: str = ""):
+        """Der 401, dem ein Client folgen kann.
+
+        Mit OAuth traegt er `resource_metadata` — die Adresse, an der steht,
+        wer fuer diesen Server Token ausstellt. Ohne diesen Verweis weiss ein
+        Client nur, dass ein Token fehlt, aber nicht, wo er eines bekommt;
+        genau daran scheiterte das Hinzufuegen als Connector.
+        """
+        if self.oauth_enabled:
+            kopf = oauth.challenge_header(self._base_url(), self.path_prefix, error=error)
+        else:
+            kopf = 'Bearer realm="neo-google-ads"'
+        self._send(401, {"error": error or "unauthorized"},
+                   headers={"WWW-Authenticate": kopf})
+
+    # -- OAuth -------------------------------------------------------------
+    #
+    # Die Protokoll-Logik steht in portal_oauth. Hier ist nur die Tuer: lesen,
+    # weitergeben, antworten. Das haelt die Pruefungen an EINER Stelle, statt
+    # sie ueber drei Verben zu verteilen.
+
+    WEITER_COOKIE = "neo_weiter"
+
+    def _weiter_header(self, ziel: str = "", *, clear: bool = False) -> str:
+        """Merkt sich fuer zehn Minuten, wohin es nach der Anmeldung geht."""
+        secure = "; Secure" if self._https() else ""
+        if clear:
+            return (f"{self.WEITER_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; "
+                    f"Max-Age=0{secure}")
+        wert = urllib.parse.quote(ziel, safe="")
+        return (f"{self.WEITER_COOKIE}={wert}; Path=/; HttpOnly; SameSite=Lax; "
+                f"Max-Age=600{secure}")
+
+    def _weiter_ziel(self) -> str:
+        """Das gemerkte Ziel — nur ein Pfad auf diesem Server.
+
+        Eine absolute Adresse waere eine offene Weiterleitung: Wer den Keks
+        setzen kann, schickte den frisch Angemeldeten sonst auf eine fremde
+        Seite, die wie diese aussieht.
+        """
+        jar = http.cookies.SimpleCookie()
+        try:
+            jar.load(self.headers.get("Cookie", ""))
+        except http.cookies.CookieError:
+            return ""
+        keks = jar.get(self.WEITER_COOKIE)
+        if keks is None:
+            return ""
+        ziel = urllib.parse.unquote(keks.value)
+        if not ziel.startswith("/") or ziel.startswith("//"):
+            return ""
+        return ziel
+
+    def _nach_anmeldung(self, user, *, cookie: str = "") -> None:
+        kekse = [cookie] if cookie else []
+        if user["must_change"]:
+            self._redirect("/account", cookie=kekse)
+            return
+        ziel = self._weiter_ziel()
+        if ziel:
+            kekse.append(self._weiter_header(clear=True))
+            self._redirect(ziel, cookie=kekse)
+            return
+        self._redirect("/dashboard", cookie=kekse)
+
+    def _write_refused(self, message, scope: str) -> bool:
+        """True heisst: schon beantwortet, der Aufrufer hoert hier auf."""
+        werkzeug = oauth.write_refused(message, scope)
+        if not werkzeug:
+            return False
+        self.log_line(f"mcp: {werkzeug} verweigert — Token hat kein ads:write")
+        self._send(403, {
+            "jsonrpc": "2.0",
+            "id": message.get("id") if isinstance(message, dict) else None,
+            "error": {"code": -32000,
+                      "message": f"Dieses Token darf nur lesen. {werkzeug} "
+                                 f"braucht die Berechtigung ads:write."}},
+            headers={"WWW-Authenticate": oauth.challenge_header(
+                self._base_url(), self.path_prefix, error="insufficient_scope")})
+        return True
+
+    def _oauth_register(self) -> None:
+        try:
+            length = min(int(self.headers.get("Content-Length") or 0), 100_000)
+        except ValueError:
+            length = 0
+        body = self.rfile.read(length) if length else b""
+        try:
+            with store.open_database(self.database_path) as connection:
+                antwort = oauth.register(connection, body, self._base_url())
+        except oauth.OAuthError as fehler:
+            self.log_line(f"oauth: Registrierung abgelehnt — {fehler.code}")
+            self._send(fehler.status, fehler.payload())
+            return
+        self.log_line(f"oauth: Client registriert — {antwort['client_id']}")
+        self._send(201, antwort)
+
+    def _oauth_token(self) -> None:
+        form = {k: v[0] for k, v in self._read_form().items()}
+        basic = oauth.basic_auth(self.headers.get("Authorization", ""))
+        try:
+            with store.open_database(self.database_path) as connection:
+                antwort = oauth.exchange(connection, form, base=self._base_url(),
+                                         mcp_path=self.path_prefix, basic=basic)
+        except oauth.OAuthError as fehler:
+            self.log_line(f"oauth: Token abgelehnt — {fehler.code}")
+            self._send(fehler.status, fehler.payload())
+            return
+        self.log_line("oauth: Token ausgestellt")
+        self._send(200, antwort)
+
+    def _oauth_authorize(self, connection, verb: str, user, address: str) -> None:
+        """Der Bildschirm, auf dem ein Mensch zustimmt — oder eben nicht.
+
+        Beim Absenden wird die Anfrage NOCH EINMAL geprueft, statt sie
+        zwischen den beiden Aufrufen irgendwo aufzubewahren. Ein
+        veraenderter Wert im verborgenen Feld bringt nichts: geprueft wird
+        gegen die Datenbank, und ein fremder POST scheitert schon vorher an
+        der Same-Site-Pruefung.
+        """
+        if verb == "GET":
+            roh = urllib.parse.urlsplit(self.path).query
+            antwort = ""
+        else:
+            form = self._read_form()
+            roh = (form.get("anfrage") or [""])[0]
+            antwort = (form.get("antwort") or [""])[0]
+
+        try:
+            anfrage = oauth.parse_authorize(connection, roh, self._base_url(),
+                                            self.path_prefix)
+        except oauth.OAuthError as fehler:
+            if fehler.redirectable and fehler.redirect_uri:
+                self._redirect(oauth.error_redirect(fehler.redirect_uri, fehler,
+                                                    fehler.state))
+                return
+            self.log_line(f"oauth: /authorize abgelehnt — {fehler.code}")
+            self._send_html(setup.result_page(
+                False, f"Diese Anmeldeanfrage ist nicht in Ordnung: "
+                       f"{fehler.description or fehler.code}"), fehler.status)
+            return
+
+        if verb == "GET":
+            self._send_html(oauth.consent_page(
+                anfrage, username=user["username"], ticket=roh))
+            return
+
+        if antwort != "ja":
+            store.log_event(connection, "OAuth-Zugriff abgelehnt",
+                            username=user["username"], address=address,
+                            detail=anfrage["client"]["name"])
+            self._redirect(oauth.error_redirect(
+                anfrage, oauth.OAuthError("access_denied", "Abgelehnt."),
+                anfrage["state"]))
+            return
+
+        code = store.create_code(
+            connection, client_id=anfrage["client_id"], user_id=user["id"],
+            redirect_uri=anfrage["redirect_uri"], challenge=anfrage["challenge"],
+            scope=anfrage["scope"], resource=anfrage["resource"])
+        store.log_event(connection, "OAuth-Zugriff erlaubt",
+                        username=user["username"], address=address,
+                        detail=f"{anfrage['client']['name']} — {anfrage['scope']}")
+        self.log_line(f"oauth: {user['username']} erlaubt {anfrage['client_id']}")
+        self._redirect(oauth.success_redirect(anfrage, code))
 
     def log_line(self, text: str) -> None:
         stamp = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
@@ -397,6 +614,21 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 self._send_html(setup.result_page(False, f"{type(exc).__name__}: {exc}"), 500)
             return
 
+        # Die Auskunft, der ein Client nach einem 401 folgt. Oeffentlich und
+        # absichtlich ohne Anmeldung: Sie verraet nur, WO man sich anmeldet.
+        if self.oauth_enabled and path in (
+                "/.well-known/oauth-protected-resource",
+                "/.well-known/oauth-protected-resource" + self.path_prefix.rstrip("/")):
+            self._send(200, oauth.protected_resource_metadata(
+                self._base_url(), self.path_prefix),
+                headers={"Access-Control-Allow-Origin": "*"})
+            return
+        if self.oauth_enabled and path in ("/.well-known/oauth-authorization-server",
+                                           "/.well-known/openid-configuration"):
+            self._send(200, oauth.authorization_server_metadata(self._base_url()),
+                       headers={"Access-Control-Allow-Origin": "*"})
+            return
+
         if self.setup_enabled and self._is_portal_path(path):
             self._portal_request(path, "GET")
             return
@@ -412,7 +644,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
     # Die Wege der Konsole. Englisch wie jeder technische Name hier; was
     # darauf steht, ist deutsch.
-    PORTAL_ROOTS = ("/dashboard", "/setup", "/guardrails", "/check", "/account")
+    PORTAL_ROOTS = ("/dashboard", "/setup", "/guardrails", "/check", "/account",
+                    "/authorize")
 
     @staticmethod
     def _is_portal_path(path: str) -> bool:
@@ -447,6 +680,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 if user is None:
                     if path in self.OPEN_PATHS:
                         self._portal_open(connection, path, verb, None, None)
+                        return
+                    if path == "/authorize" and verb == "GET":
+                        # Ohne diesen Keks landet der Mensch nach der Anmeldung
+                        # auf dem Uebersichtsbild, und Claude wartet ewig auf
+                        # eine Antwort, die nie kommt.
+                        self._redirect("/login", cookie=self._weiter_header(self.path))
                         return
                     self._redirect("/login")
                     return
@@ -593,8 +832,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                         username=user["username"], address=address,
                         detail=schluessel["name"])
         self.log_line(f"portal: {user['username']} signed in with a passkey")
-        self._redirect("/account" if user["must_change"] else "/dashboard",
-                       cookie=self._cookie_header(token))
+        self._nach_anmeldung(user, cookie=self._cookie_header(token))
 
     def _sign_in(self, connection, address: str) -> None:
         form = self._read_form()
@@ -636,8 +874,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         store.note_login(connection, user["id"], address)
         store.log_event(connection, "signed in", username=user["username"], address=address)
         self.log_line(f"portal: {user['username']} signed in")
-        self._redirect("/account" if user["must_change"] else "/dashboard",
-                       cookie=self._cookie_header(token))
+        self._nach_anmeldung(user, cookie=self._cookie_header(token))
 
     def _second_factor(self, connection, user, address: str) -> None:
         if user is None:
@@ -676,7 +913,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         store.log_event(connection, "signed in with second factor",
                         username=user["username"], address=address)
         self.log_line(f"portal: {user['username']} signed in (2FA)")
-        self._redirect("/dashboard")
+        self._nach_anmeldung(user)
 
     def _portal_closed(self, connection, path, verb, user, session) -> None:
         """Everything that needs a signed-in person."""
@@ -692,6 +929,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
             # kein Fehler, sondern ein Lesezeichen — also weiterleiten,
             # statt eine 404 zu zeigen.
             self._redirect("/dashboard")
+            return
+        if path == "/authorize":
+            self._oauth_authorize(connection, verb, user, address)
             return
         if path == "/account" or path.startswith("/account/"):
             self._account(connection, path, verb, user, session, address)
@@ -996,6 +1236,18 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
     def do_POST(self):  # noqa: N802
         path = urllib.parse.urlparse(self.path).path.rstrip("/") or "/"
+
+        # Diese beiden spricht ein Programm an, kein Browser: kein
+        # Sitzungskeks, keine Same-Site-Pruefung, kein Adressfilter. Sie
+        # geben auch nichts preis — ohne gueltigen Code oder ein passendes
+        # Client-Secret kommt nur ein Fehler zurueck.
+        if self.oauth_enabled and path == "/register":
+            self._oauth_register()
+            return
+        if self.oauth_enabled and path == "/token":
+            self._oauth_token()
+            return
+
         if self.setup_enabled and self._is_portal_path(path):
             self._portal_request(path, "POST")
             return
@@ -1003,7 +1255,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if self.path.rstrip("/") not in (self.path_prefix.rstrip("/"), ""):
             self._send(404, {"error": "not found"})
             return
-        if not self._authorized():
+        erlaubt, scope = self._mcp_access()
+        if not erlaubt:
             self._unauthorized()
             return
 
@@ -1027,6 +1280,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
         # A batch is a list; the spec allows it and Claude does not send one,
         # but answering it is three lines and refusing it would be a surprise.
         if isinstance(message, list):
+            for teil in message:
+                if self._write_refused(teil, scope):
+                    return
             answers = [a for a in (self._one(m) for m in message) if a is not None]
             if not answers:
                 self._send(202)
@@ -1034,6 +1290,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self._send(200, answers)
             return
 
+        if self._write_refused(message, scope):
+            return
         answer = self._one(message)
         if answer is None:
             self._send(202)          # notification: accepted, nothing to say
@@ -1198,6 +1456,11 @@ def main() -> int:
     parser.add_argument("--setup", action="store_true",
                         help=("serve the management portal: sign-in, account, two "
                               "factor and the Google pages at /setup"))
+    parser.add_argument("--no-oauth", action="store_true",
+                        help=("switch off the OAuth endpoints that let the Claude "
+                              "apps add this server as a connector. They come with "
+                              "--setup; this turns them off again and leaves only "
+                              "the fixed bearer token."))
     parser.add_argument("--database", default=None, metavar="FILE",
                         help="the portal's SQLite file (default: next to the config)")
     parser.add_argument("--public-url", default=os.environ.get("GOOGLE_ADS_PUBLIC_URL", ""),
@@ -1266,6 +1529,9 @@ def main() -> int:
     Handler.anthropic_only = options.anthropic_only
     Handler.path_prefix = options.path
     Handler.setup_enabled = options.setup
+    # OAuth kommt mit dem Portal. Es braucht eine Anmeldung, in deren Namen
+    # ein Token ausgestellt wird — ohne Portal gibt es die nicht.
+    Handler.oauth_enabled = options.setup and not options.no_oauth
     Handler.token_path = str(token_path)
     if options.trusted_proxy:
         try:
@@ -1302,6 +1568,21 @@ def main() -> int:
               file=sys.stderr)
         print("  recovery:   --list-users, --set-password NAME, --disable-2fa NAME",
               file=sys.stderr)
+    if Handler.oauth_enabled:
+        basis = Handler.public_url or "https://<deine-adresse>"
+        print(f"  connector:  {basis}{options.path}", file=sys.stderr)
+        print("              in den Claude-Apps unter Einstellungen -> Connectors",
+              file=sys.stderr)
+        print("              eintragen. Kein Zugangswort noetig — die Anmeldung",
+              file=sys.stderr)
+        print("              laeuft ueber das Portal.", file=sys.stderr)
+        if not Handler.public_url:
+            print("              ACHTUNG: ohne --public-url bzw. "
+                  "GOOGLE_ADS_PUBLIC_URL raet der", file=sys.stderr)
+            print("              Server die Adresse aus den Proxy-Koepfen. "
+                  "Fuer OAuth muss sie", file=sys.stderr)
+            print("              stimmen, sonst passt die Rueckadresse nicht.",
+                  file=sys.stderr)
     with contextlib.suppress(KeyboardInterrupt):
         server.serve_forever()
     server.server_close()
