@@ -1847,6 +1847,7 @@ def test_oauth() -> None:
     import base64 as _b64
     import hashlib as _hash
     import html as _html
+    import portal_totp as _totp
     import json as _json
     import socket
     import threading
@@ -1857,6 +1858,11 @@ def test_oauth() -> None:
     http_mod = load_http()
     import portal_oauth as _oauth
     import portal_store as _store
+
+    def store_client_da(pfad, kennung) -> bool:
+        """Direkt in der Datenbank nachsehen — nicht der Seite glauben."""
+        with _store.open_database(pfad) as verbindung:
+            return _store.client_by_id(verbindung, kennung) is not None
 
     with socket.socket() as probe:
         probe.bind(("127.0.0.1", 0))
@@ -2069,19 +2075,75 @@ def test_oauth() -> None:
              formular.get("client_id") == client["client_id"],
              str(formular))
 
-        status, _, nachher_b = ruf("/clients",
+        # Der Knopf loescht NICHT. Er fuehrt zum Dialog.
+        def lebt(t):
+            return ruf("/mcp", daten=b'{"jsonrpc":"2.0","id":1,"method":"tools/list"}',
+                       kopf={"Content-Type": "application/json",
+                             "Authorization": "Bearer " + (t or "-")})[0] == 200
+
+        status, _, dialog_b = ruf("/clients",
+                                  daten={"client_id": client["client_id"],
+                                         "entfernen": "1"}, angemeldet=True)
+        dialog = dialog_b.decode("utf-8", "replace")
+        case("remove: the button opens a dialog instead of deleting",
+             status == 200 and "entfernen" in dialog.lower(), str(status))
+        case("remove: without a second factor the account is told so, not obeyed",
+             "weder ein zweiter Faktor noch ein Passkey" in dialog)
+        case("remove: nothing was deleted by opening the dialog",
+             store_client_da(datenbank, client["client_id"]))
+        case("remove: and the token still works", lebt(token.get("access_token")))
+
+        # Ohne zweiten Faktor UND ohne Passkey: auch ein direkter POST auf
+        # /clients/remove darf nichts loeschen.
+        status, _, roh = ruf("/clients/remove",
+                             daten={"client_id": client["client_id"], "code": "000000"},
+                             angemeldet=True)
+        case("remove: a bare POST without a second factor is refused",
+             status == 401, str(status))
+        case("remove: and the client is still there",
+             store_client_da(datenbank, client["client_id"]))
+
+        # Jetzt einen zweiten Faktor einrichten — wie im Konto.
+        with _store.open_database(datenbank) as verbindung:
+            geheim = _totp.new_secret()
+            _store.begin_totp(verbindung, nutzer, geheim)
+            _store.confirm_totp(verbindung, nutzer, -1, [])
+
+        status, _, roh = ruf("/clients/remove",
+                             daten={"client_id": client["client_id"], "code": "000000"},
+                             angemeldet=True)
+        case("remove: a wrong code is refused", status == 401, str(status))
+        case("remove: and still nothing is deleted",
+             store_client_da(datenbank, client["client_id"]))
+
+        schritt = _totp.current_step()
+        guter_code = _totp.code_at(geheim, schritt)
+        status, _, nachher_b = ruf("/clients/remove",
                                    daten={"client_id": client["client_id"],
-                                          "entfernen": "1"}, angemeldet=True)
+                                          "code": guter_code}, angemeldet=True)
         nachher = nachher_b.decode("utf-8", "replace")
-        case("clients: removing answers with the page", status == 200, str(status))
-        case("clients: the client is gone from the list",
+        case("remove: the right code removes it", status == 200, str(status))
+        case("remove: the client is gone from the list",
              client["client_id"] not in nachher)
-        case("clients: and its token stops working at once",
-             ruf("/mcp", daten=b'{"jsonrpc":"2.0","id":1,"method":"tools/list"}',
-                 kopf={"Content-Type": "application/json",
-                       "Authorization": "Bearer "
-                       + token.get("access_token", "-")})[0] == 401)
-        case("clients: removing something that is gone says so",
+        case("remove: and its token stops working at once",
+             not lebt(token.get("access_token")))
+
+        # Derselbe Code darf kein zweites Mal wirken.
+        status2, _, rumpf2 = ruf("/register", kopf={"Content-Type": "application/json"},
+                                 daten=_json.dumps({"client_name": "Wegwerf",
+                                                    "redirect_uris": [RUECK]}))
+        wegwerf = _json.loads(rumpf2 or b"{}")
+        status, _, _ = ruf("/clients/remove",
+                           daten={"client_id": wegwerf["client_id"],
+                                  "code": guter_code}, angemeldet=True)
+        case("remove: the same code does not work twice", status == 401, str(status))
+        case("remove: so that client survives",
+             store_client_da(datenbank, wegwerf["client_id"]))
+        ruf("/clients/remove", daten={"client_id": wegwerf["client_id"],
+                                      "code": _totp.code_at(geheim, schritt + 1)},
+            angemeldet=True)
+
+        case("remove: removing something that is gone says so",
              "nicht mehr" in ruf("/clients", daten={"client_id": "neo-erfunden",
                                                     "entfernen": "1"},
                                  angemeldet=True)[2].decode("utf-8", "replace"))

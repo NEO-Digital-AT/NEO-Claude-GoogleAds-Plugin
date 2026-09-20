@@ -530,33 +530,163 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self._send(200, antwort)
 
     def _oauth_clients(self, connection, verb: str, user, address: str) -> None:
-        """Anwendungen ansehen und entfernen.
-
-        Entfernen loescht den Client UND alles, was auf ihn ausgestellt
-        wurde. Nur den Eintrag zu entfernen und die Token stehen zu lassen,
-        waere die schlechtere Haelfte: Der Zugriff liefe weiter, nur saehe
-        man ihn nicht mehr.
-        """
+        """Die Liste. Der Entfernen-Knopf loescht NICHT, er fuehrt zum Dialog."""
         meldung, art = "", ""
         if verb == "POST":
             form = self._read_form()
-            kennung = (form.get("client_id") or [""])[0]
+            kennung = (form.get(oauth.ENTFERNEN_FELD) or [""])[0]
             zeile = store.client_by_id(connection, kennung) if kennung else None
             if zeile is None:
                 meldung, art = "Diese Anwendung gibt es nicht mehr.", "schlecht"
             else:
-                name = zeile["name"] or "Unbenannte Anwendung"
-                weg = store.delete_client(connection, kennung)
-                store.log_event(connection, "OAuth-Client entfernt",
-                                username=user["username"], address=address,
-                                detail=f"{name} ({kennung}), {weg['token']} Token")
-                self.log_line(f"oauth: {user['username']} entfernt {kennung}")
-                meldung = (f"„{name}“ entfernt."
-                           + (f" {weg['token']} ausgestellte Zugangsdaten beendet."
-                              if weg["token"] else ""))
-                art = "gut"
+                self._oauth_remove_dialog(connection, user, zeile)
+                return
         self._send_html(oauth.clients_page(store.clients_with_usage(connection),
                                            message=meldung, art=art))
+
+    def _oauth_remove_dialog(self, connection, user, zeile, meldung: str = "",
+                             status: int = 200) -> None:
+        self._send_html(oauth.remove_page(
+            zeile,
+            username=user["username"],
+            zugaenge=store.client_grants(connection, zeile["client_id"]),
+            totp=bool(user["totp_confirmed"]),
+            passkeys=store.count_passkeys(connection) > 0,
+            passkeys_moeglich=self._passkeys_moeglich(),
+            message=meldung,
+            passkey_js=portal.PASSKEY_JS), status)
+
+    def _oauth_client_remove(self, connection, user, address: str) -> None:
+        """Entfernen — aber erst, nachdem der Mensch sich noch einmal ausweist.
+
+        Eine Sitzung sagt nur, dass jemand irgendwann angemeldet war. Ein
+        offen stehender Bildschirm wuerde sonst reichen, um einer Anwendung
+        den Zugang zu entziehen. Geprueft wird mit denselben Funktionen wie
+        bei der Anmeldung — hier steht nur, WANN geprueft wird.
+        """
+        form = self._read_form()
+        kennung = (form.get(oauth.ENTFERNEN_FELD) or [""])[0]
+        zeile = store.client_by_id(connection, kennung) if kennung else None
+        if zeile is None:
+            self._send_html(oauth.clients_page(
+                store.clients_with_usage(connection),
+                message="Diese Anwendung gibt es nicht mehr.", art="schlecht"))
+            return
+
+        warten = store.locked_out(connection, address, user["username"])
+        if warten:
+            self._oauth_remove_dialog(
+                connection, user, zeile,
+                f"Zu viele Fehlversuche. Noch {warten} Minuten warten.", 429)
+            return
+
+        # Der Passkey-Weg erkennt sich an der Unterschrift im Formular.
+        if (form.get("signatur") or [""])[0]:
+            ok, grund = self._passkey_bestaetigt(connection, user, form, address)
+        else:
+            ok, grund = self._totp_bestaetigt(connection, user, form, address)
+
+        if not ok:
+            self._oauth_remove_dialog(connection, user, zeile, grund, 401)
+            return
+
+        name = zeile["name"] or "Unbenannte Anwendung"
+        weg = store.delete_client(connection, kennung)
+        store.log_event(connection, "OAuth-Client entfernt",
+                        username=user["username"], address=address,
+                        detail=f"{name} ({kennung}), {weg['token']} Token")
+        self.log_line(f"oauth: {user['username']} entfernt {kennung}")
+        self._send_html(oauth.clients_page(
+            store.clients_with_usage(connection),
+            message=(f"\u201e{name}\u201c entfernt."
+                     + (f" {weg['token']} ausgestellte Zugangsdaten beendet."
+                        if weg["token"] else "")),
+            art="gut"))
+
+    def _totp_bestaetigt(self, connection, user, form, address: str):
+        """(ok, Grund) — derselbe Weg wie der zweite Faktor bei der Anmeldung."""
+        if not user["totp_confirmed"]:
+            return False, "Für dieses Konto ist kein zweiter Faktor hinterlegt."
+        presented = self._code_from_form(form)
+        if not presented:
+            return False, "Ohne Code wird nichts entfernt."
+        ok, step = totp.check(user["totp_secret"], presented,
+                              last_step=user["totp_last_step"])
+        if ok:
+            store.note_totp_step(connection, user["id"], step)
+        elif store.spend_recovery_code(connection, user["id"], presented):
+            ok = True
+            store.log_event(connection, "recovery code used",
+                            username=user["username"], address=address,
+                            detail="beim Entfernen einer Anwendung")
+        if not ok:
+            store.record_attempt(connection, address, user["username"])
+            store.log_event(connection, "second factor refused",
+                            username=user["username"], address=address,
+                            detail="beim Entfernen einer Anwendung")
+            return False, "Der Code stimmt nicht — oder er wurde schon verwendet."
+        store.clear_attempts(connection, address, user["username"])
+        return True, ""
+
+    def _passkey_bestaetigt(self, connection, user, form, address: str):
+        """(ok, Grund) — dieselbe Pruefung wie die Anmeldung mit Passkey.
+
+        Mit einem Unterschied: Der Passkey muss dem angemeldeten Konto
+        gehoeren. Bei der Anmeldung ist noch niemand angemeldet, da bestimmt
+        der Passkey, WER kommt. Hier steht das schon fest, und ein fremder
+        Passkey duerfte die Sitzung eines anderen nicht bestaetigen.
+        """
+        einzeln = lambda name: (form.get(name) or [""])[0]  # noqa: E731
+        try:
+            daten = webauthn.b64url_decode(einzeln("daten"))
+            challenge = json.loads(daten.decode("utf-8")).get("challenge", "")
+            gut, wem = store.spend_challenge(connection, challenge, "remove")
+            if not gut or wem != user["id"]:
+                raise webauthn.PasskeyError("Die Anfrage ist abgelaufen. "
+                                            "Bitte noch einmal.")
+            schluessel = store.passkey_by_credential(connection, einzeln("kennung"))
+            if schluessel is None:
+                raise webauthn.PasskeyError("Dieser Passkey ist hier nicht "
+                                            "hinterlegt.")
+            if schluessel["user_id"] != user["id"]:
+                raise webauthn.PasskeyError("Dieser Passkey gehört zu einem "
+                                            "anderen Konto.")
+            zaehler = webauthn.anmeldung_pruefen(
+                client_daten=daten,
+                authenticator=webauthn.b64url_decode(einzeln("authenticator")),
+                signatur=webauthn.b64url_decode(einzeln("signatur")),
+                gespeicherter_schluessel=schluessel["public_key"],
+                challenge=challenge, herkunft=self._origin(),
+                rp_id=self._rp_id(), zaehler=schluessel["sign_count"])
+        except (webauthn.PasskeyError, ValueError, UnicodeDecodeError) as exc:
+            grund = str(exc) if isinstance(exc, webauthn.PasskeyError) else (
+                "Die Antwort des Browsers war unlesbar.")
+            store.record_attempt(connection, address, user["username"])
+            store.log_event(connection, "passkey refused",
+                            username=user["username"], address=address,
+                            detail=f"beim Entfernen: {grund[:100]}")
+            return False, grund
+        store.note_passkey_use(connection, schluessel["id"], zaehler)
+        store.clear_attempts(connection, address, user["username"])
+        return True, ""
+
+    def _oauth_remove_challenge(self, connection, user) -> None:
+        """Eine Challenge, die NUR fuer das Entfernen gilt und nur einmal.
+
+        Eigener Zweck („remove"), damit eine beim Anmelden erzeugte
+        Challenge hier nicht durchgeht und umgekehrt. Sie traegt die
+        Kontokennung, damit die Pruefung sie dem richtigen Menschen
+        zuordnen kann.
+        """
+        if not self._passkeys_moeglich():
+            self._send(400, {"error": "passkeys need a host name, not an address"})
+            return
+        if store.count_passkeys(connection) == 0:
+            self._send(404, {"error": "no passkeys"})
+            return
+        challenge = store.new_challenge(connection, "remove", user["id"])
+        self._send_json_or_refuse(webauthn.anmeldung_beginnen(
+            challenge=challenge, rp_id=self._rp_id()))
 
     def _oauth_authorize(self, connection, verb: str, user, address: str) -> None:
         """Der Bildschirm, auf dem ein Mensch zustimmt — oder eben nicht.
@@ -964,6 +1094,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return
         if path == "/clients":
             self._oauth_clients(connection, verb, user, address)
+            return
+        if path == "/clients/remove" and verb == "POST":
+            self._oauth_client_remove(connection, user, address)
+            return
+        if path == "/clients/passkey/start" and verb == "POST":
+            self._oauth_remove_challenge(connection, user)
             return
         if path == "/account" or path.startswith("/account/"):
             self._account(connection, path, verb, user, session, address)
@@ -1418,6 +1554,34 @@ def account_command(options, database: pathlib.Path) -> int | None:
                   f"{(row['last_login'] or '-')[:19]:<20} {row['email']}")
         return 0
 
+    # Der Ausweg, wenn im Browser nichts mehr geht: Wer auf dem Server
+    # arbeitet, hat die Datenbank ohnehin. Ein zweiter Faktor waere hier
+    # Theater — und genau hier braucht man ihn, wenn das Telefon weg ist.
+    if options.list_clients:
+        with store.open_database(database) as connection:
+            rows = store.clients_with_usage(connection)
+        if not rows:
+            print("No OAuth clients registered.")
+            return 0
+        print(f"{'client id':<30} {'grants':<7} {'registered':<20} name")
+        for row in rows:
+            print(f"{row['client_id']:<30} {row['nutzer_anzahl']:<7} "
+                  f"{row['created'][:19]:<20} {row['name']}")
+        return 0
+
+    if options.remove_client:
+        with store.open_database(database) as connection:
+            zeile = store.client_by_id(connection, options.remove_client)
+            if zeile is None:
+                print(f"No client {options.remove_client!r}.", file=sys.stderr)
+                return 1
+            weg = store.delete_client(connection, options.remove_client)
+            store.log_event(connection, "OAuth-Client entfernt (Kommandozeile)",
+                            detail=f"{zeile['name']} ({options.remove_client})")
+        print(f"Removed {zeile['name']!r} ({options.remove_client}); "
+              f"{weg['token']} token(s) revoked.")
+        return 0
+
     name = options.set_password or options.disable_2fa or options.add_user
     if not name:
         return None
@@ -1509,6 +1673,12 @@ def main() -> int:
                         help="set an account's password and end its sessions")
     parser.add_argument("--disable-2fa", metavar="NAME",
                         help="switch an account's second factor off, for a lost phone")
+    parser.add_argument("--list-clients", action="store_true",
+                        help="list the OAuth clients that registered, and exit")
+    parser.add_argument("--remove-client", metavar="ID",
+                        help=("remove an OAuth client and revoke its tokens. The "
+                              "portal asks for a second factor or a passkey first; "
+                              "this is the way in when neither is at hand."))
     parser.add_argument("--trusted-proxy", action="append", default=[], metavar="CIDR",
                         help=("address or network whose X-Forwarded-For header is believed. "
                               "Repeatable. Defaults to the loopback and private ranges, "

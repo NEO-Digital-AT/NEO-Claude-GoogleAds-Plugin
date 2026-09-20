@@ -538,6 +538,23 @@ def spend_challenge(connection: sqlite3.Connection, challenge: str,
 # MCP-Endpunkt prueft das und weist ein Token ab, das fuer einen anderen
 # Server gedacht war. Ohne diese Bindung koennte ein Betreiber, bei dem man
 # sich anmeldet, das erhaltene Token bei einem fremden Server einloesen.
+#
+# ⚠️ WER ETWAS HERAUSGIBT ODER ENTZIEHT, SCHREIBT ES VORHER FEST.
+#
+# Die Portalantwort verlaesst den Server, BEVOR open_database() die
+# Transaktion festschreibt: Der Handler sendet noch innerhalb des
+# with-Blocks. Fuer eine Seite, die man liest, ist das egal. Fuer alles,
+# womit der Empfaenger sofort weiterarbeitet, ist es ein Fenster:
+#
+#   * Entfernen meldete "entfernt", und das Token funktionierte noch —
+#     der naechste Aufruf kam an, bevor die Loeschung committed war.
+#     Im Selbsttest fiel das in rund jedem zehnten Lauf auf.
+#   * Ein Autorisierungscode ging in der Weiterleitung hinaus, bevor er in
+#     der Datenbank stand; der Tausch dagegen kam manchmal zu frueh.
+#   * Dasselbe fuer frisch ausgestellte Token.
+#
+# Deshalb committen create_code, issue_token und delete_client selbst.
+# Ein zweites commit() am Ende des with-Blocks kostet nichts.
 
 
 def _now_plus(*, seconds: int = 0, hours: int = 0, days: int = 0) -> str:
@@ -587,6 +604,7 @@ def create_code(connection, *, client_id: str, user_id: int, redirect_uri: str,
         "challenge, scope, resource, expires) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         (_token_hash(code), client_id, user_id, redirect_uri, challenge, scope,
          resource, _now_plus(seconds=OAUTH_CODE_SECONDS)))
+    connection.commit()          # siehe Regel oben: erst festschreiben, dann herausgeben
     return code
 
 
@@ -620,6 +638,7 @@ def issue_token(connection, *, kind: str, client_id: str, user_id: int,
         "INSERT INTO oauth_tokens (token_hash, kind, client_id, user_id, scope, "
         "resource, created, expires) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         (_token_hash(token), kind, client_id, user_id, scope, resource, now(), expires))
+    connection.commit()          # siehe Regel oben
     return token
 
 
@@ -679,6 +698,13 @@ def clients_with_usage(connection) -> list:
         (now(),)).fetchall()
 
 
+def client_grants(connection, client_id: str) -> int:
+    """Wie viele Konten diesem Client gerade einen gueltigen Zugang haben."""
+    return connection.execute(
+        "SELECT COUNT(DISTINCT user_id) FROM oauth_tokens"
+        " WHERE client_id = ? AND expires > ?", (client_id, now())).fetchone()[0]
+
+
 def delete_client(connection, client_id: str) -> dict:
     """Entfernt einen Client mitsamt allem, was auf ihn ausgestellt wurde.
 
@@ -691,4 +717,5 @@ def delete_client(connection, client_id: str) -> dict:
     connection.execute("DELETE FROM oauth_codes WHERE client_id = ?", (client_id,))
     weg = connection.execute(
         "DELETE FROM oauth_clients WHERE client_id = ?", (client_id,)).rowcount
+    connection.commit()          # siehe Regel oben: entzogen ist erst, was festgeschrieben ist
     return {"client": weg, "token": token}

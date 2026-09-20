@@ -355,7 +355,7 @@ def consent_page(anfrage: dict, *, username: str, roh: str, message: str = "") -
     #
     # Ohne Beschriftung: Auf der schmalen Seite stehen die Beschriftungen
     # ueber dem Wert, und ein zweimal wiederholtes „darf" ueber einer
-    # Aufzaehlung, deren Ueberschrift schon „Diese Anwendung darf dann:"
+    # Aufzaehlung, deren Ueberschrift schon „Diese Anwendung darf:"
     # lautet, sagt nichts und kostet zwei Zeilen.
     rechte = "".join(
         f"<tr><td>{esc(SCOPES[s])}</td></tr>"
@@ -373,7 +373,7 @@ def consent_page(anfrage: dict, *, username: str, roh: str, message: str = "") -
           "Dorthin geht der Zugangscode. Kennst du diese Adresse nicht, brich ab.")}
 {sh.zeile("Angemeldet als", esc(username))}
 </table>
-<p style="margin:18px 0 6px"><strong>Diese Anwendung darf dann:</strong></p>
+<p style="margin:18px 0 6px"><strong>Diese Anwendung darf:</strong></p>
 <table>{rechte}</table>{warnung}""",
         art="akzent")
 
@@ -553,19 +553,6 @@ def _epoch() -> int:
 # Die Verwaltungsseite: was ist verbunden, und wie wird man es wieder los
 # --------------------------------------------------------------------------
 
-BESTAETIGEN_JS = """
-(function () {
-  document.querySelectorAll('form[data-bestaetigen]').forEach(function (form) {
-    form.addEventListener('submit', function (ereignis) {
-      if (!window.confirm(form.getAttribute('data-bestaetigen'))) {
-        ereignis.preventDefault();
-      }
-    });
-  });
-})();
-"""
-
-
 def clients_page(clients, *, message: str = "", art: str = "") -> bytes:
     """Jede Anwendung, die sich hier angemeldet hat — und der Weg hinaus.
 
@@ -595,7 +582,7 @@ def clients_page(clients, *, message: str = "", art: str = "") -> bytes:
     <span class="notiz">zuletzt: {benutzt}</span></td>
 <td>{zugang}<br>{wer}</td>
 <td style="text-align:right">
-  <form method="post" action="/clients" data-bestaetigen="Anwendung &bdquo;{esc(c["name"])}&ldquo; entfernen? Sie verliert den Zugriff sofort.">
+  <form method="post" action="/clients">
     <input type="hidden" name="client_id" value="{esc(c["client_id"])}">
     <button class="button danger klein" type="submit" name="entfernen" value="1">Entfernen</button>
   </form></td>
@@ -612,7 +599,10 @@ def clients_page(clients, *, message: str = "", art: str = "") -> bytes:
         '<p class="note">Entfernen beendet den Zugriff sofort: Der Eintrag '
         'verschwindet, und alle darauf ausgestellten Zugänge werden '
         'mitgelöscht. Eine Anwendung, die danach wiederkommt, meldet sich neu '
-        'an und braucht eine neue Bestätigung.</p>',
+        'an und braucht eine neue Bestätigung.</p>'
+        '<p class="note">Vorher fragt der Server noch einmal nach dem Code aus '
+        'deiner App oder nach deinem Passkey. <strong>Ohne diese Bestätigung '
+        'wird nichts entfernt.</strong></p>',
         art="akzent")
 
     inhalt = (sh.warnung(esc(message), art) + erklaerung
@@ -624,4 +614,129 @@ def clients_page(clients, *, message: str = "", art: str = "") -> bytes:
 
     return ui.konsole("Verbundene Apps",
                       "Anwendungen, die sich über OAuth an diesem Server anmelden",
-                      "/clients", inhalt, skript=BESTAETIGEN_JS)
+                      "/clients", inhalt)
+
+
+# --------------------------------------------------------------------------
+# Entfernen: nur mit zweitem Faktor oder Passkey
+# --------------------------------------------------------------------------
+#
+# Erichs Vorgabe 20.9.2026: „loeschen eines client muss nur ueber ein dialog
+# moeglich sein mit 2fa oder passkey bestaetigung! ohne wird nichts
+# geloescht."
+#
+# Eine Sitzung sagt nur, dass jemand irgendwann am Rechner angemeldet war.
+# Ein Bildschirm, der offen stehen bleibt, reicht damit aus, um jemandem den
+# Zugang zu entziehen. Der zweite Schritt verlangt etwas, das der Mensch in
+# diesem Moment bei sich hat: das Telefon oder den Passkey.
+#
+# Beides ist im Portal schon vorhanden. Diese Datei baut es NICHT nach —
+# sie liefert nur den Bildschirm; geprueft wird mit denselben Funktionen wie
+# bei der Anmeldung (portal_totp.check, portal_webauthn.anmeldung_pruefen).
+
+ENTFERNEN_FELD = "client_id"
+
+# Dasselbe Skript wie bei der Anmeldung mit Passkey, nur auf diese Seite
+# gemuenzt: Es holt die Challenge, laesst den Browser unterschreiben und
+# fuellt damit das verborgene Formular aus. Die Feldnamen sind bewusst
+# identisch (kennung, daten, authenticator, signatur, benutzerkennung) —
+# geprueft wird auf der Gegenseite von derselben Funktion.
+ENTFERNEN_JS = """
+(function () {
+  var knopf = document.getElementById('passkey-knopf');
+  if (!knopf || !window.PublicKeyCredential) { if (knopf) knopf.hidden = true; return; }
+  var meldung = document.getElementById('passkey-meldung');
+  var form = document.getElementById('passkey-form');
+  knopf.addEventListener('click', function () {
+    knopf.disabled = true;
+    window.neoPasskey.melden(meldung, 'Der Browser fragt nach Fingerabdruck, Gesicht oder PIN \u2026', false);
+    window.neoPasskey.holen('/clients/passkey/start').then(function (d) {
+      d.challenge = window.neoPasskey.b64(d.challenge);
+      (d.allowCredentials || []).forEach(function (c) { c.id = window.neoPasskey.b64(c.id); });
+      return navigator.credentials.get({ publicKey: d });
+    }).then(function (zeugnis) {
+      var r = zeugnis.response;
+      form.kennung.value = zeugnis.id;
+      form.daten.value = window.neoPasskey.url(r.clientDataJSON);
+      form.authenticator.value = window.neoPasskey.url(r.authenticatorData);
+      form.signatur.value = window.neoPasskey.url(r.signature);
+      form.benutzerkennung.value = r.userHandle ? window.neoPasskey.url(r.userHandle) : '';
+      form.submit();
+    }).catch(function (e) {
+      knopf.disabled = false;
+      window.neoPasskey.melden(meldung, e && e.name === 'NotAllowedError'
+        ? 'Abgebrochen. Es wurde nichts entfernt.'
+        : (e.message || 'Der Passkey hat nicht geantwortet.'), true);
+    });
+  });
+})();
+"""
+
+
+def remove_page(client, *, username: str, zugaenge: int, totp: bool,
+                passkeys: bool, passkeys_moeglich: bool, message: str = "",
+                passkey_js: str = "") -> bytes:
+    """Der Dialog vor dem Entfernen. Ohne zweiten Schritt passiert nichts."""
+    kennung = client["client_id"]
+    ziele = "<br>".join(f"<code>{esc(u)}</code>"
+                        for u in (client["redirect_uris"] or "").split("\n") if u)
+    folge = (f"{zugaenge} erteilter Zugang wird mitbeendet." if zugaenge == 1
+             else f"{zugaenge} erteilte Zugänge werden mitbeendet."
+             if zugaenge else "Es ist derzeit kein Zugang erteilt.")
+
+    was = sh.karte(
+        esc(client["name"] or "Unbenannte Anwendung"),
+        f"""<table>
+{sh.zeile("Kennung", f'<span class="mono">{esc(kennung)}</span>')}
+{sh.zeile("Rückadresse", ziele)}
+{sh.zeile("Folge", esc(folge),
+          "Die Anwendung verliert den Zugriff sofort. Kommt sie wieder, "
+          "meldet sie sich neu an und braucht eine neue Bestätigung.")}
+</table>""", art="akzent")
+
+    # Weder Telefon noch Passkey: Dann wird hier nichts entfernt. Das ist
+    # kein Versehen, sondern die Vorgabe — und der Ausweg steht dabei.
+    if not totp and not (passkeys and passkeys_moeglich):
+        wege = sh.karte("Bestätigung nicht möglich", f"""
+{sh.warnung("Für dieses Konto ist weder ein zweiter Faktor noch ein Passkey "
+            "hinterlegt. Ohne eines von beidem wird nichts entfernt.", "schlecht")}
+<p class="note" style="margin:0">Richte unter <a href="/account">Konto</a> einen
+zweiten Faktor oder einen Passkey ein und komm dann zurück. Wer auf dem Server
+arbeitet, kann stattdessen
+<code>google-ads-http.py --remove-client {esc(kennung)}</code> aufrufen.</p>""")
+        return ui.konsole("Anwendung entfernen",
+                          "Zum Entfernen fehlt die zweite Bestätigung",
+                          "/clients", sh.warnung(esc(message), "schlecht") + was + wege)
+
+    teile = []
+    if totp:
+        teile.append(sh.karte("Mit dem Code aus der App bestätigen", f"""
+<form method="post" action="/clients/remove">
+<input type="hidden" name="{ENTFERNEN_FELD}" value="{esc(kennung)}">
+{sh.feld("code", "Sechsstelliger Code",
+         "Ein Wiederherstellungscode geht auch.",
+         extra='autocomplete="one-time-code" inputmode="numeric" autofocus required')}
+<button class="button danger breit" type="submit" style="margin-top:18px">
+Endgültig entfernen</button>
+</form>"""))
+
+    if passkeys and passkeys_moeglich:
+        teile.append(sh.karte("Mit Passkey bestätigen", f"""
+<div id="passkey-meldung" class="warnung" hidden><span></span></div>
+<button id="passkey-knopf" class="button danger breit" type="button">
+Passkey verwenden und entfernen</button>
+<form id="passkey-form" method="post" action="/clients/remove" hidden>
+<input type="hidden" name="{ENTFERNEN_FELD}" value="{esc(kennung)}">
+<input type="hidden" name="kennung"><input type="hidden" name="daten">
+<input type="hidden" name="authenticator"><input type="hidden" name="signatur">
+<input type="hidden" name="benutzerkennung"></form>"""))
+
+    zurueck = ('<p style="margin-top:18px"><a class="button quiet" href="/clients">'
+               'Abbrechen</a></p>')
+
+    return ui.konsole(
+        "Anwendung entfernen",
+        "Zum Entfernen bestätigst du noch einmal, dass du es bist",
+        "/clients",
+        sh.warnung(esc(message), "schlecht") + was + "".join(teile) + zurueck,
+        skript=(passkey_js + ENTFERNEN_JS) if (passkeys and passkeys_moeglich) else "")
