@@ -1,11 +1,18 @@
 {
+  "_kommentar": [
+    "Bewusst OHNE Authorization-Kopf. Steht dort einer, schaltet Claude Code",
+    "den OAuth-Weg ab und schickt genau diesen Kopf — ist die Variable nicht",
+    "gesetzt, geht er leer hinaus und der Server antwortet mit 401.",
+    "Genau das ist im September 2026 passiert.",
+    "Ohne den Kopf meldet sich Claude Code beim ersten Aufruf selbst an:",
+    "Portal oeffnen, bestaetigen, fertig — dieselbe Anmeldung wie in den",
+    "Claude-Apps. Wer lieber das feste Zugangswort benutzt, traegt einen",
+    "eigenen Servereintrag mit claude mcp add --header ein."
+  ],
   "mcpServers": {
     "neo-google-ads": {
       "type": "http",
-      "url": "${GOOGLE_ADS_MCP_URL:-https://ads.mcp.neo-digital.at/mcp}",
-      "headers": {
-        "Authorization": "Bearer ${GOOGLE_ADS_MCP_TOKEN}"
-      }
+      "url": "${GOOGLE_ADS_MCP_URL:-https://ads.mcp.neo-digital.at/mcp}"
     }
   }
 }

@@ -5,7 +5,7 @@ weil die drei Claude-Oberflächen verschieden an einen Server kommen.
 
 | Wo | Wie | Aufwand |
 | --- | --- | --- |
-| **claude.ai im Browser und auf dem Handy** | `google-ads-http.py` läuft bei dir, claude.ai ruft die Adresse auf | eigener Server mit HTTPS |
+| **claude.ai im Browser und auf dem Handy** | `google-ads-http.py` läuft bei dir, claude.ai ruft die Adresse auf und meldet sich per OAuth an | eigener Server mit HTTPS |
 | **Claude Code** | Plugin, ruft denselben Server über HTTP auf | Adresse und Zugangswort |
 | **Claude Desktop** | lokaler Prozess, in der Desktop-Konfiguration | fünf Zeilen JSON |
 
@@ -181,18 +181,51 @@ Alle vier fragen Kennwörter verdeckt ab und schreiben sie nirgends hin.
 
 1. **Einstellungen → Connectors → Benutzerdefinierten Connector hinzufügen**
 2. Adresse: `https://ads.mcp.neo-digital.at/mcp`
-3. Als Kopfzeile: `Authorization: Bearer <das Zugangswort>`
+3. **Verbinden** klicken. Es öffnet sich dein eigenes Portal — anmelden wie
+   immer (Passkey oder Kennwort), auf dem Bestätigungsbildschirm
+   **Erlauben** klicken, fertig.
 
-Das Zugangswort entsteht beim **ersten** Start, liegt in `data/http-token`
-und bleibt dort. Eine Bereitstellung erzeugt **kein** neues: das
-Verzeichnis ist gemountet, der Server findet das vorhandene und lässt es in
-Ruhe.
+**Kein Zugangswort eintragen.** Es gibt in der Oberfläche auch kein Feld
+dafür — nur Client-ID und Secret, und die braucht hier niemand von Hand.
+Der Server sagt beim ersten Kontakt selbst, wo man sich anmeldet, und
+registriert den Client im selben Zug.
+
+> ⚠️ **Das war bis September 2026 anders dokumentiert, und zwar falsch.**
+> Hier stand, claude.ai brauche „ein Wort, das bleibt". Das stimmt nicht:
+> Benutzerdefinierte Connectors laufen über den OAuth-Teil der
+> MCP-Spezifikation. Wer den nicht anbietet, kann den Server in den
+> Claude-Apps gar nicht hinzufügen. Seit `portal_oauth.py` bietet er ihn an.
+
+Einmal verbunden, gilt der Zugang auf **allen** Geräten desselben Kontos —
+Browser, Desktop, Handy. Erteilte Zugriffe stehen im Portal und lassen sich
+dort einzeln wieder entziehen.
+
+#### Und das feste Zugangswort?
+
+Das bleibt, für Claude Code und für Skripte. Es entsteht beim **ersten**
+Start, liegt in `data/http-token` und bleibt dort. Eine Bereitstellung
+erzeugt **kein** neues: das Verzeichnis ist gemountet, der Server findet
+das vorhandene und lässt es in Ruhe.
 
 Wechseln lässt es sich im Portal unter **Übersicht → Zugangswort für
-claude.ai wechseln**. Das alte gilt dann sofort nicht mehr, und der
-Connector ist neu einzutragen. Die Portal-Konten bleiben davon unberührt.
+claude.ai wechseln**. Das alte gilt dann sofort nicht mehr. Die
+Portal-Konten und die erteilten OAuth-Zugriffe bleiben davon unberührt.
 
 Vergessen kann man es nicht: es steht in `data/http-token` auf dem Server.
+
+#### Zwei Rechte, nicht eines
+
+Ein über OAuth erteilter Zugang trägt seine Rechte mit sich:
+
+| Recht | Was es erlaubt |
+| --- | --- |
+| `ads:read` | Kampagnen, Keywords, Suchbegriffe, Berichte lesen |
+| `ads:write` | ändern — Gebote, Budgets, Keywords, Status |
+
+Standard sind beide. Ein Zugang **nur zum Lesen** bekommt bei jedem
+schreibenden Werkzeug ein `403` mit der Begründung, welches Recht fehlt.
+Das feste Zugangswort darf weiterhin alles — wer die Datei auf dem Server
+lesen kann, ist ohnehin drin.
 
 ### Eigenes Logo
 
@@ -223,17 +256,33 @@ das Problem nicht — aber die Zeile schadet auch dann nicht.
 | Tür | Wer | Womit |
 | --- | --- | --- |
 | `/login` | ein Mensch | Benutzerkonto, Kennwort, wahlweise zweiter Faktor — oder ein Passkey, der beides in einem Schritt ersetzt |
-| `/mcp` | claude.ai | ein festes Zugangswort als `Authorization: Bearer` |
+| `/authorize` | eine Claude-App, über den Menschen | OAuth 2.1: der Mensch meldet sich im Portal an und bestätigt; die App bekommt ein Token, das nur für diesen Server gilt |
+| `/mcp` | Claude Code, Skripte | ein festes Zugangswort als `Authorization: Bearer` |
 
-Das ist Absicht. claude.ai kann kein Formular ausfüllen und keinen Code aus
-einer App eingeben — der Connector braucht ein Wort, das bleibt. Ein Mensch
-kann beides, und soll es auch. Keiner der beiden Schlüssel öffnet die
-andere Tür: ein Wechsel des Zugangsworts rührt die Konten nicht an, ein
-Kennwortwechsel stört den Connector nicht.
+Jede Tür passt zu dem, was dahinter steht. Eine App kann kein Kennwort
+eintippen — aber sie kann einen Menschen zum Portal schicken und dort
+fragen lassen. Ein Skript hat keinen Menschen zur Hand — dafür das feste
+Wort. Keiner der Schlüssel öffnet eine fremde Tür: ein Wechsel des
+Zugangsworts rührt weder die Konten noch die erteilten Zugriffe an, ein
+Kennwortwechsel stört weder Connector noch Skript.
+
+Die OAuth-Endpunkte kommen mit `--setup`. Wer sie nicht will, startet mit
+`--no-oauth`; dann bleibt es beim festen Wort und die Claude-Apps können
+den Server nicht hinzufügen.
 
 Deshalb gilt `--anthropic-only` auch nur für `/mcp`. Es würde sonst den
 Betreiber vom eigenen Portal aussperren, weil der nicht aus Anthropics
-Adressbereich kommt.
+Adressbereich kommt — und dasselbe gilt für `/authorize`, `/token` und
+`/register`: Der Bestätigungsbildschirm wird von einem Browser aufgerufen,
+nicht von Anthropic.
+
+⚠️ **Was `--anthropic-only` aber sehr wohl trifft:** Claude Desktop und
+Claude Code rufen `/mcp` vom Rechner des Benutzers aus auf, nicht aus
+Anthropics Bereich. Mit dem Schalter kommen sie nicht durch — auch nicht
+mit einem gültigen OAuth-Token. Die Claude-Apps im Browser und am Handy
+sind nicht betroffen, weil dort Anthropics Server den Aufruf machen. Wer
+beides will, lässt den Schalter weg; das Zugangswort und die Tokenprüfung
+bleiben ja.
 
 ### Wie der Aufbau sich schützt
 

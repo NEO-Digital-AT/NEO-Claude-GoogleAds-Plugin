@@ -41,6 +41,8 @@ import json
 import os
 import pathlib
 import re
+import secrets
+import shutil
 import sys
 import tempfile
 import urllib.error
@@ -1834,6 +1836,269 @@ def test_passkeys():
          not falsch, ", ".join(falsch))
 
 
+def test_oauth() -> None:
+    """Der ganze Weg, den Claude beim Hinzufuegen als Connector geht.
+
+    Ein echter Server auf einem echten Port, wie beim Tuertest — nur geht
+    es hier nicht um das feste Zugangswort, sondern um die dritte Tuer:
+    Auskunft, Registrierung, Zustimmung, Token, und die Abkuerzungen, die
+    ein Angreifer nehmen wuerde.
+    """
+    import base64 as _b64
+    import hashlib as _hash
+    import json as _json
+    import socket
+    import threading
+    import urllib.error
+    import urllib.parse
+    import urllib.request
+
+    http_mod = load_http()
+    import portal_store as _store
+
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+    base = f"http://127.0.0.1:{port}"
+    ordner = pathlib.Path(tempfile.mkdtemp())
+    datenbank = ordner / "portal.db"
+
+    with _store.open_database(datenbank) as verbindung:
+        nutzer = _store.create_user(verbindung, "pruefer", "EinLangesKennwort!2026")
+        sitzung = _store.start_session(verbindung, nutzer, stage="full")
+
+    vorher = (http_mod.Handler.setup_enabled, http_mod.Handler.oauth_enabled,
+              http_mod.Handler.database_path, http_mod.Handler.public_url,
+              http_mod.Handler.token, http_mod.Handler.anthropic_only,
+              http_mod.Handler.path_prefix)
+    http_mod.Handler.setup_enabled = True
+    http_mod.Handler.oauth_enabled = True
+    http_mod.Handler.database_path = datenbank
+    http_mod.Handler.public_url = base
+    http_mod.Handler.token = "f" * 60
+    http_mod.Handler.anthropic_only = False
+    http_mod.Handler.path_prefix = "/mcp"
+
+    server = http_mod.ThreadingServer(("127.0.0.1", port), http_mod.Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+
+    class OhneUmleitung(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, *a, **k):
+            return None
+
+    oeffner = urllib.request.build_opener(OhneUmleitung())
+
+    def ruf(pfad, daten=None, kopf=None, angemeldet=False):
+        rumpf = None
+        if isinstance(daten, dict):
+            rumpf = urllib.parse.urlencode(daten).encode()
+        elif daten is not None:
+            rumpf = daten if isinstance(daten, bytes) else daten.encode()
+        anfrage = urllib.request.Request(base + pfad, data=rumpf,
+                                         headers=dict(kopf or {}))
+        if angemeldet:
+            anfrage.add_header("Cookie", f"{_store.SESSION_COOKIE}={sitzung}")
+            anfrage.add_header("Origin", base)
+        try:
+            with oeffner.open(anfrage, timeout=10) as antwort:
+                return antwort.status, dict(antwort.headers), antwort.read()
+        except urllib.error.HTTPError as exc:
+            return exc.code, dict(exc.headers), exc.read()
+
+    def pkce():
+        v = _b64.urlsafe_b64encode(secrets.token_bytes(32)).rstrip(b"=").decode()
+        c = _b64.urlsafe_b64encode(
+            _hash.sha256(v.encode()).digest()).rstrip(b"=").decode()
+        return v, c
+
+    RUECK = "https://claude.ai/api/mcp/auth_callback"
+
+    try:
+        # -- Auskunft ------------------------------------------------------
+        status, _, rumpf = ruf("/.well-known/oauth-protected-resource")
+        prm = _json.loads(rumpf or b"{}")
+        case("oauth: protected resource metadata answers", status == 200, str(status))
+        case("oauth: names this server as the resource",
+             prm.get("resource") == f"{base}/mcp", str(prm.get("resource")))
+        case("oauth: metadata also under the path suffix",
+             ruf("/.well-known/oauth-protected-resource/mcp")[0] == 200)
+        status, _, rumpf = ruf("/.well-known/oauth-authorization-server")
+        asm = _json.loads(rumpf or b"{}")
+        case("oauth: S256 is the only PKCE method",
+             asm.get("code_challenge_methods_supported") == ["S256"],
+             str(asm.get("code_challenge_methods_supported")))
+        case("oauth: registration endpoint announced",
+             asm.get("registration_endpoint") == f"{base}/register")
+
+        # -- Der 401 weist den Weg ----------------------------------------
+        status, koepfe, _ = ruf("/mcp", daten=b'{"jsonrpc":"2.0","id":1,'
+                                              b'"method":"tools/list"}',
+                                kopf={"Content-Type": "application/json"})
+        case("oauth: 401 without a token", status == 401, str(status))
+        case("oauth: 401 points at the metadata",
+             "resource_metadata=" in koepfe.get("WWW-Authenticate", ""),
+             koepfe.get("WWW-Authenticate", ""))
+
+        # -- Das feste Wort gilt weiter ------------------------------------
+        status, _, rumpf = ruf("/mcp", daten=b'{"jsonrpc":"2.0","id":1,'
+                                             b'"method":"tools/list"}',
+                               kopf={"Content-Type": "application/json",
+                                     "Authorization": "Bearer " + "f" * 60})
+        case("oauth: the fixed token still opens the door", status == 200, str(status))
+
+        # -- Registrierung --------------------------------------------------
+        status, _, rumpf = ruf("/register", kopf={"Content-Type": "application/json"},
+                               daten=_json.dumps({"client_name": "Pruefclient",
+                                                  "redirect_uris": [RUECK]}))
+        client = _json.loads(rumpf or b"{}")
+        case("oauth: dynamic registration works", status == 201, str(status))
+        case("oauth: client id and secret issued",
+             bool(client.get("client_id")) and bool(client.get("client_secret")))
+        case("oauth: http redirect on a foreign host refused",
+             ruf("/register", kopf={"Content-Type": "application/json"},
+                 daten=_json.dumps({"client_name": "x",
+                                    "redirect_uris": ["http://example.invalid/cb"]}))[0]
+             == 400)
+
+        # -- Zustimmung ------------------------------------------------------
+        pruefwort, herausforderung = pkce()
+        frage = urllib.parse.urlencode({
+            "response_type": "code", "client_id": client["client_id"],
+            "redirect_uri": RUECK, "code_challenge": herausforderung,
+            "code_challenge_method": "S256", "state": "xyz",
+            "scope": "ads:read ads:write", "resource": f"{base}/mcp"})
+        status, _, rumpf = ruf("/authorize?" + frage, angemeldet=True)
+        seite = rumpf.decode("utf-8", "replace")
+        case("oauth: consent screen shown", status == 200, str(status))
+        case("oauth: consent names the client and the redirect",
+             "Pruefclient" in seite and "auth_callback" in seite)
+
+        case("oauth: signed out, /authorize sends you to sign in first",
+             ruf("/authorize?" + frage)[1].get("Location") == "/login")
+
+        status, koepfe, _ = ruf("/authorize", daten={"anfrage": frage, "antwort": "ja"},
+                                angemeldet=True)
+        ziel = koepfe.get("Location", "")
+        case("oauth: consent redirects back with state",
+             status in (302, 303) and "state=xyz" in ziel, f"{status} {ziel}")
+        code = urllib.parse.parse_qs(
+            urllib.parse.urlsplit(ziel).query).get("code", [""])[0]
+        case("oauth: an authorization code is handed back", bool(code))
+
+        # -- Der Code ist einmalig -------------------------------------------
+        def tausche(verifier, der_code):
+            return ruf("/token", daten={
+                "grant_type": "authorization_code", "code": der_code,
+                "redirect_uri": RUECK, "code_verifier": verifier,
+                "client_id": client["client_id"],
+                "client_secret": client["client_secret"]})
+
+        case("oauth: a wrong code_verifier is refused",
+             tausche("falsch" + pruefwort, code)[0] == 400)
+        case("oauth: a code is spent even by a failed attempt",
+             tausche(pruefwort, code)[0] == 400)
+
+        status, koepfe, _ = ruf("/authorize", daten={"anfrage": frage, "antwort": "ja"},
+                                angemeldet=True)
+        code = urllib.parse.parse_qs(urllib.parse.urlsplit(
+            koepfe.get("Location", "")).query).get("code", [""])[0]
+        status, _, rumpf = tausche(pruefwort, code)
+        token = _json.loads(rumpf or b"{}")
+        case("oauth: code exchanged for a token",
+             status == 200 and bool(token.get("access_token")), str(status))
+        case("oauth: a refresh token comes with it", bool(token.get("refresh_token")))
+
+        # -- Das Token am MCP-Endpunkt ---------------------------------------
+        status, _, rumpf = ruf("/mcp", daten=b'{"jsonrpc":"2.0","id":1,'
+                                             b'"method":"tools/list"}',
+                               kopf={"Content-Type": "application/json",
+                                     "Authorization": "Bearer " + token["access_token"]})
+        case("oauth: the token opens the MCP endpoint", status == 200, str(status))
+        case("oauth: an invented token does not",
+             ruf("/mcp", daten=b'{"jsonrpc":"2.0","id":1,"method":"tools/list"}',
+                 kopf={"Content-Type": "application/json",
+                       "Authorization": "Bearer nichtsdavon"})[0] == 401)
+
+        # -- Ein Nur-Lese-Token darf nicht schreiben --------------------------
+        v2, c2 = pkce()
+        frage2 = urllib.parse.urlencode({
+            "response_type": "code", "client_id": client["client_id"],
+            "redirect_uri": RUECK, "code_challenge": c2,
+            "code_challenge_method": "S256", "scope": "ads:read"})
+        _, koepfe, _ = ruf("/authorize", daten={"anfrage": frage2, "antwort": "ja"},
+                           angemeldet=True)
+        code2 = urllib.parse.parse_qs(urllib.parse.urlsplit(
+            koepfe.get("Location", "")).query).get("code", [""])[0]
+        nur_lesen = _json.loads(ruf("/token", daten={
+            "grant_type": "authorization_code", "code": code2, "redirect_uri": RUECK,
+            "code_verifier": v2, "client_id": client["client_id"],
+            "client_secret": client["client_secret"]})[2] or b"{}")
+        case("oauth: a read-only token says so",
+             nur_lesen.get("scope") == "ads:read", str(nur_lesen.get("scope")))
+        lesekopf = {"Content-Type": "application/json",
+                    "Authorization": "Bearer " + nur_lesen.get("access_token", "")}
+        case("oauth: read-only may read",
+             ruf("/mcp", daten=b'{"jsonrpc":"2.0","id":1,"method":"tools/list"}',
+                 kopf=lesekopf)[0] == 200)
+        status, koepfe, _ = ruf("/mcp", kopf=lesekopf, daten=_json.dumps({
+            "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+            "params": {"name": "google_ads_set_budget", "arguments": {}}}))
+        case("oauth: read-only may NOT write", status == 403, str(status))
+        case("oauth: and says which right is missing",
+             "insufficient_scope" in koepfe.get("WWW-Authenticate", ""))
+
+        # -- Erneuern ---------------------------------------------------------
+        status, _, rumpf = ruf("/token", daten={
+            "grant_type": "refresh_token", "refresh_token": token["refresh_token"],
+            "client_id": client["client_id"],
+            "client_secret": client["client_secret"]})
+        case("oauth: refresh yields a new pair",
+             status == 200 and bool(_json.loads(rumpf or b"{}").get("access_token")),
+             str(status))
+        case("oauth: the spent refresh token is gone", ruf("/token", daten={
+            "grant_type": "refresh_token", "refresh_token": token["refresh_token"],
+            "client_id": client["client_id"],
+            "client_secret": client["client_secret"]})[0] == 400)
+
+        # -- Was ein Angreifer versuchen wuerde --------------------------------
+        status, koepfe, _ = ruf("/authorize?" + urllib.parse.urlencode({
+            "response_type": "code", "client_id": client["client_id"],
+            "redirect_uri": "https://boese.example/cb", "code_challenge": c2,
+            "code_challenge_method": "S256"}), angemeldet=True)
+        case("oauth: an unregistered redirect is never redirected to",
+             status == 400 and "boese.example" not in koepfe.get("Location", ""),
+             f"{status} {koepfe.get('Location', '')}")
+        case("oauth: PKCE plain is refused", ruf("/authorize?" + urllib.parse.urlencode({
+            "response_type": "code", "client_id": client["client_id"],
+            "redirect_uri": RUECK, "code_challenge": c2,
+            "code_challenge_method": "plain"}), angemeldet=True)[0] in (302, 303))
+        case("oauth: missing PKCE is refused", ruf("/authorize?" + urllib.parse.urlencode({
+            "response_type": "code", "client_id": client["client_id"],
+            "redirect_uri": RUECK}), angemeldet=True)[0] in (302, 303))
+        case("oauth: a token for a foreign resource is refused",
+             ruf("/authorize?" + urllib.parse.urlencode({
+                 "response_type": "code", "client_id": client["client_id"],
+                 "redirect_uri": RUECK, "code_challenge": c2,
+                 "code_challenge_method": "S256",
+                 "resource": "https://fremder.example/mcp"}),
+                 angemeldet=True)[0] in (302, 303))
+        case("oauth: a cross-site consent POST is refused",
+             ruf("/authorize", daten={"anfrage": frage, "antwort": "ja"})[0]
+             in (302, 303, 403))
+        case("oauth: a wrong client secret gets 401", ruf("/token", daten={
+            "grant_type": "authorization_code", "code": "erfunden",
+            "client_id": client["client_id"], "client_secret": "falsch"})[0] == 401)
+    finally:
+        server.shutdown()
+        server.server_close()
+        (http_mod.Handler.setup_enabled, http_mod.Handler.oauth_enabled,
+         http_mod.Handler.database_path, http_mod.Handler.public_url,
+         http_mod.Handler.token, http_mod.Handler.anthropic_only,
+         http_mod.Handler.path_prefix) = vorher
+        shutil.rmtree(ordner, ignore_errors=True)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Prove the Google Ads guardrails hold.")
     parser.add_argument("--verbose", action="store_true", help="show the detail of every case")
@@ -1853,7 +2118,8 @@ def main() -> int:
                        ("portal accounts", test_portal),
                        ("portal door", test_portal_door),
                        ("permission matrix", test_permission_matrix),
-                       ("passkeys", test_passkeys)):
+                       ("passkeys", test_passkeys),
+                       ("oauth connector", test_oauth)):
         start = len(RESULTS)
         run()
         failed = sum(1 for _, ok, _ in RESULTS[start:] if not ok)

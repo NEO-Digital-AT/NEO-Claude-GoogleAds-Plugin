@@ -42,7 +42,7 @@ import pathlib
 import secrets
 import sqlite3
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 CHALLENGE_MINUTES = 5
 SESSION_HOURS = 12
 SESSION_COOKIE = "neo_portal"
@@ -50,6 +50,16 @@ MIN_PASSWORD = 12
 LOCKOUT_TRIES = 8
 LOCKOUT_MINUTES = 15
 RECOVERY_COUNT = 10
+
+# OAuth. Der Code lebt nur so lange, wie ein Browser fuer eine Weiterleitung
+# braucht; das Zugangstoken eine Stunde; das Erneuerungstoken einen Monat und
+# wird bei jedem Gebrauch getauscht. Die Obergrenze fuer Clients ist da, weil
+# die dynamische Registrierung offen sein MUSS (die Spezifikation verlangt es)
+# und eine offene Tuer ohne Zaehler irgendwann zugemuellt wird.
+OAUTH_CODE_SECONDS = 60
+OAUTH_ACCESS_HOURS = 1
+OAUTH_REFRESH_DAYS = 30
+OAUTH_MAX_CLIENTS = 50
 
 # scrypt parameters. 2**15 keeps a single check near a tenth of a second on
 # a small VPS, which is slow for an attacker and unnoticeable for a person.
@@ -156,6 +166,35 @@ def _migrate(connection: sqlite3.Connection) -> None:
         user_id   INTEGER NOT NULL DEFAULT 0,
         expires   TEXT NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS oauth_clients (
+        client_id     TEXT PRIMARY KEY,
+        secret_hash   TEXT NOT NULL DEFAULT '',
+        name          TEXT NOT NULL DEFAULT '',
+        redirect_uris TEXT NOT NULL,
+        created       TEXT NOT NULL,
+        last_used     TEXT NOT NULL DEFAULT ''
+    );
+    CREATE TABLE IF NOT EXISTS oauth_codes (
+        code_hash    TEXT PRIMARY KEY,
+        client_id    TEXT NOT NULL,
+        user_id      INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        redirect_uri TEXT NOT NULL,
+        challenge    TEXT NOT NULL,
+        scope        TEXT NOT NULL DEFAULT '',
+        resource     TEXT NOT NULL DEFAULT '',
+        expires      TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS oauth_tokens (
+        token_hash TEXT PRIMARY KEY,
+        kind       TEXT NOT NULL,
+        client_id  TEXT NOT NULL,
+        user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        scope      TEXT NOT NULL DEFAULT '',
+        resource   TEXT NOT NULL DEFAULT '',
+        created    TEXT NOT NULL,
+        expires    TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS oauth_tokens_user ON oauth_tokens(user_id);
     CREATE INDEX IF NOT EXISTS attempts_at ON attempts(at);
     CREATE INDEX IF NOT EXISTS events_at ON events(at);
     """)
@@ -351,6 +390,8 @@ def sweep(connection) -> None:
     connection.execute(
         "DELETE FROM events WHERE id NOT IN"
         " (SELECT id FROM events ORDER BY id DESC LIMIT 500)")
+    connection.execute("DELETE FROM oauth_codes WHERE expires <= ?", (now(),))
+    connection.execute("DELETE FROM oauth_tokens WHERE expires <= ?", (now(),))
 
 
 # -- lockout and audit -----------------------------------------------------
@@ -480,3 +521,139 @@ def spend_challenge(connection: sqlite3.Connection, challenge: str,
     if row["purpose"] != purpose or row["expires"] < now():
         return False, 0
     return True, row["user_id"]
+
+
+# -- OAuth -----------------------------------------------------------------
+#
+# Drei kurze Tabellen und kein Schluesselmaterial. Die Token sind
+# Zufallszahlen, gespeichert wird nur ihr SHA-256 — genau wie bei den
+# Sitzungen. Das ist Absicht:
+#
+#   * Wer die Datenbank liest, hat damit noch kein gueltiges Token.
+#   * Entziehen heisst eine Zeile loeschen. Bei einem signierten Token
+#     (JWT) braeuchte es dafuer eine Sperrliste, die man auch wieder
+#     pflegen muss — fuer EINEN Server ist das reine Zusatzarbeit.
+#
+# Ein Token traegt IMMER die Ressource, fuer die es ausgestellt wurde. Der
+# MCP-Endpunkt prueft das und weist ein Token ab, das fuer einen anderen
+# Server gedacht war. Ohne diese Bindung koennte ein Betreiber, bei dem man
+# sich anmeldet, das erhaltene Token bei einem fremden Server einloesen.
+
+
+def _now_plus(*, seconds: int = 0, hours: int = 0, days: int = 0) -> str:
+    return (datetime.datetime.now(datetime.timezone.utc)
+            + datetime.timedelta(seconds=seconds, hours=hours,
+                                 days=days)).isoformat(timespec="seconds")
+
+
+def count_clients(connection) -> int:
+    return connection.execute("SELECT COUNT(*) FROM oauth_clients").fetchone()[0]
+
+
+def register_client(connection, name: str, redirect_uris: list[str]) -> dict:
+    """Legt einen Client an und gibt seine Zugangsdaten EINMAL heraus."""
+    client_id = "neo-" + secrets.token_urlsafe(18)
+    secret = secrets.token_urlsafe(32)
+    connection.execute(
+        "INSERT INTO oauth_clients (client_id, secret_hash, name, redirect_uris, "
+        "created) VALUES (?, ?, ?, ?, ?)",
+        (client_id, _token_hash(secret), name[:80], "\n".join(redirect_uris), now()))
+    return {"client_id": client_id, "client_secret": secret}
+
+
+def client_by_id(connection, client_id: str):
+    return connection.execute(
+        "SELECT * FROM oauth_clients WHERE client_id = ?", (client_id,)).fetchone()
+
+
+def client_secret_matches(row, presented: str) -> bool:
+    return hmac.compare_digest(row["secret_hash"], _token_hash(presented))
+
+
+def client_redirect_uris(row) -> list[str]:
+    return [u for u in (row["redirect_uris"] or "").split("\n") if u]
+
+
+def note_client_use(connection, client_id: str) -> None:
+    connection.execute("UPDATE oauth_clients SET last_used = ? WHERE client_id = ?",
+                       (now(), client_id))
+
+
+def create_code(connection, *, client_id: str, user_id: int, redirect_uri: str,
+                challenge: str, scope: str, resource: str) -> str:
+    code = secrets.token_urlsafe(32)
+    connection.execute(
+        "INSERT INTO oauth_codes (code_hash, client_id, user_id, redirect_uri, "
+        "challenge, scope, resource, expires) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (_token_hash(code), client_id, user_id, redirect_uri, challenge, scope,
+         resource, _now_plus(seconds=OAUTH_CODE_SECONDS)))
+    return code
+
+
+def spend_code(connection, code: str):
+    """Holt den Code und loescht ihn im selben Atemzug — er gilt genau einmal.
+
+    ⚠️ Das `commit()` hier ist kein Schoenheitsfehler, sondern der Kern:
+    Ohne es wird die Loeschung zurueckgerollt, sobald die weitere Pruefung
+    im Aufrufer eine Ausnahme wirft — und genau das tut sie bei falschem
+    `code_verifier`. Der Code waere danach WIEDER GUELTIG und beliebig oft
+    einloesbar. Im Test fiel das als „ein einmal abgelehnter Code ist
+    verbraucht: 200" auf. Ein Autorisierungscode muss beim ersten Gebrauch
+    verfallen, ob der Gebrauch geglueckt ist oder nicht.
+    """
+    digest = _token_hash(code)
+    row = connection.execute("SELECT * FROM oauth_codes WHERE code_hash = ?",
+                             (digest,)).fetchone()
+    connection.execute("DELETE FROM oauth_codes WHERE code_hash = ?", (digest,))
+    connection.commit()
+    if row is None or row["expires"] <= now():
+        return None
+    return row
+
+
+def issue_token(connection, *, kind: str, client_id: str, user_id: int,
+                scope: str, resource: str) -> str:
+    token = secrets.token_urlsafe(40)
+    expires = _now_plus(hours=OAUTH_ACCESS_HOURS) if kind == "access" \
+        else _now_plus(days=OAUTH_REFRESH_DAYS)
+    connection.execute(
+        "INSERT INTO oauth_tokens (token_hash, kind, client_id, user_id, scope, "
+        "resource, created, expires) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (_token_hash(token), kind, client_id, user_id, scope, resource, now(), expires))
+    return token
+
+
+def read_token(connection, token: str, kind: str):
+    row = connection.execute(
+        "SELECT * FROM oauth_tokens WHERE token_hash = ? AND kind = ?",
+        (_token_hash(token), kind)).fetchone()
+    if row is None or row["expires"] <= now():
+        return None
+    return row
+
+
+def spend_refresh(connection, token: str):
+    """Erneuerungstoken werden getauscht, nicht wiederverwendet."""
+    row = read_token(connection, token, "refresh")
+    connection.execute("DELETE FROM oauth_tokens WHERE token_hash = ?",
+                       (_token_hash(token),))
+    return row
+
+
+def connections_for(connection, user_id: int) -> list:
+    """Verbundene Anwendungen, eine Zeile je Client."""
+    return connection.execute(
+        "SELECT c.client_id, c.name, MIN(t.created) AS seit, MAX(t.created) AS zuletzt,"
+        "       COUNT(*) AS anzahl"
+        "  FROM oauth_tokens t JOIN oauth_clients c ON c.client_id = t.client_id"
+        " WHERE t.user_id = ? GROUP BY c.client_id ORDER BY zuletzt DESC",
+        (user_id,)).fetchall()
+
+
+def revoke_connection(connection, user_id: int, client_id: str) -> int:
+    cursor = connection.execute(
+        "DELETE FROM oauth_tokens WHERE user_id = ? AND client_id = ?",
+        (user_id, client_id))
+    connection.execute("DELETE FROM oauth_codes WHERE user_id = ? AND client_id = ?",
+                       (user_id, client_id))
+    return cursor.rowcount
