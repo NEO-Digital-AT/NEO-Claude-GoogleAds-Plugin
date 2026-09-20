@@ -712,22 +712,23 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self._send(404, {"error": "no passkeys"})
             return
         challenge = store.new_challenge(connection, "remove", user["id"])
-        # ⚠️ HIER die Passkeys DIESES Kontos mitgeben — anders als bei der
-        # Anmeldung.
+
+        # ⚠️ allowCredentials bleibt LEER — und das ist eine Entscheidung
+        # gegen den ersten Anschein.
         #
-        # Dort ist die Liste bewusst leer: Wer sich anmeldet, ist noch
-        # niemand, und eine Liste wuerde jedem Besucher verraten, welche
-        # Geraete dieses Portal kennt. Hier steht der Mensch aber schon fest.
+        # Naheliegend waere, hier die Passkeys dieses Kontos mitzugeben: Der
+        # Mensch steht ja fest, anders als bei der Anmeldung. Ich habe das
+        # am 20.9.2026 gebaut, und danach ging der Passkey GAR NICHT mehr
+        # (Erichs Befund). Warum genau, ist nicht geklaert — naheliegend
+        # ist, dass die hinterlegte Kennung nicht zu dem passt, was auf dem
+        # Geraet liegt; eine Liste filtert dann alles weg, waehrend die
+        # leere Liste den Browser jeden auffindbaren Passkey anbieten laesst.
         #
-        # Und leer ist nicht harmlos: Ohne allowCredentials sucht der
-        # Browser einen auffindbaren Passkey (resident key). Wurde der
-        # Schluessel ohne diese Eigenschaft angelegt, findet er ihn nicht —
-        # und der Benutzer sieht nur, dass sein Passkey nicht antwortet.
-        # Mit der Liste weiss der Browser genau, wonach er fragen soll.
-        erlaubte = [zeile["credential_id"]
-                    for zeile in store.passkeys_for(connection, user["id"])]
+        # Solange das nicht gemessen ist, gilt der Zustand, der funktioniert
+        # hat. Wer es erneut versucht, braucht vorher den Fehlertext aus dem
+        # Dialog — nicht eine Vermutung.
         self._send_json_or_refuse(webauthn.anmeldung_beginnen(
-            challenge=challenge, rp_id=self._rp_id(), erlaubte=erlaubte))
+            challenge=challenge, rp_id=self._rp_id()))
 
     def _oauth_authorize(self, connection, verb: str, user, address: str) -> None:
         """Der Bildschirm, auf dem ein Mensch zustimmt — oder eben nicht.

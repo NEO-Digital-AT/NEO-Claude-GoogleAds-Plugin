@@ -45,7 +45,11 @@ PASSKEY_JS = """
     holen: function (pfad) {
       return fetch(pfad, { method: 'POST', headers: { 'X-Neo': '1' } })
         .then(function (a) {
-          if (!a.ok) throw new Error('Der Server hat die Anfrage abgelehnt.');
+          // Mit Statuscode: "Der Server hat die Anfrage abgelehnt" allein
+          // sagt niemandem, ob die Sitzung abgelaufen ist (303/403), der
+          // Weg fehlt (404) oder Passkeys hier gar nicht gehen (400).
+          if (!a.ok) throw new Error('Der Server hat die Anfrage abgelehnt ('
+                                     + a.status + ').');
           return a.json();
         });
     },

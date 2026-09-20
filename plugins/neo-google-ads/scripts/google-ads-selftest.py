@@ -2165,9 +2165,11 @@ def test_oauth() -> None:
         vorgaben = _json.loads(roh or b"{}")
         case("passkey: the step-up challenge is handed out", status == 200,
              f"{status} {roh[:90]}")
-        case("passkey: and names THIS account's keys",
-             [e.get("id") for e in vorgaben.get("allowCredentials", [])]
-             == ["pruefkennung"], str(vorgaben.get("allowCredentials")))
+        # Bewusst leer, siehe die Begruendung in _oauth_remove_challenge:
+        # mit gefuellter Liste ging der Passkey bei Erich gar nicht mehr.
+        case("passkey: the list stays empty until that is measured",
+             vorgaben.get("allowCredentials") == [],
+             str(vorgaben.get("allowCredentials")))
 
         # Bei der Anmeldung bleibt die Liste leer — dort ist noch niemand
         # bekannt, und sie wuerde verraten, welche Geraete das Portal kennt.

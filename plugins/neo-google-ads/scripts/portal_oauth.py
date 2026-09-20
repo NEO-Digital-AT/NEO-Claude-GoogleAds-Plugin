@@ -716,9 +716,15 @@ ENTFERNEN_JS = """
       form.submit();
     }).catch(function (e) {
       knopf.disabled = false;
-      window.neoPasskey.melden(meldung, e && e.name === 'NotAllowedError'
-        ? 'Abgebrochen. Es wurde nichts entfernt.'
-        : (e.message || 'Der Passkey hat nicht geantwortet.'), true);
+      // Den NAMEN des Fehlers mitzeigen. "Der Passkey hat nicht geantwortet"
+      // ist fuer die Fehlersuche wertlos; NotAllowedError (abgebrochen oder
+      // kein passender Schluessel), NotSupportedError, SecurityError (falsche
+      // Domain) und InvalidStateError sagen jeweils etwas anderes.
+      var text = e && e.name === 'NotAllowedError'
+        ? 'Abgebrochen oder kein passender Passkey gefunden. Es wurde nichts entfernt.'
+        : ((e && e.name ? e.name + ': ' : '')
+           + ((e && e.message) || 'Der Passkey hat nicht geantwortet.'));
+      window.neoPasskey.melden(meldung, text, true);
     });
   });
 })();
