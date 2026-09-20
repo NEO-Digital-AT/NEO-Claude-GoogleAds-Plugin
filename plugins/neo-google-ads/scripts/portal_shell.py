@@ -36,6 +36,7 @@ WEGE = (
     ("/setup", "Einrichtung", "conversion_path"),
     ("/guardrails", "Schutzgrenzen", "shield_lock"),
     ("/check", "Prüfung", "checklist"),
+    ("/clients", "Verbundene Apps", "devices"),
     ("/account", "Konto", "account_circle"),
 )
 

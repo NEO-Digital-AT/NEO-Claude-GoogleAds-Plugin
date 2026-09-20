@@ -540,3 +540,81 @@ def write_refused(message: dict, scope: str) -> str:
 def _epoch() -> int:
     import time
     return int(time.time())
+
+
+# --------------------------------------------------------------------------
+# Die Verwaltungsseite: was ist verbunden, und wie wird man es wieder los
+# --------------------------------------------------------------------------
+
+BESTAETIGEN_JS = """
+(function () {
+  document.querySelectorAll('form[data-bestaetigen]').forEach(function (form) {
+    form.addEventListener('submit', function (ereignis) {
+      if (!window.confirm(form.getAttribute('data-bestaetigen'))) {
+        ereignis.preventDefault();
+      }
+    });
+  });
+})();
+"""
+
+
+def clients_page(clients, *, message: str = "", art: str = "") -> bytes:
+    """Jede Anwendung, die sich hier angemeldet hat — und der Weg hinaus.
+
+    Die Rückadresse steht bewusst neben dem Namen. Der Name kommt aus der
+    Registrierung und kann alles behaupten; die Adresse ist die Stelle, an
+    die der Zugangscode wirklich geht. Wer eine Anwendung nicht zuordnen
+    kann, erkennt sie daran — oder entfernt sie.
+    """
+    zeilen = []
+    for c in clients:
+        ziele = "<br>".join(f"<code>{esc(u)}</code>"
+                            for u in (c["redirect_uris"] or "").split("\n") if u)
+        benutzt = esc(c["last_used"][:16].replace("T", " ")) if c["last_used"] \
+            else '<span class="notiz">noch nie</span>'
+        if c["nutzer_anzahl"]:
+            zugang = sh.zustand(f"{c['nutzer_anzahl']} aktiv", "ok")
+            wer = f'<span class="notiz">{esc(c["nutzer"])}</span>'
+        else:
+            zugang = sh.zustand("kein Zugang", "neutral")
+            wer = '<span class="notiz">nur registriert, nie bestätigt</span>'
+
+        zeilen.append(f"""<tr>
+<td><strong>{esc(c["name"] or "Unbenannte Anwendung")}</strong><br>
+    <span class="notiz mono">{esc(c["client_id"])}</span></td>
+<td>{ziele}</td>
+<td>{esc(c["created"][:16].replace("T", " "))}<br>
+    <span class="notiz">zuletzt: {benutzt}</span></td>
+<td>{zugang}<br>{wer}</td>
+<td style="text-align:right">
+  <form method="post" action="/clients" data-bestaetigen="Anwendung &bdquo;{esc(c["name"])}&ldquo; entfernen? Sie verliert den Zugriff sofort.">
+    <input type="hidden" name="client_id" value="{esc(c["client_id"])}">
+    <button class="button danger klein" type="submit" name="entfernen" value="1">Entfernen</button>
+  </form></td>
+</tr>""")
+
+    erklaerung = sh.karte(
+        "Was hier steht",
+        '<p class="note" style="margin-top:0">Jede Claude-App, die sich mit '
+        'diesem Server verbindet, meldet sich zuerst selbst an und erscheint '
+        'dann in dieser Liste. Das geschieht, bevor jemand zustimmt — ein '
+        'Eintrag ohne aktiven Zugang bedeutet also nur, dass es jemand '
+        'versucht hat. <strong>Zugriff hat erst, wer auf dem '
+        'Bestätigungsbildschirm bestätigt wurde.</strong></p>'
+        '<p class="note">Entfernen beendet den Zugriff sofort: Der Eintrag '
+        'verschwindet, und alle darauf ausgestellten Zugänge werden '
+        'mitgelöscht. Eine Anwendung, die danach wiederkommt, meldet sich neu '
+        'an und braucht eine neue Bestätigung.</p>',
+        art="akzent")
+
+    inhalt = (sh.warnung(esc(message), art) + erklaerung
+              + sh.karte("Angemeldete Anwendungen", f"""<table>
+<tr><th>Anwendung</th><th>Rückadresse</th><th>registriert</th>
+    <th>Zugang</th><th></th></tr>
+{"".join(zeilen) or '<tr><td colspan="5">Noch hat sich keine Anwendung angemeldet.</td></tr>'}
+</table>"""))
+
+    return ui.konsole("Verbundene Apps",
+                      "Anwendungen, die sich über OAuth an diesem Server anmelden",
+                      "/clients", inhalt, skript=BESTAETIGEN_JS)

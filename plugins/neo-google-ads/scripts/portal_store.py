@@ -657,3 +657,38 @@ def revoke_connection(connection, user_id: int, client_id: str) -> int:
     connection.execute("DELETE FROM oauth_codes WHERE user_id = ? AND client_id = ?",
                        (user_id, client_id))
     return cursor.rowcount
+
+
+def clients_with_usage(connection) -> list:
+    """Alle registrierten Clients, mit den noch lebenden Zugaengen dazu.
+
+    Abgelaufene Token zaehlen nicht mit: Sie sind bereits wirkungslos, und
+    sie wuerden die Zahl aufblasen, auf die jemand schaut, wenn er
+    entscheidet, ob er eine Anwendung entfernen kann.
+    """
+    return connection.execute(
+        "SELECT c.client_id, c.name, c.redirect_uris, c.created, c.last_used,"
+        "       COUNT(DISTINCT t.user_id) AS nutzer_anzahl,"
+        "       COALESCE(GROUP_CONCAT(DISTINCT u.username), '') AS nutzer"
+        "  FROM oauth_clients c"
+        "  LEFT JOIN oauth_tokens t"
+        "         ON t.client_id = c.client_id AND t.expires > ?"
+        "  LEFT JOIN users u ON u.id = t.user_id"
+        " GROUP BY c.client_id"
+        " ORDER BY (c.last_used = '') ASC, c.last_used DESC, c.created DESC",
+        (now(),)).fetchall()
+
+
+def delete_client(connection, client_id: str) -> dict:
+    """Entfernt einen Client mitsamt allem, was auf ihn ausgestellt wurde.
+
+    Die Token muessen mit: Ein Zugang, dessen Client nicht mehr existiert,
+    waere sonst weiter gueltig — entfernen soll aber heissen, dass die
+    Anwendung ab sofort draussen ist.
+    """
+    token = connection.execute(
+        "DELETE FROM oauth_tokens WHERE client_id = ?", (client_id,)).rowcount
+    connection.execute("DELETE FROM oauth_codes WHERE client_id = ?", (client_id,))
+    weg = connection.execute(
+        "DELETE FROM oauth_clients WHERE client_id = ?", (client_id,)).rowcount
+    return {"client": weg, "token": token}

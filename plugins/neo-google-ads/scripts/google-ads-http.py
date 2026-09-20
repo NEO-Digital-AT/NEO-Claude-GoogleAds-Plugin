@@ -529,6 +529,35 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.log_line("oauth: Token ausgestellt")
         self._send(200, antwort)
 
+    def _oauth_clients(self, connection, verb: str, user, address: str) -> None:
+        """Anwendungen ansehen und entfernen.
+
+        Entfernen loescht den Client UND alles, was auf ihn ausgestellt
+        wurde. Nur den Eintrag zu entfernen und die Token stehen zu lassen,
+        waere die schlechtere Haelfte: Der Zugriff liefe weiter, nur saehe
+        man ihn nicht mehr.
+        """
+        meldung, art = "", ""
+        if verb == "POST":
+            form = self._read_form()
+            kennung = (form.get("client_id") or [""])[0]
+            zeile = store.client_by_id(connection, kennung) if kennung else None
+            if zeile is None:
+                meldung, art = "Diese Anwendung gibt es nicht mehr.", "schlecht"
+            else:
+                name = zeile["name"] or "Unbenannte Anwendung"
+                weg = store.delete_client(connection, kennung)
+                store.log_event(connection, "OAuth-Client entfernt",
+                                username=user["username"], address=address,
+                                detail=f"{name} ({kennung}), {weg['token']} Token")
+                self.log_line(f"oauth: {user['username']} entfernt {kennung}")
+                meldung = (f"„{name}“ entfernt."
+                           + (f" {weg['token']} ausgestellte Zugangsdaten beendet."
+                              if weg["token"] else ""))
+                art = "gut"
+        self._send_html(oauth.clients_page(store.clients_with_usage(connection),
+                                           message=meldung, art=art))
+
     def _oauth_authorize(self, connection, verb: str, user, address: str) -> None:
         """Der Bildschirm, auf dem ein Mensch zustimmt — oder eben nicht.
 
@@ -645,7 +674,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
     # Die Wege der Konsole. Englisch wie jeder technische Name hier; was
     # darauf steht, ist deutsch.
     PORTAL_ROOTS = ("/dashboard", "/setup", "/guardrails", "/check", "/account",
-                    "/authorize")
+                    "/authorize", "/clients")
 
     @staticmethod
     def _is_portal_path(path: str) -> bool:
@@ -932,6 +961,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return
         if path == "/authorize":
             self._oauth_authorize(connection, verb, user, address)
+            return
+        if path == "/clients":
+            self._oauth_clients(connection, verb, user, address)
             return
         if path == "/account" or path.startswith("/account/"):
             self._account(connection, path, verb, user, session, address)

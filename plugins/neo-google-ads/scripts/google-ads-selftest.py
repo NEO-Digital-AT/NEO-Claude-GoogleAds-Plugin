@@ -2052,6 +2052,56 @@ def test_oauth() -> None:
                  kopf={"Content-Type": "application/json",
                        "Authorization": "Bearer nichtsdavon"})[0] == 401)
 
+        # -- Die Verwaltungsseite ---------------------------------------------
+        status, _, seite_b = ruf("/clients", angemeldet=True)
+        liste = seite_b.decode("utf-8", "replace")
+        case("clients: the management page answers", status == 200, str(status))
+        case("clients: it lists the registered client",
+             "Pruefclient" in liste and client["client_id"] in liste)
+        case("clients: it shows the redirect the code really goes to",
+             "auth_callback" in liste)
+        case("clients: it counts the live grant", "1 aktiv" in liste, "")
+
+        # Ein Entfernen-Knopf, der die richtige Kennung mitschickt — wieder
+        # aus dem gerenderten HTML gelesen, nicht im Test erfunden.
+        formular = verborgene_felder(liste)
+        case("clients: the remove form carries the client id",
+             formular.get("client_id") == client["client_id"],
+             str(formular))
+
+        status, _, nachher_b = ruf("/clients",
+                                   daten={"client_id": client["client_id"],
+                                          "entfernen": "1"}, angemeldet=True)
+        nachher = nachher_b.decode("utf-8", "replace")
+        case("clients: removing answers with the page", status == 200, str(status))
+        case("clients: the client is gone from the list",
+             client["client_id"] not in nachher)
+        case("clients: and its token stops working at once",
+             ruf("/mcp", daten=b'{"jsonrpc":"2.0","id":1,"method":"tools/list"}',
+                 kopf={"Content-Type": "application/json",
+                       "Authorization": "Bearer "
+                       + token.get("access_token", "-")})[0] == 401)
+        case("clients: removing something that is gone says so",
+             "nicht mehr" in ruf("/clients", daten={"client_id": "neo-erfunden",
+                                                    "entfernen": "1"},
+                                 angemeldet=True)[2].decode("utf-8", "replace"))
+
+        # Fuer die folgenden Pruefungen wieder einen Client und ein Token.
+        status, _, rumpf = ruf("/register", kopf={"Content-Type": "application/json"},
+                               daten=_json.dumps({"client_name": "Pruefclient",
+                                                  "redirect_uris": [RUECK]}))
+        client = _json.loads(rumpf or b"{}")
+        pruefwort, herausforderung = pkce()
+        frage = urllib.parse.urlencode({
+            "response_type": "code", "client_id": client["client_id"],
+            "redirect_uri": RUECK, "code_challenge": herausforderung,
+            "code_challenge_method": "S256", "state": "xyz",
+            "scope": "ads:read ads:write", "resource": f"{base}/mcp"})
+        _, koepfe, _ = zustimmen(frage)
+        code = urllib.parse.parse_qs(urllib.parse.urlsplit(
+            koepfe.get("Location", "")).query).get("code", [""])[0]
+        token = _json.loads(tausche(pruefwort, code)[2] or b"{}")
+
         # -- Der Adressfilter gilt NICHT fuer OAuth-Token ---------------------
         # Der Testclient ruft von 127.0.0.1 an, also ausserhalb von
         # Anthropics Bereich. Mit --anthropic-only muss das feste Wort
