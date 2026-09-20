@@ -546,15 +546,19 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
     def _oauth_remove_dialog(self, connection, user, zeile, meldung: str = "",
                              status: int = 200) -> None:
-        self._send_html(oauth.remove_page(
-            zeile,
-            username=user["username"],
-            zugaenge=store.client_grants(connection, zeile["client_id"]),
-            totp=bool(user["totp_confirmed"]),
-            passkeys=store.count_passkeys(connection) > 0,
-            passkeys_moeglich=self._passkeys_moeglich(),
-            message=meldung,
-            passkey_js=portal.PASSKEY_JS), status)
+        """Die Liste, mit dem Dialog darueber — nicht statt ihr."""
+        passkeys = store.count_passkeys(connection) > 0 and self._passkeys_moeglich()
+        self._send_html(oauth.clients_page(
+            store.clients_with_usage(connection),
+            ueberlagerung=oauth.remove_overlay(
+                zeile,
+                zugaenge=store.client_grants(connection, zeile["client_id"]),
+                totp=bool(user["totp_confirmed"]),
+                passkeys=store.count_passkeys(connection) > 0,
+                passkeys_moeglich=self._passkeys_moeglich(),
+                message=meldung),
+            skript=(portal.PASSKEY_JS + oauth.ENTFERNEN_JS) if passkeys else ""),
+            status)
 
     def _oauth_client_remove(self, connection, user, address: str) -> None:
         """Entfernen — aber erst, nachdem der Mensch sich noch einmal ausweist.

@@ -2086,7 +2086,9 @@ def test_oauth() -> None:
                                          "entfernen": "1"}, angemeldet=True)
         dialog = dialog_b.decode("utf-8", "replace")
         case("remove: the button opens a dialog instead of deleting",
-             status == 200 and "entfernen" in dialog.lower(), str(status))
+             status == 200 and "Anwendung entfernen" in dialog, str(status))
+        case("remove: the dialog is an overlay — the list is still behind it",
+             'class="ueber"' in dialog and "Angemeldete Anwendungen" in dialog)
         case("remove: without a second factor the account is told so, not obeyed",
              "weder ein zweiter Faktor noch ein Passkey" in dialog)
         case("remove: nothing was deleted by opening the dialog",

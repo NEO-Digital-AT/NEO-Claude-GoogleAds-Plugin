@@ -62,7 +62,7 @@ import urllib.parse
 import google_ads_setup as ui
 import portal_shell as sh
 import portal_store as store
-from neo_design import esc
+from neo_design import esc, symbol
 
 # Was ein Token dürfen kann. Bewusst nur zwei: Wer lesen darf, sieht Zahlen;
 # wer schreiben darf, ändert Gebote und Budgets. Eine feinere Einteilung
@@ -553,7 +553,8 @@ def _epoch() -> int:
 # Die Verwaltungsseite: was ist verbunden, und wie wird man es wieder los
 # --------------------------------------------------------------------------
 
-def clients_page(clients, *, message: str = "", art: str = "") -> bytes:
+def clients_page(clients, *, message: str = "", art: str = "",
+                 ueberlagerung: str = "", skript: str = "") -> bytes:
     """Jede Anwendung, die sich hier angemeldet hat — und der Weg hinaus.
 
     Die Rückadresse steht bewusst neben dem Namen. Der Name kommt aus der
@@ -614,7 +615,8 @@ def clients_page(clients, *, message: str = "", art: str = "") -> bytes:
 
     return ui.konsole("Verbundene Apps",
                       "Anwendungen, die sich über OAuth an diesem Server anmelden",
-                      "/clients", inhalt)
+                      "/clients", inhalt,
+                      ueberlagerung=ueberlagerung, skript=skript)
 
 
 # --------------------------------------------------------------------------
@@ -673,10 +675,19 @@ ENTFERNEN_JS = """
 """
 
 
-def remove_page(client, *, username: str, zugaenge: int, totp: bool,
-                passkeys: bool, passkeys_moeglich: bool, message: str = "",
-                passkey_js: str = "") -> bytes:
-    """Der Dialog vor dem Entfernen. Ohne zweiten Schritt passiert nichts."""
+def remove_overlay(client, *, zugaenge: int, totp: bool, passkeys: bool,
+                   passkeys_moeglich: bool, message: str = "") -> str:
+    """Der Dialog ueber der Liste. Ohne zweiten Schritt passiert nichts.
+
+    Als Ueberlagerung, nicht als eigene Seite (Erichs Ansage 20.9.2026:
+    „du sollst ein dialog anzeigen, nicht auf der seite selbst!"). Dahinter
+    bleibt die Liste stehen — man sieht, woraus man gerade etwas entfernt.
+
+    Gebaut wie die Zwei-Faktor-Ueberlagerung im Konto: vom Server
+    gezeichnet, kein JavaScript zum Oeffnen, Schliessen ist ein Link
+    zurueck auf /clients. Damit funktioniert er auch, wenn Skripte aus
+    sind — der Passkey-Knopf braucht dann welche, das Codefeld nicht.
+    """
     kennung = client["client_id"]
     ziele = "<br>".join(f"<code>{esc(u)}</code>"
                         for u in (client["redirect_uris"] or "").split("\n") if u)
@@ -684,59 +695,62 @@ def remove_page(client, *, username: str, zugaenge: int, totp: bool,
              else f"{zugaenge} erteilte Zugänge werden mitbeendet."
              if zugaenge else "Es ist derzeit kein Zugang erteilt.")
 
-    was = sh.karte(
-        esc(client["name"] or "Unbenannte Anwendung"),
-        f"""<table>
-{sh.zeile("Kennung", f'<span class="mono">{esc(kennung)}</span>')}
+    kopf = f"""<div class="kopf"><h2>Anwendung entfernen</h2>
+<a class="button ghost zu" href="/clients" aria-label="Schließen">
+{symbol("close", 20)}</a></div>"""
+
+    was = f"""<table style="margin-bottom:4px">
+{sh.zeile("Anwendung", f'<strong>{esc(client["name"] or "Unbenannte Anwendung")}</strong>'
+          f'<br><span class="notiz mono">{esc(kennung)}</span>')}
 {sh.zeile("Rückadresse", ziele)}
 {sh.zeile("Folge", esc(folge),
-          "Die Anwendung verliert den Zugriff sofort. Kommt sie wieder, "
-          "meldet sie sich neu an und braucht eine neue Bestätigung.")}
-</table>""", art="akzent")
+          "Die Anwendung verliert den Zugriff sofort. Kommt sie wieder, meldet "
+          "sie sich neu an und braucht eine neue Bestätigung.")}
+</table>"""
 
     # Weder Telefon noch Passkey: Dann wird hier nichts entfernt. Das ist
     # kein Versehen, sondern die Vorgabe — und der Ausweg steht dabei.
     if not totp and not (passkeys and passkeys_moeglich):
-        wege = sh.karte("Bestätigung nicht möglich", f"""
+        unten = f"""
 {sh.warnung("Für dieses Konto ist weder ein zweiter Faktor noch ein Passkey "
             "hinterlegt. Ohne eines von beidem wird nichts entfernt.", "schlecht")}
-<p class="note" style="margin:0">Richte unter <a href="/account">Konto</a> einen
-zweiten Faktor oder einen Passkey ein und komm dann zurück. Wer auf dem Server
-arbeitet, kann stattdessen
-<code>google-ads-http.py --remove-client {esc(kennung)}</code> aufrufen.</p>""")
-        return ui.konsole("Anwendung entfernen",
-                          "Zum Entfernen fehlt die zweite Bestätigung",
-                          "/clients", sh.warnung(esc(message), "schlecht") + was + wege)
+<p class="note">Richte unter <a href="/account">Konto</a> einen zweiten Faktor oder
+einen Passkey ein und komm dann zurück. Wer auf dem Server arbeitet, kann stattdessen
+<code>google-ads-http.py --remove-client {esc(kennung)}</code> aufrufen.</p>
+<div class="row" style="margin-top:24px">
+<a class="button quiet" href="/clients">Schließen</a></div>"""
+        return f'<div class="ueber"><div class="tafel">{kopf}{was}{unten}</div></div>'
 
-    teile = []
+    teile = [sh.warnung(esc(message), "schlecht") if message else ""]
+
     if totp:
-        teile.append(sh.karte("Mit dem Code aus der App bestätigen", f"""
-<form method="post" action="/clients/remove">
+        teile.append(f"""<form method="post" action="/clients/remove">
 <input type="hidden" name="{ENTFERNEN_FELD}" value="{esc(kennung)}">
-{sh.feld("code", "Sechsstelliger Code",
-         "Ein Wiederherstellungscode geht auch.",
-         extra='autocomplete="one-time-code" inputmode="numeric" autofocus required')}
-<button class="button danger breit" type="submit" style="margin-top:18px">
-Endgültig entfernen</button>
-</form>"""))
+<div style="margin-top:20px;padding-top:20px;border-top:1px solid var(--line-soft)">
+<label style="margin-top:0">Code aus der App</label>
+{sh.otp_felder(falsch=bool(message))}
+<p class="note" style="margin-top:10px">Ein Wiederherstellungscode geht auch — dann
+ins erste Feld.</p>
+</div>
+<div class="row" style="margin-top:24px">
+<button class="button danger" type="submit">Endgültig entfernen</button>
+<a class="button quiet" href="/clients">Abbrechen</a>
+</div></form>""")
 
     if passkeys and passkeys_moeglich:
-        teile.append(sh.karte("Mit Passkey bestätigen", f"""
+        trenner = '<div class="trenner">oder</div>' if totp else ""
+        teile.append(f"""{trenner}
 <div id="passkey-meldung" class="warnung" hidden><span></span></div>
 <button id="passkey-knopf" class="button danger breit" type="button">
-Passkey verwenden und entfernen</button>
+{symbol("passkey", 20)}Mit Passkey bestätigen und entfernen</button>
 <form id="passkey-form" method="post" action="/clients/remove" hidden>
 <input type="hidden" name="{ENTFERNEN_FELD}" value="{esc(kennung)}">
 <input type="hidden" name="kennung"><input type="hidden" name="daten">
 <input type="hidden" name="authenticator"><input type="hidden" name="signatur">
-<input type="hidden" name="benutzerkennung"></form>"""))
+<input type="hidden" name="benutzerkennung"></form>""")
+        if not totp:
+            teile.append('<div class="row" style="margin-top:20px">'
+                         '<a class="button quiet" href="/clients">Abbrechen</a></div>')
 
-    zurueck = ('<p style="margin-top:18px"><a class="button quiet" href="/clients">'
-               'Abbrechen</a></p>')
-
-    return ui.konsole(
-        "Anwendung entfernen",
-        "Zum Entfernen bestätigst du noch einmal, dass du es bist",
-        "/clients",
-        sh.warnung(esc(message), "schlecht") + was + "".join(teile) + zurueck,
-        skript=(passkey_js + ENTFERNEN_JS) if (passkeys and passkeys_moeglich) else "")
+    return (f'<div class="ueber"><div class="tafel">{kopf}{was}'
+            f'{"".join(teile)}</div></div>')
