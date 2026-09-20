@@ -1,11 +1,11 @@
 # NEO Marketing-Plattform — Auftragsrahmen
 
 Stand 2026-09-20 · Entwurf, Fassung 1
-Entscheidungsakte nach `neo-technologiewahl` fehlt noch (siehe Abschnitt 8).
+Entscheidungsakte nach `neo-technologiewahl` fehlt noch (siehe Abschnitt 10).
 
 Dieses Dokument ist der Auftragsrahmen für ein neues, eigenständiges
 Produkt. Wer damit zu bauen beginnt, liest Abschnitt 3 (Grenze
-Basis/Plugin) und Abschnitt 7 (Stufenplan). Alles andere ist Begründung
+Basis/Plugin) und Abschnitt 9 (Stufenplan). Alles andere ist Begründung
 und kann später gelesen werden.
 
 ## 1 Was es heute gibt
@@ -58,8 +58,12 @@ Fachlich ist es die Vorlage; technisch wird es nicht weitergebaut.
    bräuchte es zusätzliche Dienste neben dem Webserver.
 5. **Der Einwand "zwei Technologien im Haus" zählt hier nicht.**
    Contao-Arbeit fällt als *Ergebnis* an — Datenbankinhalte, Twig-Vorlagen,
-   Migrationen —, nicht als Programmierarbeit *in* diesem Produkt. Wer die
-   Plattform betreibt, schreibt kein PHP.
+   Migrationen —, nicht als Programmierarbeit *in* diesem Produkt.
+   Eine Ausnahme gibt es: das Contao-Bundle (Abschnitt 5) ist PHP. Es ist
+   klein, es liegt beim Kunden, es hat einen eigenen Lebenslauf und es
+   wird gegen eine feste Schnittstelle gebaut. Das ist kein zweiter
+   Stack, sondern ein Zubehörteil — für WordPress käme später ein
+   gleichartiges hinzu.
 
 ### 2.3 Verworfen
 
@@ -123,38 +127,46 @@ Mehr Andockpunkte gibt es zu Beginn nicht. Wer mehr braucht, begründet es.
 Die Grenze eng zu halten ist die einzige Möglichkeit, sie später noch
 verschieben zu können.
 
-### 3.3 Git oder Contao — zwei Plugins, nicht eines
+### 3.3 Zwei Achsen: Verbindung und System
 
-Sie beantworten verschiedene Fragen:
+Eine Webseite zu erreichen und sie zu verstehen sind zwei verschiedene
+Fragen, und sie kreuzen sich:
 
-| Frage | Antworten |
-| --- | --- |
-| **Quelle** — woher kommt der Inhalt | Crawler (Basis), Git, FTP, Datenbank |
-| **Inhaltsmodell** — wie ist er aufgebaut | Contao, WordPress, Plain HTML, React, Headless |
+| Achse | Frage | Plugins |
+| --- | --- | --- |
+| **Verbindung** | Wie kommt man hin | Crawler (Basis), Git, FTP/SFTP, Live-Bundle, Headless-API |
+| **System** | Was findet man dort | Contao, WordPress, Plain HTML, React, Headless |
 
-Eine Webseite braucht beides, und beides kreuzt sich: Contao über Git,
-Contao über FTP, WordPress über Git. Als ein Plugin gefasst, müsste jede
-Kombination einzeln gebaut werden.
+Als ein Plugin gefasst, müsste jede Kombination einzeln gebaut werden:
+Contao über Git, Contao live, WordPress über Git, WordPress über FTP.
+Getrennt sind es Summanden statt Produkte.
 
-**Git** ist ein Plugin mit zwei Abgängen — GitHub und GitLab (auch mit
-eigener Domain) —, nicht zwei Plugins. Es liefert: eigenes Konto je
-Mandant, klonen, Zweig anlegen, ändern, Merge-Anfrage. Zwei Merge-Stufen:
-Arbeitszweig nach `dev`, `dev` nach `main`.
+**Verbindung ist Transport und Versionierung.**
+Git legt einen eigenen Zweig an, ändert, öffnet die Merge-Anfrage; zwei
+Stufen, Arbeitszweig nach `dev`, `dev` nach `main`. GitHub und GitLab
+(auch mit eigener Domain) sind zwei Abgänge desselben Plugins, nicht zwei
+Plugins. FTP/SFTP schreibt Dateien ohne Versionierung — einfacher und
+gefährlicher. Das Live-Bundle schreibt unmittelbar in die Datenbank der
+Installation (Abschnitt 5).
 
-**Contao** ist das Plugin, das weiß, wie ein Contao-Inhalt aussieht.
-Tatsache dazu: **Contao hat im Kern keine Inhalts-API.**
-`contao/manager-api` verwaltet nur die Installation. Schreiben geht über
-(a) Datenbankinhalte plus Migration im Git, (b) ein Fremdbundle, das beim
-Kunden installiert sein muss, (c) Twig-Vorlagen im Git. Tragfähig sind
-(a) und (c), und beide brauchen Git.
+**System ist Verständnis.**
+Das Contao-Plugin weiß, was ein Artikel ist, wo Inhalte liegen, wie eine
+Migration aussieht und was man nicht anfassen darf. Ohne dieses Wissen
+darf keine Verbindung schreiben — sonst zerstört der Transport, was er
+nicht versteht.
 
-Daraus folgt die Abstufung, und sie ist beabsichtigt:
+### 3.4 Daraus folgt die Abstufung
 
 | Vorhanden | Was geht |
 | --- | --- |
 | nur Crawler (Basis) | Webseite lesen, Werbung erzeugen |
-| Crawler + Contao | Inhalt verstehen, Vorschläge machen, nicht schreiben |
-| Crawler + Contao + Git | Inhalt ändern, als Merge-Anfrage im Git des Kunden |
+| Crawler + System | Inhalt verstehen, Änderungen vorschlagen |
+| + Live-Bundle | Texte ändern, sofort, ohne Deploy |
+| + Git | alles ändern, über Zweig und Merge-Anfrage |
+| + FTP | Dateien ändern, ohne Versionierung |
+
+Jede Stufe ist für sich verkaufbar. Das ist beabsichtigt.
+
 
 ## 4 Plugin-Technik
 
@@ -201,9 +213,113 @@ Lizenzspeicher mit Tarifen, Mandantenzahl, Testzeitraum und monatlicher
 Gebühr ist vorgesehen, wird aber **jetzt nicht gebaut**. Bis dahin genügt
 die Signaturprüfung.
 
-## 5 Google Ads im Einzelnen
+## 5 Das eigene Contao-Bundle
 
-### 5.1 Mehrere Verwaltungskonten
+Contao hat keine Inhalts-API. Also liefert das Produkt eine mit: ein
+Contao-Bundle (Symfony), das auf der Installation des Kunden liegt.
+
+### 5.1 Was es tut
+
+| Kann | Kann nicht |
+| --- | --- |
+| Artikel und Inhaltselemente auflisten (`tl_article`, `tl_content`) | Seiten anlegen oder löschen |
+| Text und Überschrift eines vorhandenen Elements lesen | Elemente anlegen, verschieben, löschen |
+| Text und Überschrift ändern — sofort, ohne Deploy | Einstellungen, Benutzer, Dateien, PHP |
+| Seitenbaum als Zusammenhang lesen | Module, Layouts, Themes |
+
+Die Beschränkung ist das Sicherheitsmerkmal, nicht eine fehlende
+Ausbaustufe. Ein Zugang, der nur Text in vorhandenen Elementen ändern
+kann, richtet im schlimmsten Fall Unsinn an — er zerstört keine Seite.
+Wer mehr braucht, nimmt Git.
+
+### 5.2 Wie es schreibt
+
+Über Contaos eigene Modelle und den Versionsverlauf, nicht über rohes
+SQL. Damit steht jede Änderung in `tl_version`, und der Kunde kann sie im
+eigenen Backend zurücknehmen — auch ohne das Produkt. Nach dem Schreiben
+wird der Seiten-Cache gezielt verworfen.
+
+### 5.3 Wie es gesichert ist
+
+Das Bundle ist ein schreibender Zugang auf eine Live-Seite. Das ist die
+heikelste Stelle des ganzen Entwurfs und wird entsprechend behandelt:
+
+- Ein Zeichen (Token) je Installation, im Tresor des Mandanten.
+- Jede Anfrage signiert, mit Zeitstempel und Einmalwert — eine
+  abgefangene Anfrage lässt sich nicht wiederholen.
+- Die erlaubten Felder stehen im Bundle, nicht in der Anfrage.
+- Protokoll auf beiden Seiten: im Produkt als Vorgang, in Contao als
+  Version.
+- Im Contao-Backend abschaltbar, ohne Composer.
+
+### 5.4 Wie es zum Kunden kommt
+
+Nicht über Packagist. Ein eigener Composer-Speicher (Satis) hinter
+Basis-Anmeldung; die Zugangsdaten sind der Lizenzschlüssel. Das Produkt
+zeigt dem Benutzer die zwei Zeilen für seine `composer.json` und den
+Befehl dazu. Abrufen kann das nur, wer das Produkt hat. Wer keinen
+Composer-Zugriff hat, lädt an derselben Stelle ein ZIP.
+
+Der Quelltext liegt in einem Git, aber in einem nicht öffentlichen.
+
+### 5.5 Die Falle: live schreiben, wenn Git ausrollt
+
+Wer Inhalte über Datenbankmigrationen aus dem Git ausrollt — so läuft es
+bei NEO —, bekommt ein Problem: Eine Live-Änderung steht in der
+Datenbank, nicht im Git, und der nächste Deploy überschreibt sie.
+
+Regel dagegen: **Je Webseite wird festgelegt, welche Quelle führt.**
+
+| Führend | Was das Produkt tut |
+| --- | --- |
+| Live | schreibt über das Bundle, Git bleibt außen vor |
+| Git | schreibt nie live, immer als Zweig und Merge-Anfrage |
+| beides | schreibt live **und** legt im selben Vorgang die Migration nach |
+
+Der dritte Fall ist der bequemste und der teuerste. Er ist der Grund,
+warum Git-Plugin und Contao-Bundle zusammengehören und keine
+Alternativen sind.
+
+### 5.6 WordPress braucht weniger
+
+WordPress hat, was Contao fehlt: eine Inhalts-API im Kern
+(`/wp-json/wp/v2/...`) mit Anwendungskennwörtern. Text in Beiträgen und
+Seiten lässt sich damit ohne eigenes Plugin ändern.
+
+Ein eigenes WordPress-Plugin lohnt erst dort, wo der Kern nicht
+hinreicht: Seitenbaukästen wie Elementor oder Divi und Zusatzfelder legen
+ihre Texte in Metafeldern ab, die die Kern-API nicht kennt.
+
+Für den Vertrieb heißt das: WordPress ist billiger zu erreichen als
+Contao und ist der weit größere Markt. Contao zuerst, weil es im Haus
+eingesetzt wird; WordPress als Zweites, weil es verkauft.
+
+## 6 KI-Anbindung
+
+Der Kunde hinterlegt sein eigenes Modell. Vertrag dafür ist die
+OpenAI-kompatible Chat-Schnittstelle: Basis-URL, Schlüssel, Modellname.
+Alles andere wird darauf abgebildet.
+
+| Anbieter | Weg |
+| --- | --- |
+| Requesty | OpenAI-kompatibel, EU-Modelle, ein Schlüssel für viele Modelle |
+| OpenAI | unmittelbar |
+| Azure OpenAI | OpenAI-kompatibel, eigene Basis-URL |
+| andere Vermittler | OpenAI-kompatibel |
+| eigener Server (Ollama, vLLM) | OpenAI-kompatibel |
+| Anthropic | eigene Messages-API; über Requesty oder einen anderen Vermittler in OpenAI-Form erreichbar |
+
+Ein Adapter, nicht zehn. Wer später die Messages-API unmittelbar
+ansprechen will, schreibt einen zweiten Adapter — ein Plugin, kein Umbau.
+
+Einstellbar je Mandant: Basis-URL, Schlüssel (im Tresor), Modell,
+Höchstkosten je Vorgang. Der Betreiber setzt einen Standard, der Mandant
+darf ihn überschreiben — dasselbe Muster wie bei den Schutzgrenzen.
+
+
+## 7 Google Ads im Einzelnen
+
+### 7.1 Mehrere Verwaltungskonten
 
 Eine Agentur kann mehr als ein Verwaltungskonto (MCC) haben. Deshalb:
 
@@ -216,7 +332,7 @@ Eine Agentur kann mehr als ein Verwaltungskonto (MCC) haben. Deshalb:
 Damit entfällt das Problem der zwei Anmeldungen: Der Mitarbeiter meldet
 sich an der Plattform an, nicht bei Google.
 
-### 5.2 Steuerung, ohne Google Ads zu öffnen
+### 7.2 Steuerung, ohne Google Ads zu öffnen
 
 | Vorgang | Weg |
 | --- | --- |
@@ -229,7 +345,7 @@ sich an der Plattform an, nicht bei Google.
 
 Jeder dieser Vorgänge ist freigabepflichtig, kein Knopf ohne Rückfrage.
 
-### 5.3 Zugriffsstufen und der Keyword-Planer
+### 7.3 Zugriffsstufen und der Keyword-Planer
 
 | Stufe | Was geht |
 | --- | --- |
@@ -246,7 +362,7 @@ hoch. Die Plattform rechnet damit weiter, als käme es aus der API.
 
 Deshalb: **Keyword-Planer ist ein Plugin, der CSV-Weg ist Basis.**
 
-## 6 Der Ablauf, um den herum gebaut wird
+## 8 Der Ablauf, um den herum gebaut wird
 
 1. Mandant anlegen, Webseite eintragen, Zugänge hinterlegen.
 2. Webseite analysieren — crawlen, mit Git-Plugin auch lesen: Was bietet
@@ -263,7 +379,7 @@ Nichts davon ohne Freigabe. Nichts davon im Vordergrund: Jeder Schritt
 ist ein Auftrag in der Warteschlange mit sichtbarem Zustand. Ein Klick
 antwortet sofort, auch wenn die Arbeit dahinter Minuten dauert.
 
-## 7 Stufenplan
+## 9 Stufenplan
 
 ### Stufe 1 — jetzt bauen
 
@@ -277,7 +393,8 @@ antwortet sofort, auch wenn die Arbeit dahinter Minuten dauert.
 - Vorgänge mit zweistufiger Freigabe und Protokoll
 - Auftragswarteschlange, asynchron, sichtbarer Fortschritt
 - Crawler
-- KI-Anbindung über Requesty
+- KI-Anbindung über eine OpenAI-kompatible Schnittstelle, Modell und
+  Schlüssel je Mandant einstellbar
 - Konsole
 - Plugin-Lader mit den vier Andockpunkten — auch wenn es anfangs kein
   einziges Plugin gibt. Wer ihn später einzieht, baut die Basis um.
@@ -285,7 +402,10 @@ antwortet sofort, auch wenn die Arbeit dahinter Minuten dauert.
 ### Stufe 2 — danach
 
 - Git-Plugin (GitHub und GitLab), zwei Merge-Stufen
-- Contao-Plugin: lesen über Git, schreiben über Migration und Twig
+- Contao-Plugin: den gefundenen Inhalt verstehen
+- Contao-Bundle für Live-Textänderungen, samt Composer-Speicher hinter
+  Lizenzanmeldung (Abschnitt 5)
+- FTP/SFTP-Plugin
 - Screenshots im Freigabeweg
 - Keyword-Planer-Plugin und CSV-Import
 - Verwaltungskonto-Steuerung: einladen, trennen, Konto anlegen
@@ -294,7 +414,8 @@ antwortet sofort, auch wenn die Arbeit dahinter Minuten dauert.
 ### Stufe 3 — bei Marktreife
 
 - Marktplatz und Lizenzspeicher, Tarife, Testzeitraum
-- WordPress-Plugin
+- WordPress: zuerst über die Kern-API, später ein eigenes Plugin für
+  Seitenbaukästen und Zusatzfelder
 - Headless CMS, React, Plain HTML
 - Weitere Kanäle: Meta, LinkedIn, Microsoft Ads
 - Cloud-Betrieb von NEO aus
@@ -307,18 +428,22 @@ antwortet sofort, auch wenn die Arbeit dahinter Minuten dauert.
   Hand gehen. Stark KI-getrieben, nicht ausschließlich.
 - **Keine Änderung an einer Kundenwebseite ohne Freigabe** — auch nicht
   "nur ein Text".
+- **Das Bundle legt keine Seiten an und löscht nichts.** Es ändert Text
+  in vorhandenen Elementen, sonst nichts. Wer mehr will, nimmt Git.
 
-## 8 Offene Entscheidungen
+## 10 Offene Entscheidungen
 
 | Nr. | Frage | Vorschlag |
 | --- | --- | --- |
 | 1 | .NET 10 endgültig? Entscheidungsakte nach `neo-technologiewahl` | ja |
 | 2 | Google Ads in der Basis oder als erstes Plugin? | Basis |
 | 3 | Name und eigenes Repository für das Produkt | offen |
+| 3a | Contao-Bundle offen oder nur für Kunden? | nur für Kunden |
+| 3b | Führende Quelle je Webseite: Live, Git oder beides | je Webseite |
 | 4 | Läuft das heutige Python-Werkzeug weiter, bis Stufe 1 steht? | ja, unverändert |
 | 5 | Preise und Tarife | erst bei Marktreife |
 
-## 9 Geltende Regeln
+## 11 Geltende Regeln
 
 | Skill | Wofür |
 | --- | --- |
@@ -331,6 +456,6 @@ antwortet sofort, auch wenn die Arbeit dahinter Minuten dauert.
 | `neo-sicherheit` | Zugangstresor, Protokoll, Rechte |
 | `neo-code` | Regeln deutsch, Code englisch |
 | `neo-doku` | trockene Sprache, IST-Zustand |
-| `neo-contao` | für das Contao-Plugin |
+| `neo-contao`, `neo-php` | für das Contao-Bundle und das Contao-Plugin |
 | `neo-betrieb`, `neo-deployment` | Auslieferung und Betrieb |
 | `neo-recht` | Lizenz, Verkauf, Auftragsverarbeitung |
