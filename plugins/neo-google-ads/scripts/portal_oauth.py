@@ -73,6 +73,13 @@ SCOPES = {
 }
 DEFAULT_SCOPE = "ads:read ads:write"
 
+# Der Name des verborgenen Feldes, in dem der Bestaetigungsbildschirm die
+# urspruengliche Anfrage weiterreicht. Als Konstante, weil genau hier schon
+# einmal zwei Namen nebeneinander standen: Das Formular schrieb „ticket",
+# der Handler las „anfrage", und beim Absenden kam eine leere Anfrage an —
+# „Dieser Client ist hier nicht registriert", obwohl er es war.
+ANFRAGE_FELD = "anfrage"
+
 # Diese Werkzeuge ändern etwas. Ein Token ohne `ads:write` kommt an sie
 # nicht heran. Die Liste steht hier und nicht im MCP-Server, weil sie eine
 # Frage der Berechtigung ist und keine des Werkzeugs.
@@ -335,7 +342,7 @@ def _mit_parametern(uri: str, werte: dict) -> str:
 # Der Bestätigungsbildschirm
 # --------------------------------------------------------------------------
 
-def consent_page(anfrage: dict, *, username: str, ticket: str, message: str = "") -> bytes:
+def consent_page(anfrage: dict, *, username: str, roh: str, message: str = "") -> bytes:
     """Was fragt da an, und was darf es danach?
 
     Name UND Rückadresse stehen darauf. Der Name ist frei wählbar — wer
@@ -369,7 +376,7 @@ def consent_page(anfrage: dict, *, username: str, ticket: str, message: str = ""
         "Eine Anwendung möchte in deinem Namen auf die Google-Ads-Werkzeuge zugreifen",
         f"""{karte}
 <form method="post" action="/authorize" style="margin-top:18px">
-<input type="hidden" name="ticket" value="{esc(ticket)}">
+<input type="hidden" name="{ANFRAGE_FELD}" value="{esc(roh)}">
 <button class="breit" type="submit" name="antwort" value="ja">Erlauben</button>
 <button class="quiet breit" type="submit" name="antwort" value="nein"
         style="margin-top:10px">Ablehnen</button>

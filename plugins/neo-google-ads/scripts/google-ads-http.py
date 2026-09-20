@@ -543,7 +543,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             antwort = ""
         else:
             form = self._read_form()
-            roh = (form.get("anfrage") or [""])[0]
+            roh = (form.get(oauth.ANFRAGE_FELD) or [""])[0]
             antwort = (form.get("antwort") or [""])[0]
 
         try:
@@ -562,7 +562,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
         if verb == "GET":
             self._send_html(oauth.consent_page(
-                anfrage, username=user["username"], ticket=roh))
+                anfrage, username=user["username"], roh=roh))
             return
 
         if antwort != "ja":

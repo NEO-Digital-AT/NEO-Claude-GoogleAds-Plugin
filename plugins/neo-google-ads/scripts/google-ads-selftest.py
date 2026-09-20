@@ -1846,6 +1846,7 @@ def test_oauth() -> None:
     """
     import base64 as _b64
     import hashlib as _hash
+    import html as _html
     import json as _json
     import socket
     import threading
@@ -1854,6 +1855,7 @@ def test_oauth() -> None:
     import urllib.request
 
     http_mod = load_http()
+    import portal_oauth as _oauth
     import portal_store as _store
 
     with socket.socket() as probe:
@@ -1911,6 +1913,33 @@ def test_oauth() -> None:
         c = _b64.urlsafe_b64encode(
             _hash.sha256(v.encode()).digest()).rstrip(b"=").decode()
         return v, c
+
+    def verborgene_felder(seite: str) -> dict:
+        """Die verborgenen Felder, so wie ein Browser sie zuruecksenden wuerde."""
+        felder = {}
+        for treffer in re.finditer(r'<input[^>]*type="hidden"[^>]*>', seite):
+            tag = treffer.group(0)
+            name = re.search(r'name="([^"]*)"', tag)
+            wert = re.search(r'value="([^"]*)"', tag)
+            if name:
+                felder[name.group(1)] = _html.unescape(wert.group(1) if wert else "")
+        return felder
+
+    def zustimmen(query: str, antwort: str = "ja"):
+        """Bildschirm holen, Formular ausfuellen, absenden — wie ein Browser.
+
+        ⚠️ Die Felder kommen aus der GERENDERTEN Seite, nicht aus dem
+        Testcode. Genau daran lag es beim ersten Mal: Der Test schickte
+        „anfrage", das Formular hiess „ticket". Beide Seiten fuer sich
+        waren stimmig, der Test gruen — und im Betrieb kam beim Absenden
+        eine leere Anfrage an („Dieser Client ist hier nicht
+        registriert"). Ein Test, der sein eigenes Formular erfindet,
+        prueft nur sich selbst.
+        """
+        _, _, seite = ruf("/authorize?" + query, angemeldet=True)
+        felder = verborgene_felder(seite.decode("utf-8", "replace"))
+        felder["antwort"] = antwort
+        return ruf("/authorize", daten=felder, angemeldet=True)
 
     RUECK = "https://claude.ai/api/mcp/auth_callback"
 
@@ -1973,12 +2002,15 @@ def test_oauth() -> None:
         case("oauth: consent screen shown", status == 200, str(status))
         case("oauth: consent names the client and the redirect",
              "Pruefclient" in seite and "auth_callback" in seite)
+        case("oauth: the consent form carries the request in the field the "
+             "handler reads",
+             bool(verborgene_felder(seite).get(_oauth.ANFRAGE_FELD)),
+             str(sorted(verborgene_felder(seite))))
 
         case("oauth: signed out, /authorize sends you to sign in first",
              ruf("/authorize?" + frage)[1].get("Location") == "/login")
 
-        status, koepfe, _ = ruf("/authorize", daten={"anfrage": frage, "antwort": "ja"},
-                                angemeldet=True)
+        status, koepfe, _ = zustimmen(frage)
         ziel = koepfe.get("Location", "")
         case("oauth: consent redirects back with state",
              status in (302, 303) and "state=xyz" in ziel, f"{status} {ziel}")
@@ -1999,8 +2031,7 @@ def test_oauth() -> None:
         case("oauth: a code is spent even by a failed attempt",
              tausche(pruefwort, code)[0] == 400)
 
-        status, koepfe, _ = ruf("/authorize", daten={"anfrage": frage, "antwort": "ja"},
-                                angemeldet=True)
+        status, koepfe, _ = zustimmen(frage)
         code = urllib.parse.parse_qs(urllib.parse.urlsplit(
             koepfe.get("Location", "")).query).get("code", [""])[0]
         status, _, rumpf = tausche(pruefwort, code)
@@ -2013,7 +2044,8 @@ def test_oauth() -> None:
         status, _, rumpf = ruf("/mcp", daten=b'{"jsonrpc":"2.0","id":1,'
                                              b'"method":"tools/list"}',
                                kopf={"Content-Type": "application/json",
-                                     "Authorization": "Bearer " + token["access_token"]})
+                                     "Authorization": "Bearer "
+                                     + token.get("access_token", "-")})
         case("oauth: the token opens the MCP endpoint", status == 200, str(status))
         case("oauth: an invented token does not",
              ruf("/mcp", daten=b'{"jsonrpc":"2.0","id":1,"method":"tools/list"}',
@@ -2035,8 +2067,8 @@ def test_oauth() -> None:
             case("oauth: but an OAuth token gets through — that is what it is for",
                  ruf("/mcp", daten=b'{"jsonrpc":"2.0","id":1,"method":"tools/list"}',
                      kopf={"Content-Type": "application/json",
-                           "Authorization": "Bearer " + token["access_token"]})[0]
-                 == 200)
+                           "Authorization": "Bearer "
+                           + token.get("access_token", "-")})[0] == 200)
         finally:
             http_mod.Handler.anthropic_only = False
 
@@ -2046,8 +2078,7 @@ def test_oauth() -> None:
             "response_type": "code", "client_id": client["client_id"],
             "redirect_uri": RUECK, "code_challenge": c2,
             "code_challenge_method": "S256", "scope": "ads:read"})
-        _, koepfe, _ = ruf("/authorize", daten={"anfrage": frage2, "antwort": "ja"},
-                           angemeldet=True)
+        _, koepfe, _ = zustimmen(frage2)
         code2 = urllib.parse.parse_qs(urllib.parse.urlsplit(
             koepfe.get("Location", "")).query).get("code", [""])[0]
         nur_lesen = _json.loads(ruf("/token", daten={
@@ -2070,14 +2101,16 @@ def test_oauth() -> None:
 
         # -- Erneuern ---------------------------------------------------------
         status, _, rumpf = ruf("/token", daten={
-            "grant_type": "refresh_token", "refresh_token": token["refresh_token"],
+            "grant_type": "refresh_token",
+            "refresh_token": token.get("refresh_token", "-"),
             "client_id": client["client_id"],
             "client_secret": client["client_secret"]})
         case("oauth: refresh yields a new pair",
              status == 200 and bool(_json.loads(rumpf or b"{}").get("access_token")),
              str(status))
         case("oauth: the spent refresh token is gone", ruf("/token", daten={
-            "grant_type": "refresh_token", "refresh_token": token["refresh_token"],
+            "grant_type": "refresh_token",
+            "refresh_token": token.get("refresh_token", "-"),
             "client_id": client["client_id"],
             "client_secret": client["client_secret"]})[0] == 400)
 
@@ -2104,7 +2137,7 @@ def test_oauth() -> None:
                  "resource": "https://fremder.example/mcp"}),
                  angemeldet=True)[0] in (302, 303))
         case("oauth: a cross-site consent POST is refused",
-             ruf("/authorize", daten={"anfrage": frage, "antwort": "ja"})[0]
+             ruf("/authorize", daten={_oauth.ANFRAGE_FELD: frage, "antwort": "ja"})[0]
              in (302, 303, 403))
         case("oauth: a wrong client secret gets 401", ruf("/token", daten={
             "grant_type": "authorization_code", "code": "erfunden",
