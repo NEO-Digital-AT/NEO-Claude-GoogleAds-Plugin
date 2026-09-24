@@ -10,7 +10,7 @@ That distinction matters. A guardrail that has never been shown to refuse
 anything is a comment, not a guardrail — and the thing it is supposed to
 stop is a five-figure invoice.
 
-The cases fall in fifteen groups:
+The main groups:
 
     guardrails    switch off, wrong account, budget ceiling, budget jump,
                   too many operations, and the clean case that must pass
@@ -26,6 +26,10 @@ The cases fall in fifteen groups:
     portal        accounts, sessions, the lockout, recovery codes
     portal door   which requests get in, and how the address is read
     permission    which manager header opens which account — measured
+    search console, analytics
+                  request shape, shaping and the error hints of the read tools
+    google writes the dry run built here, the master switch, the change log,
+                  and the refusals that protect visitors' data
 
     google-ads-selftest.py
     google-ads-selftest.py --verbose
@@ -2416,12 +2420,13 @@ def test_search_console() -> None:
     server = load_server()
     oauth = __import__("portal_oauth")
 
-    case("the Google login asks for Ads AND Search Console read-only",
-         gac.ADS_SCOPE in gac.OAUTH_SCOPE and gac.SEARCH_CONSOLE_SCOPE in gac.OAUTH_SCOPE
-         and gac.SEARCH_CONSOLE_SCOPE.endswith("webmasters.readonly"), gac.OAUTH_SCOPE)
+    case("the Google login asks for Ads AND Search Console",
+         gac.ADS_SCOPE in gac.OAUTH_SCOPE.split() and gac.SEARCH_CONSOLE_SCOPE in gac.OAUTH_SCOPE.split()
+         and gac.SEARCH_CONSOLE_SCOPE.endswith("/webmasters"), gac.OAUTH_SCOPE)
     gsc_tools = [t for t in server.HANDLERS if t.startswith("search_console_")]
-    case("four Search Console tools, none of them a write tool",
-         len(gsc_tools) == 4 and not set(gsc_tools) & oauth.WRITE_TOOLS, ", ".join(gsc_tools))
+    gsc_writers = {"search_console_submit_sitemap", "search_console_delete_sitemap"}
+    case("six Search Console tools; exactly the two sitemap tools need the write right",
+         len(gsc_tools) == 6 and set(gsc_tools) & oauth.WRITE_TOOLS == gsc_writers, ", ".join(gsc_tools))
 
     today = datetime.date(2026, 9, 24)
     body = server.gsc_query_body({}, today)
@@ -2549,11 +2554,12 @@ def test_analytics() -> None:
     server = load_server()
     oauth = __import__("portal_oauth")
 
-    case("the Google login asks for Analytics READ-ONLY",
-         gac.ANALYTICS_SCOPE in gac.OAUTH_SCOPE and gac.ANALYTICS_SCOPE.endswith("analytics.readonly"))
+    case("the Google login keeps Analytics READ-ONLY for the reports",
+         gac.ANALYTICS_SCOPE in gac.OAUTH_SCOPE.split() and gac.ANALYTICS_SCOPE.endswith("analytics.readonly"))
     ga_tools = [t for t in server.HANDLERS if t.startswith("analytics_")]
-    case("three Analytics tools, none of them a write tool",
-         len(ga_tools) == 3 and not set(ga_tools) & oauth.WRITE_TOOLS, ", ".join(ga_tools))
+    ga_writers = {"analytics_key_event", "analytics_custom_dimension"}
+    case("six Analytics tools; exactly key events and dimensions need the write right",
+         len(ga_tools) == 6 and set(ga_tools) & oauth.WRITE_TOOLS == ga_writers, ", ".join(ga_tools))
 
     body = server.ga_report_body({})
     case("default: last 28 days ending yesterday, by date, users and sessions, totals",
@@ -2650,6 +2656,309 @@ def test_analytics() -> None:
                    "pass property_id")
 
 
+# --------------------------------------------------------------------------
+# Search Console and Analytics: writing
+# --------------------------------------------------------------------------
+
+class FakeGoogle:
+    """Stands in for Client in the write tools: answers reads, records writes.
+
+    Every write method appends to `written`; the dry-run tests assert that
+    the list stays empty. log_change records instead of touching the disk.
+    """
+
+    def __init__(self, write_enabled=True, sitemaps=None, key_events=None, dimensions=None,
+                 sites=None):
+        self.guardrails = dict(gac.DEFAULT_GUARDRAILS, write_enabled=write_enabled)
+        self._sitemaps = sitemaps or []
+        self._key_events = key_events or []
+        self._dimensions = dimensions or []
+        self._sites = sites or [{"siteUrl": "sc-domain:neo-digital.at", "permissionLevel": "siteOwner"}]
+        self.written = []
+        self.logged = []
+
+    def search_console_sites(self):
+        return self._sites
+
+    def search_console_sitemaps(self, site):
+        return self._sitemaps
+
+    def analytics_key_events(self, prop):
+        return self._key_events
+
+    def analytics_custom_dimensions(self, prop):
+        return self._dimensions
+
+    def analytics_account_summaries(self):
+        return [{"account": "accounts/1", "propertySummaries": [{"property": "properties/123"}]}]
+
+    def analytics_property(self, prop):
+        return {"displayName": "neo-digital.at", "timeZone": "Europe/Vienna", "currencyCode": "EUR"}
+
+    def analytics_data_retention(self, prop):
+        return {"eventDataRetention": "FOURTEEN_MONTHS", "userDataRetention": "TWO_MONTHS",
+                "resetUserDataOnNewActivity": False}
+
+    def log_change(self, target, operations, **kw):
+        self.logged.append(dict(kw, target=target, operations=operations))
+
+    def _record(self, name):
+        def write(*args, **kw):
+            self.written.append((name, args, kw))
+            return {}
+        return write
+
+    def __getattr__(self, name):
+        if name.startswith(("search_console_submit", "search_console_delete",
+                            "analytics_create", "analytics_delete", "analytics_archive")):
+            return self._record(name)
+        raise AttributeError(name)
+
+
+def test_google_writes() -> None:
+    """The four write tools: dry run built here, master switch, log, privacy refusals."""
+    import urllib.request
+
+    server = load_server()
+    oauth = __import__("portal_oauth")
+    scopes = gac.OAUTH_SCOPE.split()
+
+    case("the login asks for exactly four scopes: Ads, Search Console, Analytics read and edit",
+         scopes == [gac.ADS_SCOPE, gac.SEARCH_CONSOLE_SCOPE, gac.ANALYTICS_SCOPE, gac.ANALYTICS_EDIT_SCOPE]
+         and gac.ANALYTICS_EDIT_SCOPE.endswith("analytics.edit"), " ".join(scopes))
+    case("no user management and no full Analytics scope",
+         not any(x.endswith(("manage.users", "/analytics")) for x in scopes))
+    case("the four write tools need ads:write, analytics_settings does not",
+         {"search_console_submit_sitemap", "search_console_delete_sitemap", "analytics_key_event",
+          "analytics_custom_dimension"} <= oauth.WRITE_TOOLS and "analytics_settings" not in oauth.WRITE_TOOLS)
+    case("every write tool starts as a dry run",
+         all(t["inputSchema"]["properties"]["dry_run"]["default"] is True for t in server.tool_catalogue()
+             if t["name"] in oauth.WRITE_TOOLS))
+    blocked = {"updateDataRetentionSettings", "GoogleSignals", "dataSharing", "acknowledgeUserDataCollection",
+               "accessBindings", "userLinks"}
+    source = pathlib.Path(server.__file__).read_text(encoding="utf-8") + pathlib.Path(gac.__file__).read_text(
+        encoding="utf-8")
+    case("no privacy setting and no user management is reachable in the code",
+         not any(b in source for b in blocked), ", ".join(b for b in blocked if b in source))
+
+    # Personal data refused as a dimension.
+    for name in ("user_email", "e_mail", "telefon", "phone_number", "tel", "first_name", "Nachname",
+                 "user_name", "name", "ip", "street_address", "geburtsdatum"):
+        case(f"'{name}' is recognised as personal data", bool(server.pii_reason(name)))
+    for name in ("form_location", "page_type", "content_group", "hotel_name", "event_category"):
+        case(f"'{name}' passes the personal-data check", not server.pii_reason(name), server.pii_reason(name))
+
+    case("GA names: letters, digits, underscores, starting with a letter",
+         server.ga_name_ok("generate_lead", 40) and not server.ga_name_ok("1lead", 40)
+         and not server.ga_name_ok("lead-form", 40) and not server.ga_name_ok("x" * 41, 40)
+         and not server.ga_name_ok("ereignis_ö", 40))
+
+    inside = server.sitemap_in_property
+    case("a sitemap inside a domain property is accepted, subdomains included",
+         inside("sc-domain:neo-digital.at", "https://neo-digital.at/sitemap.xml")
+         and inside("sc-domain:neo-digital.at", "https://www.neo-digital.at/sitemap.xml"))
+    case("a foreign or look-alike host is refused",
+         not inside("sc-domain:neo-digital.at", "https://evil-neo-digital.at/sitemap.xml")
+         and not inside("sc-domain:neo-digital.at", "https://example.at/sitemap.xml")
+         and not inside("sc-domain:neo-digital.at", "ftp://neo-digital.at/sitemap.xml"))
+    case("a URL-prefix property takes only URLs under its prefix",
+         inside("https://neo-digital.at/", "https://neo-digital.at/sitemap.xml")
+         and not inside("https://neo-digital.at/", "http://neo-digital.at/sitemap.xml"))
+
+    def run(tool, fake, **args):
+        original = server._client  # noqa: SLF001
+        server._client = lambda _args: fake  # noqa: SLF001
+        try:
+            return server.HANDLERS[tool](args)
+        finally:
+            server._client = original  # noqa: SLF001
+
+    # Sitemaps.
+    fake = FakeGoogle(write_enabled=False)
+    answer = run("search_console_submit_sitemap", fake, sitemap_url="https://neo-digital.at/sitemap.xml",
+                 reason="test")
+    case("a sitemap dry run writes NOTHING and says it is a preview",
+         fake.written == [] and answer["dry_run"] is True and answer["status"].startswith("PREVIEW")
+         and answer["action"] == "submit", str(answer)[:120])
+    case("the dry run is logged as a preview, with its reason",
+         len(fake.logged) == 1 and fake.logged[0]["dry_run"] is True and fake.logged[0]["result"] == "preview"
+         and fake.logged[0]["reason"] == "test" and fake.logged[0]["target"] == "search_console:sc-domain:neo-digital.at")
+    case("with writing switched off, the dry run says the live call would be refused",
+         "switched off" in answer.get("note", ""))
+    expect_refused("a sitemap outside the property is refused before any call",
+                   lambda: run("search_console_submit_sitemap", FakeGoogle(),
+                               sitemap_url="https://example.at/sitemap.xml"), "does not lie inside")
+
+    old_map = {"path": "https://neo-digital.at/sitemap.xml", "lastSubmitted": "2026-09-01", "errors": 0}
+    fake = FakeGoogle(sitemaps=[old_map])
+    answer = run("search_console_submit_sitemap", fake, sitemap_url="https://neo-digital.at/sitemap.xml",
+                 dry_run=False)
+    case("a sitemap already there is resubmitted, live, and before shows its state",
+         answer["action"] == "resubmit" and answer["before"]["last_submitted"] == "2026-09-01"
+         and fake.written and fake.written[0][0] == "search_console_submit_sitemap"
+         and answer["status"].startswith("APPLIED"), str(fake.written))
+    expect_refused("removing a sitemap that is not submitted is refused",
+                   lambda: run("search_console_delete_sitemap", FakeGoogle(),
+                               sitemap_url="https://neo-digital.at/alt.xml"), "nothing to remove")
+    fake = FakeGoogle(sitemaps=[old_map])
+    answer = run("search_console_delete_sitemap", fake, sitemap_url="https://neo-digital.at/sitemap.xml")
+    case("removing a sitemap: dry run shows before, writes nothing, notes the index stays",
+         fake.written == [] and answer["before"]["path"] == old_map["path"]
+         and "does not remove its pages" in answer["note_on_index"])
+    fake = FakeGoogle(sites=[{"siteUrl": "sc-domain:neo-digital.at", "permissionLevel": "siteRestrictedUser"}])
+    answer = run("search_console_submit_sitemap", fake, sitemap_url="https://neo-digital.at/sitemap.xml")
+    case("restricted access is named in the dry run", "restricted" in answer.get("warning", ""))
+
+    # Key events.
+    lead = {"name": "properties/123/keyEvents/9", "eventName": "generate_lead", "deletable": True,
+            "custom": True, "countingMethod": "ONCE_PER_EVENT"}
+    purchase = {"name": "properties/123/keyEvents/1", "eventName": "purchase", "deletable": False}
+    fake = FakeGoogle(key_events=[purchase])
+    answer = run("analytics_key_event", fake, action="create", event_name="generate_lead")
+    case("a key event dry run shows after and writes nothing",
+         fake.written == [] and answer["after"] == {"event_name": "generate_lead", "counting_method": "ONCE_PER_EVENT"}
+         and answer["property_id"] == "123")
+    run("analytics_key_event", fake, action="create", event_name="generate_lead",
+        counting_method="ONCE_PER_SESSION", dry_run=False)
+    case("live, it creates with the chosen counting method",
+         fake.written and fake.written[0][1] == ("123", "generate_lead", "ONCE_PER_SESSION"), str(fake.written))
+    expect_refused("an event that is already a key event is refused",
+                   lambda: run("analytics_key_event", FakeGoogle(key_events=[lead]), action="create",
+                               event_name="generate_lead"), "already a key event")
+    expect_refused("a default key event Google marks as not deletable is refused",
+                   lambda: run("analytics_key_event", FakeGoogle(key_events=[purchase]), action="delete",
+                               event_name="purchase"), "not deletable")
+    fake = FakeGoogle(key_events=[lead])
+    run("analytics_key_event", fake, action="delete", event_name="generate_lead", dry_run=False)
+    case("removing the mark targets the key event's resource name",
+         fake.written and fake.written[0][1] == ("123", "properties/123/keyEvents/9"), str(fake.written))
+    expect_refused("an invalid event name is refused before any call",
+                   lambda: run("analytics_key_event", FakeGoogle(), action="create", event_name="lead form"),
+                   "not a GA4 event name")
+
+    # Custom dimensions.
+    expect_refused("a parameter that looks like personal data is refused as a dimension",
+                   lambda: run("analytics_custom_dimension", FakeGoogle(), action="create",
+                               parameter_name="user_email"), "personal data")
+    expect_refused("user-scoped dimensions are refused",
+                   lambda: run("analytics_custom_dimension", FakeGoogle(), action="create",
+                               parameter_name="kundentyp", scope="USER"), "User-scoped")
+    fake = FakeGoogle()
+    answer = run("analytics_custom_dimension", fake, action="create", parameter_name="form_location",
+                 display_name="Formular Ort")
+    case("a dimension dry run shows parameter, name and scope and writes nothing",
+         fake.written == [] and answer["after"]["parameter_name"] == "form_location"
+         and answer["after"]["display_name"] == "Formular Ort" and answer["after"]["scope"] == "EVENT")
+    expect_refused("a display name with a hyphen is refused",
+                   lambda: run("analytics_custom_dimension", FakeGoogle(), action="create",
+                               parameter_name="form_location", display_name="Formular-Ort"), "display_name")
+    dim = {"name": "properties/123/customDimensions/5", "parameterName": "form_location",
+           "displayName": "Formular Ort", "scope": "EVENT"}
+    expect_refused("a dimension that exists is not created twice",
+                   lambda: run("analytics_custom_dimension", FakeGoogle(dimensions=[dim]), action="create",
+                               parameter_name="form_location"), "already a custom dimension")
+    fake = FakeGoogle(dimensions=[dim])
+    answer = run("analytics_custom_dimension", fake, action="archive", parameter_name="form_location")
+    case("archiving warns that it is final and writes nothing in the dry run",
+         fake.written == [] and "final" in answer["warning"])
+    run("analytics_custom_dimension", fake, action="archive", parameter_name="form_location", dry_run=False)
+    case("live, it archives the dimension by resource name",
+         fake.written and fake.written[0][1] == ("123", "properties/123/customDimensions/5"), str(fake.written))
+
+    settings = run("analytics_settings", FakeGoogle(key_events=[lead], dimensions=[dim]))
+    case("analytics_settings shows retention in months, key events and dimensions",
+         settings["data_retention"]["event_data"] == "14 months"
+         and settings["data_retention"]["user_data"] == "2 months"
+         and settings["key_events"][0]["event_name"] == "generate_lead"
+         and settings["custom_dimensions"][0]["parameter_name"] == "form_location")
+
+    # The real client: master switch, request shape, log on success and failure.
+    seen = []
+
+    class FakeResponse:
+        def __init__(self, payload):
+            self._raw = json.dumps(payload).encode("utf-8")
+
+        def read(self):
+            return self._raw
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    def fake_urlopen(request, timeout=0):
+        seen.append((request.get_method(), request.full_url,
+                     {k.lower(): v for k, v in request.header_items()},
+                     json.loads(request.data.decode("utf-8")) if request.data else None))
+        return FakeResponse({})
+
+    def failing_urlopen(request, timeout=0):
+        raise FakeHTTPError(403, {"error": {"code": 403, "message": "Request had insufficient authentication scopes.",
+                                           "details": [{"reason": "ACCESS_TOKEN_SCOPE_INSUFFICIENT"}]}})
+
+    with tempfile.TemporaryDirectory() as folder:
+        original_log, original_open = gac.CHANGE_LOG, urllib.request.urlopen
+        gac.CHANGE_LOG = pathlib.Path(folder) / "changes.jsonl"
+        urllib.request.urlopen = fake_urlopen
+        try:
+            expect_refused("with writing switched off, a live write is refused",
+                           lambda: make_client(write_enabled=False).search_console_submit_sitemap(
+                               "sc-domain:neo-digital.at", "https://neo-digital.at/sitemap.xml"),
+                           "switched off")
+            case("and nothing left the machine", seen == [])
+
+            client = make_client(write_enabled=True)
+            client.search_console_submit_sitemap("sc-domain:neo-digital.at",
+                                                 "https://neo-digital.at/sitemap.xml", reason="neu")
+            method, url, headers, _ = seen[-1]
+            case("a sitemap goes out as PUT, property and sitemap URL-encoded",
+                 method == "PUT" and url == gac.WEBMASTERS_API + "/sites/sc-domain%3Aneo-digital.at/"
+                 "sitemaps/https%3A%2F%2Fneo-digital.at%2Fsitemap.xml", url)
+            case("with the bearer token and no developer token",
+                 headers.get("authorization") == "Bearer fake-token" and "developer-token" not in headers)
+            client.analytics_create_key_event("123", "generate_lead", "ONCE_PER_EVENT")
+            method, url, _, body = seen[-1]
+            case("a key event goes out as POST to the Admin API with name and counting method",
+                 method == "POST" and url == gac.ANALYTICS_ADMIN_API + "/properties/123/keyEvents"
+                 and body == {"eventName": "generate_lead", "countingMethod": "ONCE_PER_EVENT"}, str(body))
+            client.analytics_archive_custom_dimension("123", "properties/123/customDimensions/5")
+            method, url, _, _ = seen[-1]
+            case("archiving is a POST on the dimension's :archive",
+                 method == "POST" and url == gac.ANALYTICS_ADMIN_API + "/properties/123/customDimensions/5:archive", url)
+            client.analytics_delete_key_event("123", "properties/123/keyEvents/9")
+            case("removing a key event is a DELETE on its resource",
+                 seen[-1][0] == "DELETE" and seen[-1][1] == gac.ANALYTICS_ADMIN_API + "/properties/123/keyEvents/9")
+
+            urllib.request.urlopen = failing_urlopen
+            expect_refused("a login without the write permission says: connect Google once more",
+                           lambda: client.analytics_create_custom_dimension(
+                               "123", {"parameterName": "form_location"}), "Connect Google once more")
+
+            entries = [json.loads(line) for line in gac.CHANGE_LOG.read_text(encoding="utf-8").splitlines()]
+            case("every live write is logged, the refused one too, with target and result",
+                 [e["result"] for e in entries] == ["ok", "ok", "ok", "ok", "error"]
+                 and entries[0]["customer_id"] == "search_console:sc-domain:neo-digital.at"
+                 and entries[0]["reason"] == "neu" and entries[-1]["customer_id"] == "analytics:123"
+                 and all(e["dry_run"] is False for e in entries), str([e["result"] for e in entries]))
+
+            # The server imported CHANGE_LOG by name — point its copy at the same file.
+            server_log = server.CHANGE_LOG
+            server.CHANGE_LOG = gac.CHANGE_LOG
+            try:
+                log = server.HANDLERS["google_ads_change_log"]
+                by_target = (log({"customer_id": "analytics"}).get("total"),
+                             log({"customer_id": "123"}).get("total"))
+                case("the change log filters by Analytics target", by_target == (4, 4), str(by_target))
+                case("and still exactly by Ads account",
+                     log({"customer_id": "123-456-7890"}).get("total") == 0)
+            finally:
+                server.CHANGE_LOG = server_log
+        finally:
+            gac.CHANGE_LOG, urllib.request.urlopen = original_log, original_open
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Prove the Google Ads guardrails hold.")
     parser.add_argument("--verbose", action="store_true", help="show the detail of every case")
@@ -2672,7 +2981,8 @@ def main() -> int:
                        ("passkeys", test_passkeys),
                        ("oauth connector", test_oauth),
                        ("search console", test_search_console),
-                       ("analytics", test_analytics)):
+                       ("analytics", test_analytics),
+                       ("google writes", test_google_writes)):
         start = len(RESULTS)
         run()
         failed = sum(1 for _, ok, _ in RESULTS[start:] if not ok)

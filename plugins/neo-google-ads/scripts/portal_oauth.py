@@ -69,7 +69,8 @@ from neo_design import esc, symbol
 # würde eine Oberfläche brauchen, in der man sie auch versteht.
 SCOPES = {
     "ads:read": "Kampagnen, Keywords, Suchbegriffe, Berichte, Search Console und Analytics lesen",
-    "ads:write": "Änderungen vornehmen — Gebote, Budgets, Keywords, Status",
+    "ads:write": ("Änderungen vornehmen — Gebote, Budgets, Keywords, Status, Sitemaps, "
+                  "Schlüsselereignisse und benutzerdefinierte Dimensionen"),
 }
 DEFAULT_SCOPE = "ads:read ads:write"
 
@@ -90,6 +91,10 @@ WRITE_TOOLS = frozenset({
     "google_ads_set_budget",
     "google_ads_set_bid",
     "google_ads_mutate",
+    "search_console_submit_sitemap",
+    "search_console_delete_sitemap",
+    "analytics_key_event",
+    "analytics_custom_dimension",
 })
 
 

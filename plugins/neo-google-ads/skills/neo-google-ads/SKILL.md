@@ -177,8 +177,10 @@ Behauptet zählt nicht. Gemessen zählt.
 
 ## Werkzeuge
 
-Der MCP-Server im selben Plugin stellt dreizehn Werkzeuge bereit. Sechs
-lesen, sechs schreiben, eines zeigt, was geschrieben wurde.
+Der MCP-Server im selben Plugin stellt fünfundzwanzig Werkzeuge bereit.
+Dreizehn davon gehören zu Google Ads (sechs lesen, sechs schreiben, eines
+zeigt, was geschrieben wurde), zwölf zu Search Console und Analytics
+(Tabelle weiter unten).
 
 | Werkzeug | Zweck |
 | --- | --- |
@@ -194,7 +196,35 @@ lesen, sechs schreiben, eines zeigt, was geschrieben wurde.
 | `google_ads_set_budget` | Tagesbudget ändern |
 | `google_ads_set_bid` | CPC-Gebot setzen |
 | `google_ads_mutate` | Alles Übrige, roh — Kampagnen, Anzeigen, Gebotsanpassungen |
-| `google_ads_change_log` | Was dieser Server geschrieben hat |
+| `google_ads_change_log` | Was dieser Server geschrieben hat — auch in Search Console und Analytics |
+
+Search Console und Analytics über dieselbe Google-Anmeldung:
+
+| Werkzeug | Zweck |
+| --- | --- |
+| `search_console_sites` | Lesbare Properties mit Berechtigungsstufe |
+| `search_console_performance` | Klicks, Impressionen, CTR, Position nach Suchanfrage, Seite, Land, Gerät, Datum |
+| `search_console_inspect_url` | Ist eine URL indexiert, und wenn nicht, warum |
+| `search_console_sitemaps` | Eingereichte Sitemaps mit Fehlern und Warnungen |
+| `search_console_submit_sitemap` | Sitemap einreichen oder erneut einreichen — schreibt |
+| `search_console_delete_sitemap` | Sitemap entfernen, die Seiten bleiben im Index — schreibt |
+| `analytics_properties` | Lesbare GA4-Properties |
+| `analytics_report` | GA4-Bericht mit frei wählbaren Dimensionen und Kennzahlen |
+| `analytics_metadata` | Welche Dimensionen und Kennzahlen es gibt |
+| `analytics_settings` | Zeitzone, Währung, Aufbewahrungsdauer, Schlüsselereignisse, Dimensionen |
+| `analytics_key_event` | Ereignis als Schlüsselereignis markieren oder Markierung entfernen — schreibt |
+| `analytics_custom_dimension` | Ereignisparameter als Dimension registrieren oder archivieren — schreibt |
+
+Dasselbe Verfahren wie oben, mit einem Unterschied: Beide APIs kennen
+**keinen Trockenlauf**. `dry_run: true` liest hier den aktuellen Stand und
+beschreibt die Änderung („vorher → nachher“) — Google hat sie dabei nicht
+geprüft. Ob Google sie annimmt, zeigt erst der scharfe Aufruf. Zwei Fälle
+brauchen eine ausdrückliche Freigabe genau dafür: **eine Dimension
+archivieren** (endgültig, die API kennt kein Zurück) und **eine Sitemap
+entfernen**. Analytics-Zahlen zählen nur Besucher mit
+Statistik-Einwilligung — eine kleine Zahl ist kein Beleg für wenig Verkehr.
+Datenschutz-Einstellungen (Aufbewahrung, Google Signale, Datenfreigabe)
+und Nutzerrechte haben bewusst kein Werkzeug.
 
 Sind die Werkzeuge nicht verfügbar, ist der Zugang nicht eingerichtet:
 `references/einrichtung.md`, dann `scripts/google-ads-check.py`. Unter
@@ -210,7 +240,7 @@ Dazu vier Skripte, die von Hand laufen:
 | `google-ads-auth.py` | Verbinden, Schutzgrenzen setzen (`--allow-write`), Stand zeigen (`--show`), Zugangsdaten für eine Cloud-Sitzung ausgeben (`--env`) |
 | `/check/permissions` im Portal | Misst, welcher `login-customer-id` welches Konto lesbar macht, statt aus `USER_PERMISSION_DENIED` zu raten. Ist **kein** Konto lesbar, liegt es nicht an der Verknüpfung, sondern an der Zugriffsstufe des Cloud-Projekts. |
 | `google-ads-check.py` | Misst die Verbindung in acht Prüfungen, darunter Zugriffsstufe und Schreibweg |
-| `google-ads-selftest.py` | Weist ohne Netz nach, dass Schutzgrenzen, Portal und Zwei-Faktor, Passkeys und QR-Code greifen — 281 Fälle |
+| `google-ads-selftest.py` | Weist ohne Netz nach, dass Schutzgrenzen, Portal und Zwei-Faktor, Passkeys und QR-Code greifen — 453 Fälle |
 | `portal_store.py` | Konten, Sitzungen, Sperre und Prüfspur des Portals (SQLite, ohne Fremdbibliothek) |
 | `portal_totp.py` | Zweiter Faktor nach RFC 6238, mit Wiederholungsschutz |
 | `portal_webauthn.py` | Passkeys: CBOR, COSE, ES256 und RS256 in reinem Python. Prüft Challenge, Herkunft, Serverkennung, Unterschrift und Zähler |

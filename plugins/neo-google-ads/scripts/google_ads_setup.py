@@ -520,7 +520,7 @@ def _stufe_hinweis(projekt: str) -> str:
             f'Zustimmungsbildschirms muss vorher durch sein.</p>'
             f'<p class="note">Die nächste Stufe ist meist <b>Explorer</b>, und die '
             f'kommt oft sofort. Sie reicht für alles hier außer dem Keyword-Planer — '
-            f'achtzehn der zwanzig Werkzeuge laufen damit. <b>Basic</b> braucht es erst '
+            f'dreiundzwanzig der fünfundzwanzig Werkzeuge laufen damit. <b>Basic</b> braucht es erst '
             f'für den Planer und für mehr als 2.880 Operationen am Tag; darauf kann '
             f'Google bis zu zehn Werktage prüfen.</p>'
             f'<p class="note">Schneller geht es, wenn ein <b>anderes, bereits '
@@ -792,7 +792,7 @@ def check_page() -> bytes:
                       "verfügbar — Zugriffsstufe Basic oder höher")
             except gac.GoogleAdsError:
                 zeile("Keyword-Planer", "hinweis",
-                      "gesperrt — Zugriffsstufe Explorer. Achtzehn der zwanzig Werkzeuge "
+                      "gesperrt — Zugriffsstufe Explorer. Dreiundzwanzig der fünfundzwanzig Werkzeuge "
                       "laufen, der Keyword-Planer nicht")
 
     # Search Console und Analytics hängen NICHT an der Ads-Zugriffsstufe,
@@ -800,12 +800,26 @@ def check_page() -> bytes:
     # Google-Login (seit 2.5.0 dabei, ältere Logins haben sie nicht) und den
     # eingeschalteten APIs im Cloud-Projekt. Die Zeilen nennen, was fehlt.
     if state["configured"] and state["connected"]:
+        # Welche Rechte der Login WIRKLICH traegt: Googles Zustimmung laesst
+        # einzelne Haken weg, und ein Login von vor 2.6.0 kann nur lesen.
+        try:
+            rechte = gac.Client(state["config"]).granted_scopes()
+        except gac.GoogleAdsError:
+            rechte = None
+
+        def schreibrecht(scope: str, was: str) -> str:
+            if rechte is None:
+                return ""
+            return (f" · {was} erlaubt" if scope in rechte
+                    else " · nur lesen — zum Ändern Google neu verbinden und alle Haken setzen")
+
         try:
             properties = gac.Client(state["config"]).search_console_sites()
             lesbare = [p for p in properties if p.get("permissionLevel") != "siteUnverifiedUser"]
             zeile("Search Console", "ok" if lesbare else "hinweis",
-                  f"{len(lesbare)} Property lesbar" if len(lesbare) == 1
-                  else f"{len(lesbare)} Properties lesbar")
+                  (f"{len(lesbare)} Property lesbar" if len(lesbare) == 1
+                   else f"{len(lesbare)} Properties lesbar")
+                  + schreibrecht(gac.SEARCH_CONSOLE_SCOPE, "Sitemaps einreichen"))
         except gac.GoogleAdsError as exc:
             hinweis = exc.message.splitlines()
             zeile("Search Console", "hinweis",
@@ -814,7 +828,9 @@ def check_page() -> bytes:
             konten = gac.Client(state["config"]).analytics_account_summaries()
             anzahl = sum(len(k.get("propertySummaries") or []) for k in konten)
             zeile("Google Analytics", "ok" if anzahl else "hinweis",
-                  f"{anzahl} Property lesbar" if anzahl == 1 else f"{anzahl} Properties lesbar")
+                  (f"{anzahl} Property lesbar" if anzahl == 1 else f"{anzahl} Properties lesbar")
+                  + schreibrecht(gac.ANALYTICS_EDIT_SCOPE,
+                                 "Schlüsselereignisse und Dimensionen ändern"))
         except gac.GoogleAdsError as exc:
             hinweis = exc.message.splitlines()
             zeile("Google Analytics", "hinweis",

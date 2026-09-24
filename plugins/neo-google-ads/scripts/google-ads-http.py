@@ -4,7 +4,7 @@
 google-ads-mcp.py speaks stdio, which is what Claude Code and the Claude
 desktop app launch. Claude on the web and on a phone cannot launch a local
 process — it reaches a URL. This script wraps the identical tool handlers
-in a Streamable HTTP endpoint so the same twenty tools appear in
+in a Streamable HTTP endpoint so the same twenty-five tools appear in
 claude.ai as a custom connector.
 
 Nothing about the tools changes. The guardrails, the dry runs and the

@@ -479,7 +479,11 @@ def _transparenz() -> str:
     google = (
         _zeile("Berechtigung",
                f'<span class="mono">{_url_umbruch(gac.OAUTH_SCOPE)}</span>')
-        + _zeile("Wofür", "Lesen der Ads-Daten und — nach Freigabe — Ändern.")
+        + _zeile("Wofür", "Google Ads, Search Console und Analytics lesen und — nach "
+                          "Freigabe — ändern.",
+                 "In Search Console nur Sitemaps, in Analytics nur Schlüsselereignisse und "
+                 "benutzerdefinierte Dimensionen. Datenschutz-Einstellungen und Nutzerrechte "
+                 "ändert die Anwendung nicht.")
         + _zeile("Wo sie liegen", "Nur auf dem Server, auf dem die Anwendung läuft.",
                  "Keine Weitergabe an Dritte, keine Auswertung über Konten hinweg.")
         + _zeile("Aufbewahrung", "Solange die Verbindung besteht; der Refresh Token "

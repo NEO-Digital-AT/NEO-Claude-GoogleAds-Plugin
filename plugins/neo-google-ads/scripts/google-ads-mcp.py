@@ -1,15 +1,17 @@
 #!/usr/bin/env python3
 """An MCP server that gives an agent read and write access to Google Ads.
 
-It speaks JSON-RPC over stdin and stdout and offers twenty tools:
-thirteen that read, six that write, and one that shows what was written.
+It speaks JSON-RPC over stdin and stdout and offers twenty-five tools:
+fourteen that read, ten that write, and one that shows what was written.
 The reading half covers accounts, arbitrary GAQL queries, prepared
 reports, the Keyword Planner and the field catalogue — and, since 2.5.0,
 Google Search Console (properties, search performance, URL inspection,
-sitemaps) and Google Analytics 4 (properties, reports, field catalogue),
-both strictly read-only. The writing half covers keywords, negative keywords,
-status, budgets, bids, and — for everything the six do not cover — the
-raw mutate endpoint.
+sitemaps) and Google Analytics 4 (properties, reports, field catalogue,
+since 2.6.0 the property settings). The writing half covers keywords,
+negative keywords, status, budgets, bids, and — for everything the six do
+not cover — the raw mutate endpoint; since 2.6.0 also sitemaps in Search
+Console and key events and custom dimensions in Analytics. Settings that
+decide how much is collected about visitors have no tool, on purpose.
 
 TWO PROTOCOL GENERATIONS. MCP dropped the initialize handshake in the
 2026-07-28 revision and replaced it with server/discover. Clients in the
@@ -17,8 +19,10 @@ field speak both, so this server answers both and mirrors back whichever
 protocol version the client asked for.
 
 WRITING IS A DECISION, NOT A DEFAULT. Every write tool starts as a dry
-run (the API's validateOnly), which runs the change through every rule
-Google would apply and changes nothing. Passing dry_run=false is what
+run, which changes nothing. For Google Ads that is the API's validateOnly,
+which runs the change through every rule Google would apply; Search
+Console and Analytics have no such thing, so their dry run reads the
+current state and describes the change. Passing dry_run=false is what
 makes it real, and even then the guardrails in google_ads_client.py have
 the last word.
 
@@ -37,6 +41,7 @@ import json
 import os
 import sys
 import traceback
+import urllib.parse
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -50,7 +55,7 @@ from google_ads_client import (  # noqa: E402
 )
 
 SERVER_NAME = "neo-google-ads"
-SERVER_VERSION = "2.5.0"
+SERVER_VERSION = "2.6.0"
 
 # Protocol revisions this server can answer, newest first. The 2026-07-28
 # revision replaced initialize with server/discover; the older ones are
@@ -352,6 +357,13 @@ DRY_RUN = {
     "default": True,
     "description": ("true validates the change against every Google rule and changes "
                     "NOTHING. Set false only after the account owner approved the plan."),
+}
+GOOGLE_DRY_RUN = {
+    "type": "boolean",
+    "default": True,
+    "description": ("true shows what would change — built from the current state, because "
+                    "Search Console and Analytics cannot validate without writing — and sends "
+                    "NOTHING. Set false only after the owner approved the plan."),
 }
 REASON = {
     "type": "string",
@@ -799,15 +811,110 @@ def tool_catalogue() -> list[dict]:
             },
         },
         {
+            "name": "analytics_settings",
+            "description": ("Shows how a GA4 property is set up: time zone, currency, how long "
+                            "Google keeps the data, which events count as key events and which "
+                            "custom dimensions exist. Read-only. Use it before changing anything."),
+            "inputSchema": {
+                "type": "object",
+                "properties": {"property_id": PROPERTY_ID},
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "search_console_submit_sitemap",
+            "description": ("Submits (or resubmits) a sitemap to Search Console, so Google reads "
+                            "it again. Starts as a dry run that shows the current state; nothing "
+                            "is sent before dry_run=false."),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "site_url": SITE_URL,
+                    "sitemap_url": {"type": "string",
+                                    "description": "Full URL of the sitemap, inside the property."},
+                    "dry_run": GOOGLE_DRY_RUN,
+                    "reason": REASON,
+                },
+                "required": ["sitemap_url"],
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "search_console_delete_sitemap",
+            "description": ("Removes a submitted sitemap from Search Console, e.g. an outdated "
+                            "one. The pages stay in Google's index. Starts as a dry run."),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "site_url": SITE_URL,
+                    "sitemap_url": {"type": "string",
+                                    "description": "Exactly as search_console_sitemaps lists it."},
+                    "dry_run": GOOGLE_DRY_RUN,
+                    "reason": REASON,
+                },
+                "required": ["sitemap_url"],
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "analytics_key_event",
+            "description": ("Marks a GA4 event as a key event (create) or takes the mark away "
+                            "(delete), e.g. generate_lead. Collected data stays. Starts as a dry run."),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "property_id": PROPERTY_ID,
+                    "action": {"type": "string", "enum": ["create", "delete"]},
+                    "event_name": {"type": "string",
+                                   "description": "The event name exactly as the site sends it."},
+                    "counting_method": {"type": "string", "enum": ["ONCE_PER_EVENT", "ONCE_PER_SESSION"],
+                                        "default": "ONCE_PER_EVENT",
+                                        "description": "create only: count every event or one per session."},
+                    "dry_run": GOOGLE_DRY_RUN,
+                    "reason": REASON,
+                },
+                "required": ["action", "event_name"],
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "analytics_custom_dimension",
+            "description": ("Registers an event parameter as a GA4 custom dimension (create) so "
+                            "reports can use it, or archives one (archive — Google offers no way "
+                            "back). Refuses parameters that look like personal data. Starts as a dry run."),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "property_id": PROPERTY_ID,
+                    "action": {"type": "string", "enum": ["create", "archive"]},
+                    "parameter_name": {"type": "string",
+                                       "description": "The event parameter, e.g. form_location."},
+                    "display_name": {"type": "string",
+                                     "description": ("create only: name in reports. Letters, digits, "
+                                                     "spaces, underscores; starts with a letter.")},
+                    "description": {"type": "string", "description": "create only, optional, up to 150 characters."},
+                    "scope": {"type": "string", "enum": list(GA_DIMENSION_SCOPES), "default": "EVENT"},
+                    "dry_run": GOOGLE_DRY_RUN,
+                    "reason": REASON,
+                },
+                "required": ["action", "parameter_name"],
+                "additionalProperties": False,
+            },
+        },
+        {
             "name": "google_ads_change_log",
-            "description": ("Shows what this server wrote, newest first: time, account, "
-                            "whether it was a dry run, the reason given and the result. "
-                            "This is the local log, separate from Google's change history."),
+            "description": ("Shows what this server wrote, newest first: time, account or "
+                            "property, whether it was a dry run, the reason given and the result. "
+                            "Covers Google Ads, Search Console and Analytics. This is the local "
+                            "log, separate from Google's change history."),
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "limit": {"type": "integer", "default": 20},
-                    "customer_id": {"type": "string", "description": "Filter to one account."},
+                    "customer_id": {"type": "string",
+                                    "description": ("Filter: an Ads account, or part of a Search "
+                                                    "Console / Analytics target such as analytics "
+                                                    "or a property ID.")},
                     "include_operations": {
                         "type": "boolean", "default": False,
                         "description": "true includes the full operation payloads.",
@@ -824,12 +931,12 @@ def tool_catalogue() -> list[dict]:
 # --------------------------------------------------------------------------
 
 # --------------------------------------------------------------------------
-# Search Console (read-only)
+# Search Console (reading)
 #
 # The organic side next to the paid one: which searches showed the site, at
 # what position, with how many clicks — and whether Google has indexed a
-# page at all. Every call is read-only; the scope the token carries
-# (webmasters.readonly) could not change anything even if a tool tried.
+# page at all. The two sitemap write tools further down are the only ones
+# that change anything in Search Console.
 # --------------------------------------------------------------------------
 
 GSC_DATE_RANGES = {
@@ -1007,7 +1114,7 @@ def tool_gsc_sitemaps(args: dict) -> dict:
 
 
 # --------------------------------------------------------------------------
-# Google Analytics 4 (read-only)
+# Google Analytics 4 (reading)
 #
 # What the visitors did once they were on the site. Every number here comes
 # only from visitors who allowed statistics in the cookie banner — with
@@ -1152,6 +1259,301 @@ def tool_ga_metadata(args: dict) -> dict:
 
     return {"property_id": prop, "dimensions": pick(meta.get("dimensions") or []),
             "metrics": pick(meta.get("metrics") or [])}
+
+
+# --------------------------------------------------------------------------
+# Search Console and Analytics: writing, with a dry run built here
+#
+# Neither API knows validateOnly — a call either changes something or is
+# refused. The dry run is therefore built on this side: read the current
+# state, check the request against it, describe the change. Only
+# dry_run=false reaches Client.google_write, which checks the master switch
+# and logs the attempt.
+#
+# WHAT IS DELIBERATELY MISSING. Every Analytics setting that decides how
+# much is collected about visitors — data retention, Google signals, data
+# sharing, user-provided data, user management — has no tool here. Privacy
+# comes before measurement: such a change is the owner's decision, made by
+# hand in the Analytics interface, not a line in a conversation.
+# analytics_settings shows the retention so it can at least be checked.
+# --------------------------------------------------------------------------
+
+GA_DIMENSION_SCOPES = ("EVENT", "ITEM")
+GA_NAME_RULE = "letters, digits and underscores, starting with a letter"
+
+GOOGLE_PREVIEW = ("PREVIEW — nothing was sent to Google. Search Console and Analytics cannot "
+                  "validate a change without making it, so this preview was built from the "
+                  "current state. Present it, get approval, then call again with dry_run=false.")
+
+# Parameter names that point at a person. Google's Analytics terms forbid
+# sending personal data at all; a custom dimension would put it into every
+# report. Parts match anywhere in the name with the underscores taken out
+# (so first_name hits firstname), tokens only between underscores (so tel
+# does not hide in "hotel"), exact names only as the whole parameter (so
+# page_name passes, name does not). A false alarm costs a manual step in
+# the Analytics interface; a miss would put personal data in every report.
+PII_PARTS = ("mail", "phone", "telefon", "adress", "address", "strasse", "street", "geburt",
+             "birth", "iban", "passw", "vorname", "nachname", "firstname", "lastname",
+             "fullname", "username")
+PII_TOKENS = {"tel", "ip", "plz", "zip", "handy", "mobile", "mobil"}
+PII_EXACT = {"name", "user_name", "customer_name", "contact_name", "kunde", "kundenname",
+             "person", "user_id", "userid"}
+
+
+def pii_reason(parameter_name: str) -> str:
+    """Why a parameter name looks like personal data, or '' when it does not."""
+    low = parameter_name.lower()
+    tokens = set(low.split("_"))
+    squashed = low.replace("_", "")
+    for part in PII_PARTS:
+        if part in squashed:
+            return f"it contains '{part}'"
+    hit = tokens & PII_TOKENS
+    if hit:
+        return f"it contains '{sorted(hit)[0]}'"
+    if low in PII_EXACT:
+        return "it names a person"
+    return ""
+
+
+def ga_name_ok(name: str, limit: int) -> bool:
+    return (0 < len(name) <= limit and name[0].isascii() and name[0].isalpha()
+            and all(c.isascii() and (c.isalnum() or c == "_") for c in name))
+
+
+def sitemap_in_property(site_url: str, sitemap_url: str) -> bool:
+    """Whether a sitemap URL lies inside the Search Console property."""
+    parsed = urllib.parse.urlparse(sitemap_url)
+    if parsed.scheme not in ("http", "https") or not parsed.hostname:
+        return False
+    if site_url.startswith("sc-domain:"):
+        domain = site_url[len("sc-domain:"):].lower().rstrip(".")
+        host = parsed.hostname.lower()
+        return host == domain or host.endswith("." + domain)
+    return sitemap_url.lower().startswith(site_url.lower())
+
+
+def _google_answer(client: Client, args: dict, target: str, operation: dict, answer: dict,
+                   live) -> dict:
+    """The one ending for every Search Console and Analytics write tool."""
+    reason = args.get("reason", "")
+    if args.get("dry_run", True):
+        client.log_change(target, [operation], dry_run=True, reason=reason, result="preview")
+        answer.update({"dry_run": True, "status": GOOGLE_PREVIEW})
+        if not client.guardrails.get("write_enabled"):
+            answer["note"] = ("Writing is switched off in the console — dry_run=false would be "
+                              "refused until the owner switches it on.")
+        return answer
+    live(reason)
+    answer.update({"dry_run": False, "status": "APPLIED — Google accepted the change."})
+    return answer
+
+
+def _sitemap_entry(client: Client, site: str, sitemap_url: str) -> dict | None:
+    for entry in client.search_console_sitemaps(site):
+        if entry.get("path", "") == sitemap_url:
+            return entry
+    return None
+
+
+def _sitemap_state(entry: dict | None) -> dict | None:
+    if entry is None:
+        return None
+    return {"path": entry.get("path", ""), "last_submitted": entry.get("lastSubmitted", ""),
+            "last_downloaded": entry.get("lastDownloaded", ""),
+            "errors": int(entry.get("errors", 0) or 0),
+            "warnings": int(entry.get("warnings", 0) or 0)}
+
+
+def _permission(client: Client, site: str) -> str:
+    for entry in client.search_console_sites():
+        if entry.get("siteUrl") == site:
+            return entry.get("permissionLevel", "")
+    return ""
+
+
+def tool_gsc_submit_sitemap(args: dict) -> dict:
+    client = _client(args)
+    site = _site(client, args)
+    url = str(args.get("sitemap_url") or "").strip()
+    if not sitemap_in_property(site, url):
+        raise GoogleAdsError(f"'{url}' does not lie inside the property {site}. A sitemap is "
+                             "submitted to the property its URL belongs to.")
+    before = _sitemap_state(_sitemap_entry(client, site, url))
+    answer = {"site_url": site, "sitemap_url": url,
+              "action": "resubmit" if before else "submit",
+              "before": before,
+              "after": "Google reads the sitemap again; search_console_sitemaps shows the "
+                       "result once it has (usually within hours, sometimes days).",
+              "permission": _permission(client, site)}
+    if answer["permission"] in ("siteRestrictedUser", "siteUnverifiedUser"):
+        answer["warning"] = ("This login has only restricted access to the property — Google "
+                             "will most likely refuse the submission.")
+    return _google_answer(client, args, f"search_console:{site}", {"submit_sitemap": url}, answer,
+                          lambda reason: client.search_console_submit_sitemap(site, url, reason=reason))
+
+
+def tool_gsc_delete_sitemap(args: dict) -> dict:
+    client = _client(args)
+    site = _site(client, args)
+    url = str(args.get("sitemap_url") or "").strip()
+    before = _sitemap_state(_sitemap_entry(client, site, url))
+    if before is None:
+        raise GoogleAdsError(f"'{url}' is not submitted for {site} — nothing to remove. "
+                             "search_console_sitemaps lists the submitted ones.")
+    answer = {"site_url": site, "sitemap_url": url, "action": "delete", "before": before,
+              "after": None,
+              "note_on_index": "Removing a sitemap does not remove its pages from Google."}
+    return _google_answer(client, args, f"search_console:{site}", {"delete_sitemap": url}, answer,
+                          lambda reason: client.search_console_delete_sitemap(site, url, reason=reason))
+
+
+def _key_event_state(event: dict) -> dict:
+    return {"event_name": event.get("eventName", ""), "counting_method": event.get("countingMethod", ""),
+            "custom": bool(event.get("custom")), "deletable": bool(event.get("deletable")),
+            "created": event.get("createTime", "")}
+
+
+def tool_ga_key_event(args: dict) -> dict:
+    client = _client(args)
+    prop = _ga_property(client, args)
+    action = str(args.get("action") or "").lower()
+    name = str(args.get("event_name") or "").strip()
+    if action not in ("create", "delete"):
+        raise GoogleAdsError("action is create or delete.")
+    if not ga_name_ok(name, 40):
+        raise GoogleAdsError(f"'{name}' is not a GA4 event name — {GA_NAME_RULE}, at most 40.")
+
+    existing = {e.get("eventName", ""): e for e in client.analytics_key_events(prop)}
+    current = existing.get(name)
+    target = f"analytics:{prop}"
+
+    if action == "create":
+        if current:
+            raise GoogleAdsError(f"'{name}' is already a key event in property {prop} — nothing to do.")
+        method = str(args.get("counting_method") or "ONCE_PER_EVENT").upper()
+        if method not in ("ONCE_PER_EVENT", "ONCE_PER_SESSION"):
+            raise GoogleAdsError("counting_method is ONCE_PER_EVENT or ONCE_PER_SESSION.")
+        answer = {"property_id": prop, "action": "create", "before": None,
+                  "after": {"event_name": name, "counting_method": method},
+                  "key_events_now": sorted(existing),
+                  "note": ("Counts from now on, not backwards. The event itself must already be "
+                           "sent by the site — marking it does not create it.")}
+        return _google_answer(client, args, target,
+                              {"create_key_event": {"eventName": name, "countingMethod": method}}, answer,
+                              lambda reason: client.analytics_create_key_event(prop, name, method,
+                                                                              reason=reason))
+
+    if not current:
+        raise GoogleAdsError(f"'{name}' is not a key event in property {prop}. Key events: "
+                             + (", ".join(sorted(existing)) or "none") + ".")
+    if not current.get("deletable"):
+        raise GoogleAdsError(f"Google marks '{name}' as not deletable — it is a default key event.")
+    answer = {"property_id": prop, "action": "delete", "before": _key_event_state(current),
+              "after": None,
+              "note": "The event keeps being collected; it only stops counting as a key event."}
+    resource = current.get("name", "")
+    return _google_answer(client, args, target, {"delete_key_event": resource}, answer,
+                          lambda reason: client.analytics_delete_key_event(prop, resource, reason=reason))
+
+
+def _dimension_state(dimension: dict) -> dict:
+    return {"parameter_name": dimension.get("parameterName", ""),
+            "display_name": dimension.get("displayName", ""),
+            "scope": dimension.get("scope", ""), "description": dimension.get("description", "")}
+
+
+def tool_ga_custom_dimension(args: dict) -> dict:
+    client = _client(args)
+    prop = _ga_property(client, args)
+    action = str(args.get("action") or "").lower()
+    parameter = str(args.get("parameter_name") or "").strip()
+    scope = str(args.get("scope") or "EVENT").upper()
+    if action not in ("create", "archive"):
+        raise GoogleAdsError("action is create or archive.")
+    if scope not in GA_DIMENSION_SCOPES:
+        raise GoogleAdsError(f"scope is {' or '.join(GA_DIMENSION_SCOPES)}. User-scoped dimensions "
+                             "attach a trait to a person — set those up by hand in Analytics, "
+                             "if at all.")
+    if not ga_name_ok(parameter, 40):
+        raise GoogleAdsError(f"'{parameter}' is not a parameter name — {GA_NAME_RULE}, at most 40.")
+
+    existing = [d for d in client.analytics_custom_dimensions(prop)
+                if d.get("parameterName") == parameter and d.get("scope") == scope]
+    target = f"analytics:{prop}"
+
+    if action == "create":
+        why = pii_reason(parameter)
+        if why:
+            raise GoogleAdsError(f"'{parameter}' looks like personal data ({why}). Google's terms "
+                                 "forbid personal data in Analytics, and a custom dimension would "
+                                 "show it in every report. Not done. If the parameter really holds "
+                                 "nothing personal, the owner can register it by hand.")
+        if existing:
+            raise GoogleAdsError(f"'{parameter}' ({scope}) is already a custom dimension: "
+                                 f"{existing[0].get('displayName', '')}.")
+        display = str(args.get("display_name") or parameter).strip()
+        if not (0 < len(display) <= 82 and display[0].isalpha()
+                and all(c.isalnum() or c in " _" for c in display)):
+            raise GoogleAdsError(f"display_name '{display}' — letters, digits, spaces and "
+                                 "underscores, starting with a letter, at most 82.")
+        description = str(args.get("description") or "").strip()
+        if len(description) > 150:
+            raise GoogleAdsError(f"description has {len(description)} characters, at most 150.")
+        dimension = {"parameterName": parameter, "displayName": display, "scope": scope}
+        if description:
+            dimension["description"] = description
+        answer = {"property_id": prop, "action": "create", "before": None,
+                  "after": _dimension_state(dimension),
+                  "note": ("Reports show the dimension from now on, not for data collected "
+                           "before. Standard properties allow 50 event-scoped custom dimensions.")}
+        return _google_answer(client, args, target, {"create_custom_dimension": dimension}, answer,
+                              lambda reason: client.analytics_create_custom_dimension(
+                                  prop, dimension, reason=reason))
+
+    if not existing:
+        raise GoogleAdsError(f"'{parameter}' ({scope}) is not a custom dimension in property {prop}. "
+                             "analytics_settings lists the existing ones.")
+    current = existing[0]
+    answer = {"property_id": prop, "action": "archive", "before": _dimension_state(current),
+              "after": None,
+              "warning": ("Archiving is final: the API offers no way to restore an archived "
+                          "dimension, and reports lose it.")}
+    resource = current.get("name", "")
+    return _google_answer(client, args, target, {"archive_custom_dimension": resource}, answer,
+                          lambda reason: client.analytics_archive_custom_dimension(
+                              prop, resource, reason=reason))
+
+
+RETENTION_TEXT = {"TWO_MONTHS": "2 months", "FOURTEEN_MONTHS": "14 months",
+                  "TWENTY_SIX_MONTHS": "26 months", "THIRTY_EIGHT_MONTHS": "38 months",
+                  "FIFTY_MONTHS": "50 months"}
+
+
+def tool_ga_settings(args: dict) -> dict:
+    client = _client(args)
+    prop = _ga_property(client, args)
+    info = client.analytics_property(prop)
+    retention = client.analytics_data_retention(prop)
+    return {
+        "property_id": prop,
+        "name": info.get("displayName", ""),
+        "time_zone": info.get("timeZone", ""),
+        "currency": info.get("currencyCode", ""),
+        "industry": info.get("industryCategory", ""),
+        "service_level": info.get("serviceLevel", ""),
+        "data_retention": {
+            "event_data": RETENTION_TEXT.get(retention.get("eventDataRetention", ""),
+                                             retention.get("eventDataRetention", "")),
+            "user_data": RETENTION_TEXT.get(retention.get("userDataRetention", ""),
+                                            retention.get("userDataRetention", "")),
+            "reset_on_new_activity": bool(retention.get("resetUserDataOnNewActivity")),
+        },
+        "key_events": [_key_event_state(e) for e in client.analytics_key_events(prop)],
+        "custom_dimensions": [_dimension_state(d) for d in client.analytics_custom_dimensions(prop)],
+        "note": ("Privacy settings (data retention, Google signals, data sharing) are shown or "
+                 "left to the Analytics interface — no tool here changes them."),
+    }
 
 
 def _client(args: dict) -> Client:
@@ -1533,14 +1935,22 @@ def tool_mutate(args: dict) -> dict:
 def tool_change_log(args: dict) -> dict:
     if not CHANGE_LOG.exists():
         return {"entry_count": 0, "entries": [], "note": f"No log yet at {CHANGE_LOG}."}
+    # An Ads account filters exactly; anything else ("analytics",
+    # "sc-domain:neo-digital.at", a property ID) matches the logged target.
+    wanted, ads_filter = str(args.get("customer_id") or "").strip(), False
+    if wanted:
+        try:
+            wanted, ads_filter = normalize_customer_id(wanted), True
+        except GoogleAdsError:
+            pass
     entries = []
     for line in CHANGE_LOG.read_text(encoding="utf-8").splitlines():
         try:
             entry = json.loads(line)
         except json.JSONDecodeError:
             continue
-        if args.get("customer_id") and entry.get("customer_id") != normalize_customer_id(
-                args["customer_id"]):
+        if wanted and entry.get("customer_id") != wanted and (
+                ads_filter or wanted not in str(entry.get("customer_id", ""))):
             continue
         if not args.get("include_operations"):
             entry.pop("operations", None)
@@ -1572,6 +1982,11 @@ HANDLERS = {
     "analytics_properties": tool_ga_properties,
     "analytics_report": tool_ga_report,
     "analytics_metadata": tool_ga_metadata,
+    "analytics_settings": tool_ga_settings,
+    "search_console_submit_sitemap": tool_gsc_submit_sitemap,
+    "search_console_delete_sitemap": tool_gsc_delete_sitemap,
+    "analytics_key_event": tool_ga_key_event,
+    "analytics_custom_dimension": tool_ga_custom_dimension,
     "google_ads_change_log": tool_change_log,
 }
 

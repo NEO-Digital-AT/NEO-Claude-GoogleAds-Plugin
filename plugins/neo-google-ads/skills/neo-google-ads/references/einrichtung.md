@@ -298,28 +298,40 @@ Konfiguration und gelten für jeden Aufruf.
 ## Schritt 6: Search Console und Analytics (nur lesen)
 
 Seit Server 2.5.0 liest derselbe Server auch Google Search Console und
-Google Analytics 4. Geschrieben wird dort nichts — die beiden
-Berechtigungen `webmasters.readonly` und `analytics.readonly` lassen es
-gar nicht zu.
+Google Analytics 4, seit 2.6.0 ändert er dort ausgewählte Dinge: Sitemaps
+einreichen und entfernen, Schlüsselereignisse, benutzerdefinierte
+Dimensionen. Dafür fragt der Login vier Berechtigungen ab: `adwords`,
+`webmasters`, `analytics.readonly` (die Berichte — das Bearbeitungsrecht
+deckt sie nicht ab) und `analytics.edit`. Datenschutz-Einstellungen und
+Nutzerrechte ändert der Server nicht; `analytics.manage.users` wird gar
+nicht erst angefragt.
 
 1. **Drei APIs einschalten** — im Cloud-Projekt hinter dem OAuth-Client
    (die Nummer vor dem Bindestrich in der Client-ID): *APIs & Dienste →
    Bibliothek* → „Google Search Console API“, „Google Analytics Data API“,
    „Google Analytics Admin API“, jeweils *Aktivieren*.
-2. **Zustimmungsbildschirm** — führt das Projekt die Berechtigungen einzeln
-   auf (*Google Auth Platform → Datenzugriff*), dort `webmasters.readonly`
-   und `analytics.readonly` ergänzen. Im Testmodus reicht es, dass das
-   Google-Konto als Testnutzer eingetragen ist.
+2. **Zustimmungsbildschirm** — unter *Google Auth Platform → Datenzugriff*
+   ist nichts einzutragen, solange dort auch `adwords` nicht steht: Das
+   Projekt kommt dann ohne Einträge aus. Wer dort Berechtigungen einträgt,
+   löst unter Umständen Googles Prüfpflicht für die App aus. Im Testmodus
+   muss das Google-Konto als Testnutzer eingetragen sein.
 3. **Google neu verbinden** — in der Konsole *Google verbinden* (oder
-   `google-ads-auth.py`). Google fragt jetzt drei Berechtigungen ab; alle
-   bestätigen. Ein Login von vor 2.5.0 kennt die beiden neuen nicht — die
-   Werkzeuge sagen das dann ausdrücklich, statt still leer zu bleiben.
-4. **Zugriff des Google-Kontos** — das Konto, mit dem verbunden wird,
-   braucht in der Search Console mindestens eingeschränkten Zugriff auf die
-   Property und in Analytics mindestens die Rolle *Betrachter*.
+   `google-ads-auth.py`), und zwar erst, wenn Server 2.6.0 läuft
+   (`/health` zeigt die Version). Google fragt dann vier Berechtigungen ab;
+   bietet es einzelne Haken an, alle setzen. Ein älterer Login kann nur
+   lesen — die Schreibwerkzeuge sagen das ausdrücklich.
+4. **Zugriff des Google-Kontos** — zum Lesen genügt in der Search Console
+   eingeschränkter Zugriff und in Analytics die Rolle *Betrachter*. Zum
+   Ändern braucht es in der Search Console vollen Zugriff und in Analytics
+   die Rolle *Bearbeiter*.
 5. **Prüfen** — die Statusseite der Konsole zeigt je eine Zeile „Search
-   Console“ und „Google Analytics“ mit der Zahl der lesbaren Properties
-   oder dem, was fehlt.
+   Console“ und „Google Analytics“: wie viele Properties lesbar sind und ob
+   der Login auch das Recht zum Ändern trägt.
+6. **Schreiben** — gilt der Hauptschalter der Schutzgrenzen
+   („Schreiben erlauben“). Jede Änderung ist zuerst ein Probelauf: Weil
+   beide APIs keinen eigenen kennen, liest der Server den aktuellen Stand
+   und beschreibt die Änderung; geschickt wird erst mit `dry_run: false`.
+   Jeder Versuch steht im Änderungsprotokoll.
 
 **Was die Zahlen bedeuten.** Search Console liefert zwei, drei Tage spät;
 das Werkzeug endet deshalb ab Werk vorgestern. Seltene Suchanfragen

@@ -24,16 +24,37 @@ Status, Budgets, Gebote, und der rohe Mutate-Endpunkt für alles Übrige
 
 **Belegen** — ein Werkzeug: das Änderungsprotokoll.
 
-**Search Console und Analytics, nur lesend** — sieben Werkzeuge seit
-Server 2.5.0: `search_console_sites`, `search_console_performance`
-(Suchanfragen, Seiten, Länder, Geräte mit Klicks, Impressionen, CTR und
-Position), `search_console_inspect_url` (indexiert ja/nein und warum),
+**Search Console und Analytics lesen** — acht Werkzeuge:
+`search_console_sites`, `search_console_performance` (Suchanfragen,
+Seiten, Länder, Geräte mit Klicks, Impressionen, CTR und Position),
+`search_console_inspect_url` (indexiert ja/nein und warum),
 `search_console_sitemaps`, dazu `analytics_properties`,
 `analytics_report` (GA4-Berichte mit frei wählbaren Dimensionen und
-Kennzahlen) und `analytics_metadata`. Dieselbe Google-Anmeldung, mit den
-Berechtigungen `webmasters.readonly` und `analytics.readonly` — beide
-können nichts verändern. Einrichtung: drei APIs im Cloud-Projekt
-einschalten und Google einmal neu verbinden, siehe
+Kennzahlen), `analytics_metadata` und seit 2.6.0 `analytics_settings`
+(Zeitzone, Währung, Aufbewahrungsdauer, Schlüsselereignisse,
+benutzerdefinierte Dimensionen).
+
+**Search Console und Analytics ändern** — vier Werkzeuge seit Server
+2.6.0: `search_console_submit_sitemap` und `search_console_delete_sitemap`,
+`analytics_key_event` (ein Ereignis als Schlüsselereignis markieren oder
+die Markierung entfernen) und `analytics_custom_dimension` (einen
+Ereignisparameter als Dimension registrieren oder archivieren). Beide APIs
+kennen keinen Trockenlauf; der Server baut ihn selbst: Er liest den
+aktuellen Stand und zeigt „vorher → nachher“, geschickt wird erst mit
+`dry_run: false`. Es gelten der Hauptschalter „Schreiben erlauben“ und das
+Änderungsprotokoll; die Kontoliste der Schutzgrenzen betrifft nur Google
+Ads. Parameter, die nach personenbezogenen Daten aussehen (E-Mail,
+Telefon, Name …), werden als Dimension abgelehnt.
+
+**Bewusst nicht dabei:** alles, was bestimmt, wie viel über Besucher
+erhoben wird — Aufbewahrungsdauer, Google Signale, Datenfreigabe, vom
+Nutzer bereitgestellte Daten — und die Nutzerverwaltung. Das entscheidet
+der Inhaber von Hand in der Analytics-Oberfläche. Ebenso fehlt „Indexierung
+beantragen“: Die Search Console API bietet es nicht an.
+
+Dieselbe Google-Anmeldung, mit den Berechtigungen `webmasters`,
+`analytics.readonly` und `analytics.edit`. Einrichtung: drei APIs im
+Cloud-Projekt einschalten und Google einmal neu verbinden, siehe
 `references/einrichtung.md`, Schritt 6.
 
 ## Schreiben ist ein Verfahren, kein Aufruf

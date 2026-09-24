@@ -56,17 +56,28 @@ import urllib.request
 DEFAULT_API_VERSION = "v25"
 API_HOST = "https://googleads.googleapis.com"
 TOKEN_URL = "https://oauth2.googleapis.com/token"
+TOKENINFO_URL = "https://oauth2.googleapis.com/tokeninfo"
 
-# What the refresh token asks Google for. Three scopes since 2.5.0: Google
-# Ads (read and write, the guardrails decide), Search Console READ-ONLY and
-# Google Analytics READ-ONLY. The two read-only scopes cannot change
-# anything — no sitemap submission, no URL removal, no new users, no edits
-# to an Analytics property. A refresh token issued before 2.5.0 carries only
-# the first; the new tools then answer with a hint to connect Google again.
+# What the refresh token asks Google for. Four scopes since 2.6.0:
+#
+#   adwords               Google Ads, read and write (the guardrails decide)
+#   webmasters            Search Console, read and write — writing is limited
+#                         to sitemaps by the tools, not by the scope
+#   analytics.readonly    Google Analytics reports. analytics.edit does NOT
+#                         cover the Data API (runReport wants analytics or
+#                         analytics.readonly), so the read scope stays.
+#   analytics.edit        Google Analytics configuration — key events and
+#                         custom dimensions only, again limited by the tools
+#
+# Deliberately NOT requested: analytics.manage.users (who may see the
+# property) and the full analytics scope. A refresh token keeps the scopes
+# it was issued with; an older one answers write calls with a hint to
+# connect Google again.
 ADS_SCOPE = "https://www.googleapis.com/auth/adwords"
-SEARCH_CONSOLE_SCOPE = "https://www.googleapis.com/auth/webmasters.readonly"
+SEARCH_CONSOLE_SCOPE = "https://www.googleapis.com/auth/webmasters"
 ANALYTICS_SCOPE = "https://www.googleapis.com/auth/analytics.readonly"
-OAUTH_SCOPE = f"{ADS_SCOPE} {SEARCH_CONSOLE_SCOPE} {ANALYTICS_SCOPE}"
+ANALYTICS_EDIT_SCOPE = "https://www.googleapis.com/auth/analytics.edit"
+OAUTH_SCOPE = f"{ADS_SCOPE} {SEARCH_CONSOLE_SCOPE} {ANALYTICS_SCOPE} {ANALYTICS_EDIT_SCOPE}"
 
 # Search Console lives on two hosts: the classic Webmasters API (sites,
 # search analytics, sitemaps) and the newer Search Console API (URL
@@ -468,6 +479,21 @@ class Client:
         self._token_expires = time.time() + int(body.get("expires_in", 3600))
         return self._token
 
+    def granted_scopes(self) -> set[str]:
+        """The scopes the stored login really carries, as Google reports them.
+
+        Google's consent screen lets the user untick single permissions, and
+        a login from before 2.6.0 lacks the write scopes. Asking tokeninfo is
+        the only way to know without trying a write.
+        """
+        url = f"{TOKENINFO_URL}?access_token={urllib.parse.quote(self.access_token())}"
+        try:
+            with urllib.request.urlopen(url, timeout=self.timeout) as response:
+                info = json.loads(response.read().decode("utf-8"))
+        except (urllib.error.URLError, json.JSONDecodeError) as exc:
+            raise GoogleAdsError(f"Cannot read the permissions of the login: {exc}") from exc
+        return set(str(info.get("scope") or "").split())
+
     # -- transport ---------------------------------------------------------
 
     def _headers(self, login_customer_id: str | None = None) -> dict:
@@ -560,7 +586,7 @@ class Client:
                         "the dash in the client ID.")
         return GoogleAdsError(summary, detail=payload, status=exc.code)
 
-    # -- Search Console and Analytics (read-only) ----------------------------
+    # -- Search Console and Analytics (reading) ------------------------------
 
     def google_call(self, method: str, url: str, body: dict | None = None,
                     *, service: str = "search_console") -> dict:
@@ -606,16 +632,19 @@ class Client:
         lower = message.lower()
 
         if "ACCESS_TOKEN_SCOPE_INSUFFICIENT" in reasons or "insufficient authentication scopes" in lower:
-            message += (f"\n  Hint: the stored Google login predates {name} access. "
-                        "Connect Google once more in the console (or run google-ads-auth.py) "
-                        f"and allow the {name} permission on Google's consent screen.")
+            message += (f"\n  Hint: the stored Google login lacks this {name} permission — it "
+                        "predates it, or the box was left unticked. Connect Google once more "
+                        "in the console (or run google-ads-auth.py) and allow every "
+                        f"{name} permission on Google's consent screen.")
         elif "SERVICE_DISABLED" in reasons or "has not been used in project" in lower or "is disabled" in lower:
             message += (f"\n  Hint: switch on the {apis} in the Google Cloud project behind "
                         "these OAuth credentials (APIs & Services -> Library). "
                         "The project is the number before the dash in the client ID.")
         elif exc.code == 403:
             message += (f"\n  Hint: the Google account behind this login has no access to this "
-                        f"property. {list_tool} lists the ones it can read; {id_hint}.")
+                        f"property, or not enough to change it (writing needs full access in "
+                        f"Search Console, the Editor role in Analytics). {list_tool} lists the "
+                        f"ones it can read; {id_hint}.")
         return GoogleAdsError(message, detail=error, status=exc.code)
 
     def search_console_sites(self) -> list[dict]:
@@ -652,6 +681,112 @@ class Client:
     def analytics_metadata(self, property_id: str) -> dict:
         return self.google_call("GET", f"{ANALYTICS_DATA_API}/properties/{property_id}/metadata",
                                 service="analytics")
+
+    def _google_pages(self, url: str, key: str, service: str) -> list[dict]:
+        """Every page of a Google list call, joined."""
+        items, token = [], ""
+        while True:
+            page_url = url + ("&" if "?" in url else "?") + "pageSize=200"
+            if token:
+                page_url += "&pageToken=" + urllib.parse.quote(token)
+            page = self.google_call("GET", page_url, service=service)
+            items.extend(page.get(key) or [])
+            token = page.get("nextPageToken") or ""
+            if not token:
+                return items
+
+    def analytics_property(self, property_id: str) -> dict:
+        return self.google_call("GET", f"{ANALYTICS_ADMIN_API}/properties/{property_id}",
+                                service="analytics")
+
+    def analytics_data_retention(self, property_id: str) -> dict:
+        return self.google_call("GET", f"{ANALYTICS_ADMIN_API}/properties/{property_id}/dataRetentionSettings",
+                                service="analytics")
+
+    def analytics_key_events(self, property_id: str) -> list[dict]:
+        return self._google_pages(f"{ANALYTICS_ADMIN_API}/properties/{property_id}/keyEvents",
+                                  "keyEvents", "analytics")
+
+    def analytics_custom_dimensions(self, property_id: str) -> list[dict]:
+        return self._google_pages(f"{ANALYTICS_ADMIN_API}/properties/{property_id}/customDimensions",
+                                  "customDimensions", "analytics")
+
+    # -- Search Console and Analytics (writing) ------------------------------
+
+    def google_write(self, target: str, method: str, url: str, body: dict | None = None, *,
+                     service: str, operation: dict, reason: str = "") -> dict:
+        """The one door for LIVE writes to Search Console and Analytics.
+
+        Neither API knows validateOnly. The dry run therefore happens in the
+        MCP server — it reads the current state and describes the change —
+        and never comes through here. What does come through is real: the
+        master switch must be on, and the attempt is logged before the
+        answer goes back, failures included. allowed_customer_ids does not
+        apply; it names Google Ads accounts, and a property is none.
+        """
+        if not self.guardrails.get("write_enabled"):
+            raise GoogleAdsError(
+                "Writing is switched off. Switch it on in the console (Schutzgrenzen -> "
+                "Schreiben erlauben) once the owner has agreed to it; until then only the "
+                "dry run is possible."
+            )
+        started = time.time()
+        try:
+            answer = self.google_call(method, url, body, service=service)
+        except GoogleAdsError as exc:
+            self.log_change(target, [operation], dry_run=False, reason=reason,
+                            result="error", detail=exc.message)
+            raise
+        self.log_change(target, [operation], dry_run=False, reason=reason, result="ok",
+                        detail=answer, duration_ms=int((time.time() - started) * 1000))
+        return answer
+
+    def search_console_submit_sitemap(self, site_url: str, sitemap_url: str, *,
+                                      reason: str = "") -> dict:
+        site = urllib.parse.quote(site_url, safe="")
+        feed = urllib.parse.quote(sitemap_url, safe="")
+        return self.google_write(f"search_console:{site_url}", "PUT",
+                                 f"{WEBMASTERS_API}/sites/{site}/sitemaps/{feed}",
+                                 service="search_console", reason=reason,
+                                 operation={"submit_sitemap": sitemap_url})
+
+    def search_console_delete_sitemap(self, site_url: str, sitemap_url: str, *,
+                                      reason: str = "") -> dict:
+        site = urllib.parse.quote(site_url, safe="")
+        feed = urllib.parse.quote(sitemap_url, safe="")
+        return self.google_write(f"search_console:{site_url}", "DELETE",
+                                 f"{WEBMASTERS_API}/sites/{site}/sitemaps/{feed}",
+                                 service="search_console", reason=reason,
+                                 operation={"delete_sitemap": sitemap_url})
+
+    def analytics_create_key_event(self, property_id: str, event_name: str,
+                                   counting_method: str, *, reason: str = "") -> dict:
+        body = {"eventName": event_name, "countingMethod": counting_method}
+        return self.google_write(f"analytics:{property_id}", "POST",
+                                 f"{ANALYTICS_ADMIN_API}/properties/{property_id}/keyEvents",
+                                 body, service="analytics", reason=reason,
+                                 operation={"create_key_event": body})
+
+    def analytics_delete_key_event(self, property_id: str, resource_name: str, *,
+                                   reason: str = "") -> dict:
+        return self.google_write(f"analytics:{property_id}", "DELETE",
+                                 f"{ANALYTICS_ADMIN_API}/{resource_name}",
+                                 service="analytics", reason=reason,
+                                 operation={"delete_key_event": resource_name})
+
+    def analytics_create_custom_dimension(self, property_id: str, dimension: dict, *,
+                                          reason: str = "") -> dict:
+        return self.google_write(f"analytics:{property_id}", "POST",
+                                 f"{ANALYTICS_ADMIN_API}/properties/{property_id}/customDimensions",
+                                 dimension, service="analytics", reason=reason,
+                                 operation={"create_custom_dimension": dimension})
+
+    def analytics_archive_custom_dimension(self, property_id: str, resource_name: str, *,
+                                           reason: str = "") -> dict:
+        return self.google_write(f"analytics:{property_id}", "POST",
+                                 f"{ANALYTICS_ADMIN_API}/{resource_name}:archive", {},
+                                 service="analytics", reason=reason,
+                                 operation={"archive_custom_dimension": resource_name})
 
     # -- reading -----------------------------------------------------------
 
