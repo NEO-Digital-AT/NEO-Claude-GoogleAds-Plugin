@@ -2397,6 +2397,259 @@ def test_oauth() -> None:
         shutil.rmtree(ordner, ignore_errors=True)
 
 
+# --------------------------------------------------------------------------
+# Search Console (read-only)
+# --------------------------------------------------------------------------
+
+def test_search_console() -> None:
+    """The four Search Console tools: request shape, errors, shaping.
+
+    Everything here runs without network. What matters most: the request
+    carries no developer token (it belongs to Google Ads, not here), the
+    property lands URL-encoded in the path, the default window leaves out
+    the two days Search Console has not finished yet, and the three typical
+    failures each say what to do.
+    """
+    import datetime
+    import urllib.request
+
+    server = load_server()
+    oauth = __import__("portal_oauth")
+
+    case("the Google login asks for Ads AND Search Console read-only",
+         gac.ADS_SCOPE in gac.OAUTH_SCOPE and gac.SEARCH_CONSOLE_SCOPE in gac.OAUTH_SCOPE
+         and gac.SEARCH_CONSOLE_SCOPE.endswith("webmasters.readonly"), gac.OAUTH_SCOPE)
+    gsc_tools = [t for t in server.HANDLERS if t.startswith("search_console_")]
+    case("four Search Console tools, none of them a write tool",
+         len(gsc_tools) == 4 and not set(gsc_tools) & oauth.WRITE_TOOLS, ", ".join(gsc_tools))
+
+    today = datetime.date(2026, 9, 24)
+    body = server.gsc_query_body({}, today)
+    case("default: 28 days by query, web search, 200 rows",
+         body["dimensions"] == ["query"] and body["type"] == "web" and body["rowLimit"] == 200
+         and body["startDate"] == "2026-08-26" and body["endDate"] == "2026-09-22", str(body))
+    case("the default window ends the day before yesterday — the last two days are incomplete",
+         body["endDate"] == (today - datetime.timedelta(days=2)).isoformat())
+    case("fresh data is opt-in", "dataState" not in body
+         and server.gsc_query_body({"fresh": True}, today).get("dataState") == "all")
+
+    filtered = server.gsc_query_body({"dimensions": ["page", "query"], "query_contains": "graz",
+                                      "country": "AUT", "device": "mobile", "limit": 99999}, today)
+    filters = filtered["dimensionFilterGroups"][0]["filters"]
+    case("filters: contains, country lower-case, device upper-case, all ANDed",
+         {"dimension": "query", "operator": "contains", "expression": "graz"} in filters
+         and {"dimension": "country", "operator": "equals", "expression": "aut"} in filters
+         and {"dimension": "device", "operator": "equals", "expression": "MOBILE"} in filters
+         and filtered["dimensionFilterGroups"][0]["groupType"] == "and", str(filters))
+    case("the row limit is capped at the API maximum", filtered["rowLimit"] == 25000,
+         str(filtered["rowLimit"]))
+    expect_refused("an unknown dimension is refused before any call",
+                   lambda: server.gsc_query_body({"dimensions": ["keyword"]}, today), "Unknown dimension")
+    expect_refused("start_date without end_date is refused",
+                   lambda: server.gsc_query_body({"start_date": "2026-09-01"}, today), "go together")
+
+    # Request shape: path encoding and headers, via a fake urlopen.
+    seen = {}
+
+    class FakeResponse:
+        def __init__(self, payload):
+            self._raw = json.dumps(payload).encode("utf-8")
+
+        def read(self):
+            return self._raw
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    def fake_urlopen(request, timeout=0):
+        seen["url"] = request.full_url
+        seen["headers"] = {k.lower(): v for k, v in request.header_items()}
+        seen["body"] = json.loads(request.data.decode("utf-8")) if request.data else None
+        return FakeResponse({"rows": [{"keys": ["webdesign graz"], "clicks": 1,
+                                       "impressions": 336, "ctr": 0.002976, "position": 96.04}]})
+
+    original = urllib.request.urlopen
+    urllib.request.urlopen = fake_urlopen
+    try:
+        client = make_client()
+        answer = client.search_console_query("sc-domain:neo-digital.at", {"startDate": "x"})
+        case("a domain property is URL-encoded in the path",
+             seen["url"].endswith("/sites/sc-domain%3Aneo-digital.at/searchAnalytics/query"), seen["url"])
+        case("the request carries the bearer token and NO developer token",
+             seen["headers"].get("authorization") == "Bearer fake-token"
+             and "developer-token" not in seen["headers"], str(sorted(seen["headers"])))
+        client.search_console_query("https://neo-digital.at/", {})
+        case("a URL-prefix property is encoded completely, slashes included",
+             "/sites/https%3A%2F%2Fneo-digital.at%2F/searchAnalytics/" in seen["url"], seen["url"])
+        client.search_console_inspect("sc-domain:neo-digital.at", "https://neo-digital.at/kontakt")
+        case("URL inspection goes to the Search Console API with property and language",
+             seen["url"] == gac.SEARCH_CONSOLE_API + "/urlInspection/index:inspect"
+             and seen["body"] == {"inspectionUrl": "https://neo-digital.at/kontakt",
+                                  "siteUrl": "sc-domain:neo-digital.at", "languageCode": "de-AT"},
+             str(seen["body"]))
+    finally:
+        urllib.request.urlopen = original
+
+    shaped = server.gsc_shape(["query"], answer)
+    row = shaped["rows"][0]
+    case("rows are shaped: CTR in percent, position to one decimal",
+         row == {"query": "webdesign graz", "clicks": 1, "impressions": 336,
+                 "ctr_percent": 0.3, "position": 96.0}, str(row))
+    case("the answer says that the rows do not add up to the interface totals",
+         "rare queries" in shaped["note"] and shaped["sum_of_rows"]["impressions"] == 336)
+
+    # Errors: the three causes that need an action, each with its hint.
+    def google_error(code: int, message: str, reason: str) -> gac.GoogleAdsError:
+        return make_client()._translate_google(FakeHTTPError(code, {"error": {  # noqa: SLF001
+            "code": code, "message": message, "status": "PERMISSION_DENIED",
+            "details": [{"@type": "type.googleapis.com/google.rpc.ErrorInfo", "reason": reason}]}}))
+
+    scope = google_error(403, "Request had insufficient authentication scopes.",
+                         "ACCESS_TOKEN_SCOPE_INSUFFICIENT")
+    case("an old login without the scope says: connect Google once more",
+         "Connect Google once more" in scope.message, scope.message.splitlines()[-1][:90])
+    disabled = google_error(403, "Google Search Console API has not been used in project 123 "
+                                 "before or it is disabled.", "SERVICE_DISABLED")
+    case("a switched-off API says where to switch it on",
+         "Google Search Console API" in disabled.message and "Library" in disabled.message,
+         disabled.message.splitlines()[-1][:90])
+    foreign = google_error(403, "User does not have sufficient permission for site.", "")
+    case("a property without access points at search_console_sites",
+         "search_console_sites" in foreign.message, foreign.message.splitlines()[-1][:90])
+
+    # Property resolution: one readable property is taken, several are named.
+    class Sites:
+        def __init__(self, entries):
+            self.entries = entries
+
+        def search_console_sites(self):
+            return self.entries
+
+    single = Sites([{"siteUrl": "sc-domain:neo-digital.at", "permissionLevel": "siteOwner"},
+                    {"siteUrl": "https://alt.example/", "permissionLevel": "siteUnverifiedUser"}])
+    case("with exactly one readable property, site_url may be omitted",
+         server._site(single, {}) == "sc-domain:neo-digital.at")  # noqa: SLF001
+    several = Sites([{"siteUrl": "sc-domain:a.at", "permissionLevel": "siteOwner"},
+                     {"siteUrl": "sc-domain:b.at", "permissionLevel": "siteFullUser"}])
+    expect_refused("with several, the tool asks which one and names them",
+                   lambda: server._site(several, {}), "sc-domain:b.at")  # noqa: SLF001
+
+
+# --------------------------------------------------------------------------
+# Google Analytics 4 (read-only)
+# --------------------------------------------------------------------------
+
+def test_analytics() -> None:
+    """The three Analytics tools: scope, request shape, shaping, errors."""
+    import urllib.request
+
+    server = load_server()
+    oauth = __import__("portal_oauth")
+
+    case("the Google login asks for Analytics READ-ONLY",
+         gac.ANALYTICS_SCOPE in gac.OAUTH_SCOPE and gac.ANALYTICS_SCOPE.endswith("analytics.readonly"))
+    ga_tools = [t for t in server.HANDLERS if t.startswith("analytics_")]
+    case("three Analytics tools, none of them a write tool",
+         len(ga_tools) == 3 and not set(ga_tools) & oauth.WRITE_TOOLS, ", ".join(ga_tools))
+
+    body = server.ga_report_body({})
+    case("default: last 28 days ending yesterday, by date, users and sessions, totals",
+         body["dateRanges"] == [{"startDate": "28daysAgo", "endDate": "yesterday"}]
+         and body["dimensions"] == [{"name": "date"}]
+         and body["metrics"] == [{"name": "activeUsers"}, {"name": "sessions"}]
+         and body["metricAggregations"] == ["TOTAL"], str(body))
+    case("a date series is ordered by date, ascending",
+         body["orderBys"] == [{"dimension": {"dimensionName": "date"}, "desc": False}], str(body["orderBys"]))
+
+    pages = server.ga_report_body({"dimensions": ["pagePath"], "metrics": ["screenPageViews"],
+                                   "filters": [{"dimension": "pagePath", "value": "/kontakt"}]})
+    case("a ranking is ordered by its first metric, descending",
+         pages["orderBys"] == [{"metric": {"metricName": "screenPageViews"}, "desc": True}])
+    case("one filter becomes a plain dimensionFilter, CONTAINS by default",
+         pages["dimensionFilter"]["filter"]["stringFilter"]["matchType"] == "CONTAINS"
+         and pages["dimensionFilter"]["filter"]["fieldName"] == "pagePath", str(pages["dimensionFilter"]))
+    two = server.ga_report_body({"filters": [{"dimension": "a", "value": "1"},
+                                             {"dimension": "b", "value": "2", "match": "exact"}]})
+    case("several filters are ANDed", len(two["dimensionFilter"]["andGroup"]["expressions"]) == 2)
+    expect_refused("an unknown match type is refused before any call",
+                   lambda: server.ga_report_body({"filters": [{"dimension": "a", "value": "1",
+                                                               "match": "SOUNDS_LIKE"}]}), "needs a dimension")
+
+    seen = {}
+
+    class FakeResponse:
+        def __init__(self, payload):
+            self._raw = json.dumps(payload).encode("utf-8")
+
+        def read(self):
+            return self._raw
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    def fake_urlopen(request, timeout=0):
+        seen["url"] = request.full_url
+        seen["headers"] = {k.lower(): v for k, v in request.header_items()}
+        return FakeResponse({
+            "dimensionHeaders": [{"name": "pagePath"}],
+            "metricHeaders": [{"name": "screenPageViews"}, {"name": "engagementRate"}],
+            "rows": [{"dimensionValues": [{"value": "/kontakt"}],
+                      "metricValues": [{"value": "42"}, {"value": "0.61234567"}]}],
+            "totals": [{"dimensionValues": [{"value": "RESERVED_TOTAL"}],
+                        "metricValues": [{"value": "300"}, {"value": "0.5"}]}],
+            "rowCount": 17})
+
+    original = urllib.request.urlopen
+    urllib.request.urlopen = fake_urlopen
+    try:
+        raw = make_client().analytics_report("123456789", pages)
+        case("reports go to the Data API runReport of the property",
+             seen["url"] == gac.ANALYTICS_DATA_API + "/properties/123456789:runReport", seen["url"])
+        case("and carry no developer token", "developer-token" not in seen["headers"])
+    finally:
+        urllib.request.urlopen = original
+
+    shaped = server.ga_shape(raw)
+    case("rows are shaped with numbers, totals and the full row count",
+         shaped["rows"] == [{"pagePath": "/kontakt", "screenPageViews": 42, "engagementRate": 0.6123}]
+         and shaped["totals"] == {"screenPageViews": 300, "engagementRate": 0.5}
+         and shaped["total_rows_in_report"] == 17, str(shaped["rows"]))
+    case("every answer says that only consenting visitors are counted",
+         "consent" in shaped["note"])
+
+    disabled = make_client()._translate_google(FakeHTTPError(403, {"error": {  # noqa: SLF001
+        "code": 403, "message": "Google Analytics Data API has not been used in project 1 before or it is disabled.",
+        "details": [{"reason": "SERVICE_DISABLED"}]}}), "analytics")
+    case("a switched-off Analytics API names BOTH APIs to switch on",
+         "Data API" in disabled.message and "Admin API" in disabled.message,
+         disabled.message.splitlines()[-1][:90])
+    foreign = make_client()._translate_google(FakeHTTPError(403, {"error": {  # noqa: SLF001
+        "code": 403, "message": "User does not have sufficient permissions for this property."}}), "analytics")
+    case("a property without access points at analytics_properties",
+         "analytics_properties" in foreign.message)
+
+    class Summaries:
+        def __init__(self, props):
+            self.props = props
+
+        def analytics_account_summaries(self):
+            return [{"account": "accounts/1", "propertySummaries": [{"property": p} for p in self.props]}]
+
+    case("with exactly one property, property_id may be omitted",
+         server._ga_property(Summaries(["properties/987"]), {}) == "987")  # noqa: SLF001
+    case("a property_id with the properties/ prefix is accepted",
+         server._ga_property(Summaries([]), {"property_id": "properties/555"}) == "555")  # noqa: SLF001
+    expect_refused("with several, the tool asks which one",
+                   lambda: server._ga_property(Summaries(["properties/1", "properties/2"]), {}),  # noqa: SLF001
+                   "pass property_id")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Prove the Google Ads guardrails hold.")
     parser.add_argument("--verbose", action="store_true", help="show the detail of every case")
@@ -2417,7 +2670,9 @@ def main() -> int:
                        ("portal door", test_portal_door),
                        ("permission matrix", test_permission_matrix),
                        ("passkeys", test_passkeys),
-                       ("oauth connector", test_oauth)):
+                       ("oauth connector", test_oauth),
+                       ("search console", test_search_console),
+                       ("analytics", test_analytics)):
         start = len(RESULTS)
         run()
         failed = sum(1 for _, ok, _ in RESULTS[start:] if not ok)

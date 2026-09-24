@@ -520,7 +520,7 @@ def _stufe_hinweis(projekt: str) -> str:
             f'Zustimmungsbildschirms muss vorher durch sein.</p>'
             f'<p class="note">Die nächste Stufe ist meist <b>Explorer</b>, und die '
             f'kommt oft sofort. Sie reicht für alles hier außer dem Keyword-Planer — '
-            f'elf der dreizehn Werkzeuge laufen damit. <b>Basic</b> braucht es erst '
+            f'achtzehn der zwanzig Werkzeuge laufen damit. <b>Basic</b> braucht es erst '
             f'für den Planer und für mehr als 2.880 Operationen am Tag; darauf kann '
             f'Google bis zu zehn Werktage prüfen.</p>'
             f'<p class="note">Schneller geht es, wenn ein <b>anderes, bereits '
@@ -792,8 +792,33 @@ def check_page() -> bytes:
                       "verfügbar — Zugriffsstufe Basic oder höher")
             except gac.GoogleAdsError:
                 zeile("Keyword-Planer", "hinweis",
-                      "gesperrt — Zugriffsstufe Explorer. Elf der dreizehn Werkzeuge "
+                      "gesperrt — Zugriffsstufe Explorer. Achtzehn der zwanzig Werkzeuge "
                       "laufen, der Keyword-Planer nicht")
+
+    # Search Console und Analytics hängen NICHT an der Ads-Zugriffsstufe,
+    # sondern an zwei anderen Dingen: der Berechtigung im gespeicherten
+    # Google-Login (seit 2.5.0 dabei, ältere Logins haben sie nicht) und den
+    # eingeschalteten APIs im Cloud-Projekt. Die Zeilen nennen, was fehlt.
+    if state["configured"] and state["connected"]:
+        try:
+            properties = gac.Client(state["config"]).search_console_sites()
+            lesbare = [p for p in properties if p.get("permissionLevel") != "siteUnverifiedUser"]
+            zeile("Search Console", "ok" if lesbare else "hinweis",
+                  f"{len(lesbare)} Property lesbar" if len(lesbare) == 1
+                  else f"{len(lesbare)} Properties lesbar")
+        except gac.GoogleAdsError as exc:
+            hinweis = exc.message.splitlines()
+            zeile("Search Console", "hinweis",
+                  (hinweis[-1].replace("Hint: ", "").strip() if len(hinweis) > 1 else hinweis[0]))
+        try:
+            konten = gac.Client(state["config"]).analytics_account_summaries()
+            anzahl = sum(len(k.get("propertySummaries") or []) for k in konten)
+            zeile("Google Analytics", "ok" if anzahl else "hinweis",
+                  f"{anzahl} Property lesbar" if anzahl == 1 else f"{anzahl} Properties lesbar")
+        except gac.GoogleAdsError as exc:
+            hinweis = exc.message.splitlines()
+            zeile("Google Analytics", "hinweis",
+                  (hinweis[-1].replace("Hint: ", "").strip() if len(hinweis) > 1 else hinweis[0]))
 
     rails = state["guardrails"]
     if not rails.get("write_enabled"):

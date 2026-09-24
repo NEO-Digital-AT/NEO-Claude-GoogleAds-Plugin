@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
 """An MCP server that gives an agent read and write access to Google Ads.
 
-It speaks JSON-RPC over stdin and stdout and offers thirteen tools: six
-that read, six that write, and one that shows what was written. The
-reading half covers accounts, arbitrary GAQL queries, prepared reports,
-the Keyword Planner and the field catalogue. The writing half covers
-keywords, negative keywords, status, budgets, bids, and — for everything
-the six do not cover — the raw mutate endpoint.
+It speaks JSON-RPC over stdin and stdout and offers twenty tools:
+thirteen that read, six that write, and one that shows what was written.
+The reading half covers accounts, arbitrary GAQL queries, prepared
+reports, the Keyword Planner and the field catalogue — and, since 2.5.0,
+Google Search Console (properties, search performance, URL inspection,
+sitemaps) and Google Analytics 4 (properties, reports, field catalogue),
+both strictly read-only. The writing half covers keywords, negative keywords,
+status, budgets, bids, and — for everything the six do not cover — the
+raw mutate endpoint.
 
 TWO PROTOCOL GENERATIONS. MCP dropped the initialize handshake in the
 2026-07-28 revision and replaced it with server/discover. Clients in the
@@ -29,6 +32,7 @@ Diagnostics go to stderr; stdout carries nothing but protocol.
 from __future__ import annotations
 
 import argparse
+import datetime
 import json
 import os
 import sys
@@ -46,7 +50,7 @@ from google_ads_client import (  # noqa: E402
 )
 
 SERVER_NAME = "neo-google-ads"
-SERVER_VERSION = "2.4.0"
+SERVER_VERSION = "2.5.0"
 
 # Protocol revisions this server can answer, newest first. The 2026-07-28
 # revision replaced initialize with server/discover; the older ones are
@@ -674,6 +678,127 @@ def tool_catalogue() -> list[dict]:
             },
         },
         {
+            "name": "search_console_sites",
+            "description": ("Lists the Google Search Console properties this login can read, "
+                            "with the permission level. Start here for anything organic."),
+            "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
+        },
+        {
+            "name": "search_console_performance",
+            "description": ("Organic Google search performance from Search Console: clicks, "
+                            "impressions, CTR and average position, grouped by query, page, "
+                            "country, device, date or search appearance. Read-only."),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "site_url": SITE_URL,
+                    "dimensions": {"type": "array", "items": {"type": "string", "enum": list(GSC_DIMENSIONS)},
+                                   "default": ["query"],
+                                   "description": "Group by these, in this order. Default: query."},
+                    "date_range": {"type": "string", "enum": list(GSC_DATE_RANGES), "default": "LAST_28_DAYS",
+                                   "description": ("Ends the day before yesterday — the latest two "
+                                                   "days are still incomplete in Search Console.")},
+                    "start_date": {"type": "string", "description": "YYYY-MM-DD, together with end_date."},
+                    "end_date": {"type": "string", "description": "YYYY-MM-DD, together with start_date."},
+                    "search_type": {"type": "string", "enum": list(GSC_SEARCH_TYPES), "default": "web"},
+                    "query_contains": {"type": "string", "description": "Only queries containing this text."},
+                    "page_contains": {"type": "string", "description": "Only pages whose URL contains this."},
+                    "country": {"type": "string", "description": "ISO 3166-1 alpha-3, e.g. aut, deu."},
+                    "device": {"type": "string", "enum": ["DESKTOP", "MOBILE", "TABLET"]},
+                    "filters": {"type": "array", "description": "Further filters, all ANDed.",
+                                "items": {"type": "object", "properties": {
+                                    "dimension": {"type": "string", "enum": list(GSC_DIMENSIONS)},
+                                    "operator": {"type": "string", "enum": list(GSC_OPERATORS)},
+                                    "expression": {"type": "string"}},
+                                    "required": ["dimension", "operator", "expression"],
+                                    "additionalProperties": False}},
+                    "fresh": {"type": "boolean", "default": False,
+                              "description": "Include the latest, still incomplete data."},
+                    "limit": {"type": "integer", "default": DEFAULT_ROW_LIMIT,
+                              "description": f"Rows to return, up to {GSC_MAX_ROWS}."},
+                },
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "search_console_inspect_url",
+            "description": ("Asks Search Console what Google knows about one URL: indexed or "
+                            "not and why, last crawl, canonical, robots.txt, rich results. "
+                            "Read-only — it does not request a new crawl."),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "site_url": SITE_URL,
+                    "url": {"type": "string", "description": "The full URL to inspect."},
+                    "language": {"type": "string", "default": "de-AT",
+                                 "description": "Language of Google's explanations."},
+                },
+                "required": ["url"],
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "search_console_sitemaps",
+            "description": ("Lists the sitemaps submitted for a property, when Google last "
+                            "read them and how many errors and warnings it found."),
+            "inputSchema": {
+                "type": "object",
+                "properties": {"site_url": SITE_URL},
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "analytics_properties",
+            "description": ("Lists the Google Analytics 4 properties this login can read, "
+                            "with account. Start here for anything about visitors on the site."),
+            "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
+        },
+        {
+            "name": "analytics_report",
+            "description": ("Runs a Google Analytics 4 report: any dimensions and metrics, e.g. "
+                            "pagePath with screenPageViews, sessionSource with sessions, date with "
+                            "activeUsers. Read-only. Counts only visitors who consented to statistics."),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "property_id": PROPERTY_ID,
+                    "dimensions": {"type": "array", "items": {"type": "string"}, "default": ["date"],
+                                   "description": "GA4 API names, e.g. pagePath, sessionDefaultChannelGroup."},
+                    "metrics": {"type": "array", "items": {"type": "string"},
+                                "default": ["activeUsers", "sessions"],
+                                "description": "GA4 API names, e.g. screenPageViews, engagementRate, keyEvents."},
+                    "date_range": {"type": "string", "enum": list(GA_DATE_RANGES), "default": "LAST_28_DAYS",
+                                   "description": "Ends yesterday — today is still incomplete."},
+                    "start_date": {"type": "string", "description": "YYYY-MM-DD, together with end_date."},
+                    "end_date": {"type": "string", "description": "YYYY-MM-DD, together with start_date."},
+                    "filters": {"type": "array", "description": "Dimension filters, all ANDed.",
+                                "items": {"type": "object", "properties": {
+                                    "dimension": {"type": "string"},
+                                    "match": {"type": "string", "enum": list(GA_MATCH_TYPES)},
+                                    "value": {"type": "string"}},
+                                    "required": ["dimension", "value"],
+                                    "additionalProperties": False}},
+                    "order_by": {"type": "string",
+                                 "description": "A metric (descending) or dimension (ascending). Default: first metric."},
+                    "limit": {"type": "integer", "default": DEFAULT_ROW_LIMIT},
+                },
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "analytics_metadata",
+            "description": ("Lists the dimensions and metrics a GA4 property offers, including "
+                            "its own custom ones. Use it when a report is refused for an unknown field."),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "property_id": PROPERTY_ID,
+                    "contains": {"type": "string", "description": "Only fields whose name contains this."},
+                },
+                "additionalProperties": False,
+            },
+        },
+        {
             "name": "google_ads_change_log",
             "description": ("Shows what this server wrote, newest first: time, account, "
                             "whether it was a dry run, the reason given and the result. "
@@ -697,6 +822,337 @@ def tool_catalogue() -> list[dict]:
 # --------------------------------------------------------------------------
 # Tool implementations
 # --------------------------------------------------------------------------
+
+# --------------------------------------------------------------------------
+# Search Console (read-only)
+#
+# The organic side next to the paid one: which searches showed the site, at
+# what position, with how many clicks — and whether Google has indexed a
+# page at all. Every call is read-only; the scope the token carries
+# (webmasters.readonly) could not change anything even if a tool tried.
+# --------------------------------------------------------------------------
+
+GSC_DATE_RANGES = {
+    "LAST_7_DAYS": 7, "LAST_28_DAYS": 28, "LAST_3_MONTHS": 91,
+    "LAST_6_MONTHS": 182, "LAST_12_MONTHS": 365, "LAST_16_MONTHS": 486,
+}
+GSC_DIMENSIONS = ("query", "page", "country", "device", "date", "searchAppearance")
+GSC_SEARCH_TYPES = ("web", "image", "video", "news", "discover", "googleNews")
+GSC_OPERATORS = ("equals", "notEquals", "contains", "notContains", "includingRegex", "excludingRegex")
+GSC_MAX_ROWS = 25000
+
+# Search Console publishes a day two to three days late. A window that ends
+# today reads as a collapse in the last days that is really just missing
+# data — so the default window ends the day before yesterday, as the
+# Search Console interface does.
+GSC_DELAY_DAYS = 2
+
+SITE_URL = {"type": "string",
+            "description": ("Property exactly as Search Console names it: sc-domain:example.at "
+                            "for a domain property, https://example.at/ for a URL prefix. "
+                            "May be omitted when the login can read exactly one property.")}
+
+
+def gsc_dates(args: dict, today: datetime.date | None = None) -> tuple[str, str]:
+    """(start, end) as YYYY-MM-DD. Explicit dates win over date_range."""
+    if args.get("start_date") or args.get("end_date"):
+        if not (args.get("start_date") and args.get("end_date")):
+            raise GoogleAdsError("start_date and end_date go together — pass both or neither.")
+        return args["start_date"], args["end_date"]
+    name = args.get("date_range") or "LAST_28_DAYS"
+    if name not in GSC_DATE_RANGES:
+        raise GoogleAdsError(f"Unknown date_range '{name}'. Known: {', '.join(GSC_DATE_RANGES)}.")
+    end = (today or datetime.date.today()) - datetime.timedelta(days=GSC_DELAY_DAYS)
+    start = end - datetime.timedelta(days=GSC_DATE_RANGES[name] - 1)
+    return start.isoformat(), end.isoformat()
+
+
+def gsc_query_body(args: dict, today: datetime.date | None = None) -> dict:
+    """The searchAnalytics.query body for the performance tool's arguments."""
+    dimensions = list(args.get("dimensions") or ["query"])
+    unknown = [d for d in dimensions if d not in GSC_DIMENSIONS]
+    if unknown:
+        raise GoogleAdsError(f"Unknown dimension(s) {', '.join(unknown)}. Known: {', '.join(GSC_DIMENSIONS)}.")
+    search_type = args.get("search_type") or "web"
+    if search_type not in GSC_SEARCH_TYPES:
+        raise GoogleAdsError(f"Unknown search_type '{search_type}'. Known: {', '.join(GSC_SEARCH_TYPES)}.")
+
+    start, end = gsc_dates(args, today)
+    limit = max(1, min(int(args.get("limit") or DEFAULT_ROW_LIMIT), GSC_MAX_ROWS))
+    body: dict = {"startDate": start, "endDate": end, "dimensions": dimensions,
+                  "type": search_type, "rowLimit": limit}
+    if args.get("fresh"):
+        body["dataState"] = "all"
+
+    filters = []
+    for key, dimension in (("query_contains", "query"), ("page_contains", "page")):
+        if args.get(key):
+            filters.append({"dimension": dimension, "operator": "contains", "expression": args[key]})
+    if args.get("country"):
+        filters.append({"dimension": "country", "operator": "equals",
+                        "expression": str(args["country"]).lower()})
+    if args.get("device"):
+        filters.append({"dimension": "device", "operator": "equals",
+                        "expression": str(args["device"]).upper()})
+    for extra in args.get("filters") or []:
+        if extra.get("dimension") not in GSC_DIMENSIONS or extra.get("operator") not in GSC_OPERATORS:
+            raise GoogleAdsError(f"Filter {extra} needs a known dimension and one of: {', '.join(GSC_OPERATORS)}.")
+        filters.append({"dimension": extra["dimension"], "operator": extra["operator"],
+                        "expression": str(extra.get("expression", ""))})
+    if filters:
+        body["dimensionFilterGroups"] = [{"groupType": "and", "filters": filters}]
+    return body
+
+
+def gsc_shape(dimensions: list[str], response: dict) -> dict:
+    rows = []
+    for row in response.get("rows") or []:
+        entry = dict(zip(dimensions, row.get("keys") or []))
+        entry.update({
+            "clicks": int(row.get("clicks", 0)),
+            "impressions": int(row.get("impressions", 0)),
+            "ctr_percent": round(float(row.get("ctr", 0)) * 100, 2),
+            "position": round(float(row.get("position", 0)), 1),
+        })
+        rows.append(entry)
+    return {
+        "row_count": len(rows),
+        "rows": rows,
+        "sum_of_rows": {"clicks": sum(r["clicks"] for r in rows),
+                        "impressions": sum(r["impressions"] for r in rows)},
+        "note": ("position is the AVERAGE position (1 = top of page one; 11 and worse is page "
+                 "two or later). Google leaves out rare queries for privacy, so the sum of the "
+                 "rows is lower than the totals in the Search Console interface."),
+    }
+
+
+def _site(client: Client, args: dict) -> str:
+    site = (args.get("site_url") or "").strip()
+    if site:
+        return site
+    readable = [e.get("siteUrl", "") for e in client.search_console_sites()
+                if e.get("permissionLevel") != "siteUnverifiedUser"]
+    if len(readable) == 1:
+        return readable[0]
+    if not readable:
+        raise GoogleAdsError("This login can read no Search Console property. Check that the Google "
+                             "account behind it has access in Search Console.")
+    raise GoogleAdsError("Several properties are readable — pass site_url. Readable: "
+                         + ", ".join(readable) + ".")
+
+
+def tool_gsc_sites(args: dict) -> dict:
+    sites = [{"site_url": e.get("siteUrl", ""), "permission": e.get("permissionLevel", "")}
+             for e in _client(args).search_console_sites()]
+    return {"site_count": len(sites), "sites": sites,
+            "note": ("siteUnverifiedUser means: listed, but no data readable. "
+                     "sc-domain: is a domain property and covers every protocol and subdomain.")}
+
+
+def tool_gsc_performance(args: dict) -> dict:
+    client = _client(args)
+    site = _site(client, args)
+    body = gsc_query_body(args)
+    answer = gsc_shape(body["dimensions"], client.search_console_query(site, body))
+    answer.update({"site_url": site, "start_date": body["startDate"], "end_date": body["endDate"],
+                   "search_type": body["type"]})
+    return answer
+
+
+def tool_gsc_inspect_url(args: dict) -> dict:
+    client = _client(args)
+    site = _site(client, args)
+    raw = client.search_console_inspect(site, args["url"], args.get("language") or "de-AT")
+    result = raw.get("inspectionResult") or {}
+    index = result.get("indexStatusResult") or {}
+    rich = result.get("richResultsResult") or {}
+    return {
+        "url": args["url"],
+        "site_url": site,
+        "verdict": index.get("verdict", ""),
+        "coverage": index.get("coverageState", ""),
+        "indexing_allowed": index.get("indexingState", ""),
+        "robots_txt": index.get("robotsTxtState", ""),
+        "page_fetch": index.get("pageFetchState", ""),
+        "last_crawl": index.get("lastCrawlTime", ""),
+        "crawled_as": index.get("crawledAs", ""),
+        "google_canonical": index.get("googleCanonical", ""),
+        "user_canonical": index.get("userCanonical", ""),
+        "sitemaps": index.get("sitemap") or [],
+        "referring_urls": (index.get("referringUrls") or [])[:5],
+        "rich_results": {"verdict": rich.get("verdict", ""),
+                         "types": [d.get("richResultType", "") for d in rich.get("detectedItems") or []]},
+        "report_link": result.get("inspectionResultLink", ""),
+        "note": ("Reads what Google has stored — it does not ask Google to crawl again. "
+                 "Quota: about 2,000 inspections per property and day."),
+    }
+
+
+def tool_gsc_sitemaps(args: dict) -> dict:
+    client = _client(args)
+    site = _site(client, args)
+    maps = []
+    for entry in client.search_console_sitemaps(site):
+        maps.append({
+            "path": entry.get("path", ""),
+            "last_submitted": entry.get("lastSubmitted", ""),
+            "last_downloaded": entry.get("lastDownloaded", ""),
+            "pending": bool(entry.get("isPending")),
+            "warnings": int(entry.get("warnings", 0) or 0),
+            "errors": int(entry.get("errors", 0) or 0),
+            "contents": [{"type": c.get("type", ""), "submitted": int(c.get("submitted", 0) or 0)}
+                         for c in entry.get("contents") or []],
+        })
+    return {"site_url": site, "sitemap_count": len(maps), "sitemaps": maps}
+
+
+# --------------------------------------------------------------------------
+# Google Analytics 4 (read-only)
+#
+# What the visitors did once they were on the site. Every number here comes
+# only from visitors who allowed statistics in the cookie banner — with
+# consent mode "basic" nobody else is counted or modelled. The tools say so
+# in every answer, because a low number otherwise reads as low traffic.
+# --------------------------------------------------------------------------
+
+GA_DATE_RANGES = {
+    "TODAY": ("today", "today"), "YESTERDAY": ("yesterday", "yesterday"),
+    "LAST_7_DAYS": ("7daysAgo", "yesterday"), "LAST_28_DAYS": ("28daysAgo", "yesterday"),
+    "LAST_90_DAYS": ("90daysAgo", "yesterday"), "LAST_12_MONTHS": ("365daysAgo", "yesterday"),
+}
+GA_MATCH_TYPES = ("EXACT", "BEGINS_WITH", "ENDS_WITH", "CONTAINS", "FULL_REGEXP", "PARTIAL_REGEXP")
+GA_MAX_ROWS = 100000
+
+PROPERTY_ID = {"type": "string",
+               "description": ("Numeric GA4 property ID, e.g. 123456789. May be omitted when "
+                               "the login can read exactly one property.")}
+
+GA_CONSENT_NOTE = ("Counts only visitors who allowed statistics in the cookie banner; with "
+                   "consent mode basic nobody else is counted or modelled. Small numbers can "
+                   "also be withheld by Google's data thresholds.")
+
+
+def _without(value: str, prefix: str) -> str:
+    """str.removeprefix for Pythons before 3.9 — the desktop app runs whatever is installed."""
+    return value[len(prefix):] if value.startswith(prefix) else value
+
+
+def ga_report_body(args: dict) -> dict:
+    """The runReport body for the report tool's arguments."""
+    dimensions = list(args.get("dimensions") or ["date"])
+    metrics = list(args.get("metrics") or ["activeUsers", "sessions"])
+    if args.get("start_date") or args.get("end_date"):
+        if not (args.get("start_date") and args.get("end_date")):
+            raise GoogleAdsError("start_date and end_date go together — pass both or neither.")
+        start, end = args["start_date"], args["end_date"]
+    else:
+        name = args.get("date_range") or "LAST_28_DAYS"
+        if name not in GA_DATE_RANGES:
+            raise GoogleAdsError(f"Unknown date_range '{name}'. Known: {', '.join(GA_DATE_RANGES)}.")
+        start, end = GA_DATE_RANGES[name]
+
+    limit = max(1, min(int(args.get("limit") or DEFAULT_ROW_LIMIT), GA_MAX_ROWS))
+    body: dict = {
+        "dateRanges": [{"startDate": start, "endDate": end}],
+        "dimensions": [{"name": d} for d in dimensions],
+        "metrics": [{"name": m} for m in metrics],
+        "limit": limit,
+        "metricAggregations": ["TOTAL"],
+    }
+    order = args.get("order_by") or ("date" if dimensions == ["date"] else metrics[0])
+    if order in dimensions:
+        body["orderBys"] = [{"dimension": {"dimensionName": order}, "desc": False}]
+    else:
+        body["orderBys"] = [{"metric": {"metricName": order}, "desc": True}]
+
+    filters = []
+    for extra in args.get("filters") or []:
+        match = str(extra.get("match") or "CONTAINS").upper()
+        if match not in GA_MATCH_TYPES or not extra.get("dimension"):
+            raise GoogleAdsError(f"Filter {extra} needs a dimension and one of: {', '.join(GA_MATCH_TYPES)}.")
+        filters.append({"filter": {"fieldName": extra["dimension"], "stringFilter": {
+            "matchType": match, "value": str(extra.get("value", "")), "caseSensitive": False}}})
+    if len(filters) == 1:
+        body["dimensionFilter"] = filters[0]
+    elif filters:
+        body["dimensionFilter"] = {"andGroup": {"expressions": filters}}
+    return body
+
+
+def ga_shape(response: dict) -> dict:
+    dims = [h.get("name", "") for h in response.get("dimensionHeaders") or []]
+    mets = [h.get("name", "") for h in response.get("metricHeaders") or []]
+
+    def number(value: str):
+        try:
+            number_ = float(value)
+        except (TypeError, ValueError):
+            return value
+        return int(number_) if number_.is_integer() else round(number_, 4)
+
+    def row_of(row: dict) -> dict:
+        entry = {d: v.get("value", "") for d, v in zip(dims, row.get("dimensionValues") or [])}
+        entry.update({m: number(v.get("value")) for m, v in zip(mets, row.get("metricValues") or [])})
+        return entry
+
+    rows = [row_of(r) for r in response.get("rows") or []]
+    totals = [row_of(r) for r in response.get("totals") or []]
+    return {"row_count": len(rows), "total_rows_in_report": response.get("rowCount", len(rows)),
+            "rows": rows, "totals": {m: totals[0].get(m) for m in mets} if totals else {},
+            "note": GA_CONSENT_NOTE}
+
+
+def _ga_property(client: Client, args: dict) -> str:
+    raw = str(args.get("property_id") or "").strip()
+    if raw:
+        return _without(raw, "properties/")
+    props = [_without(p.get("property", ""), "properties/")
+             for a in client.analytics_account_summaries() for p in a.get("propertySummaries") or []]
+    if len(props) == 1:
+        return props[0]
+    if not props:
+        raise GoogleAdsError("This login can read no Google Analytics property.")
+    raise GoogleAdsError("Several properties are readable — pass property_id. Readable: "
+                         + ", ".join(props) + ".")
+
+
+def tool_ga_properties(args: dict) -> dict:
+    out = []
+    for account in _client(args).analytics_account_summaries():
+        for prop in account.get("propertySummaries") or []:
+            out.append({"property_id": _without(prop.get("property", ""), "properties/"),
+                        "name": prop.get("displayName", ""),
+                        "type": prop.get("propertyType", ""),
+                        "account": account.get("displayName", ""),
+                        "account_id": _without(account.get("account", ""), "accounts/")})
+    return {"property_count": len(out), "properties": out}
+
+
+def tool_ga_report(args: dict) -> dict:
+    client = _client(args)
+    prop = _ga_property(client, args)
+    body = ga_report_body(args)
+    answer = ga_shape(client.analytics_report(prop, body))
+    answer.update({"property_id": prop, "date_range": body["dateRanges"][0]})
+    return answer
+
+
+def tool_ga_metadata(args: dict) -> dict:
+    client = _client(args)
+    prop = _ga_property(client, args)
+    meta = client.analytics_metadata(prop)
+    needle = str(args.get("contains") or "").lower()
+
+    def pick(items: list[dict]) -> list[dict]:
+        out = [{"name": i.get("apiName", ""), "label": i.get("uiName", ""),
+                "category": i.get("category", "")} for i in items]
+        if needle:
+            out = [o for o in out if needle in (o["name"] + " " + o["label"]).lower()]
+        return out[:DEFAULT_ROW_LIMIT]
+
+    return {"property_id": prop, "dimensions": pick(meta.get("dimensions") or []),
+            "metrics": pick(meta.get("metrics") or [])}
+
 
 def _client(args: dict) -> Client:
     return Client()
@@ -1109,6 +1565,13 @@ HANDLERS = {
     "google_ads_set_budget": tool_set_budget,
     "google_ads_set_bid": tool_set_bid,
     "google_ads_mutate": tool_mutate,
+    "search_console_sites": tool_gsc_sites,
+    "search_console_performance": tool_gsc_performance,
+    "search_console_inspect_url": tool_gsc_inspect_url,
+    "search_console_sitemaps": tool_gsc_sitemaps,
+    "analytics_properties": tool_ga_properties,
+    "analytics_report": tool_ga_report,
+    "analytics_metadata": tool_ga_metadata,
     "google_ads_change_log": tool_change_log,
 }
 

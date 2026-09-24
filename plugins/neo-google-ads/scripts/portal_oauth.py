@@ -68,7 +68,7 @@ from neo_design import esc, symbol
 # wer schreiben darf, ändert Gebote und Budgets. Eine feinere Einteilung
 # würde eine Oberfläche brauchen, in der man sie auch versteht.
 SCOPES = {
-    "ads:read": "Kampagnen, Keywords, Suchbegriffe und Berichte lesen",
+    "ads:read": "Kampagnen, Keywords, Suchbegriffe, Berichte, Search Console und Analytics lesen",
     "ads:write": "Änderungen vornehmen — Gebote, Budgets, Keywords, Status",
 }
 DEFAULT_SCOPE = "ads:read ads:write"

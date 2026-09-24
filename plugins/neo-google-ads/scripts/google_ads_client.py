@@ -56,7 +56,37 @@ import urllib.request
 DEFAULT_API_VERSION = "v25"
 API_HOST = "https://googleads.googleapis.com"
 TOKEN_URL = "https://oauth2.googleapis.com/token"
-OAUTH_SCOPE = "https://www.googleapis.com/auth/adwords"
+
+# What the refresh token asks Google for. Three scopes since 2.5.0: Google
+# Ads (read and write, the guardrails decide), Search Console READ-ONLY and
+# Google Analytics READ-ONLY. The two read-only scopes cannot change
+# anything — no sitemap submission, no URL removal, no new users, no edits
+# to an Analytics property. A refresh token issued before 2.5.0 carries only
+# the first; the new tools then answer with a hint to connect Google again.
+ADS_SCOPE = "https://www.googleapis.com/auth/adwords"
+SEARCH_CONSOLE_SCOPE = "https://www.googleapis.com/auth/webmasters.readonly"
+ANALYTICS_SCOPE = "https://www.googleapis.com/auth/analytics.readonly"
+OAUTH_SCOPE = f"{ADS_SCOPE} {SEARCH_CONSOLE_SCOPE} {ANALYTICS_SCOPE}"
+
+# Search Console lives on two hosts: the classic Webmasters API (sites,
+# search analytics, sitemaps) and the newer Search Console API (URL
+# inspection). Google Analytics on two more: Admin (which properties) and
+# Data (reports). None of them needs the developer-token header.
+WEBMASTERS_API = "https://www.googleapis.com/webmasters/v3"
+SEARCH_CONSOLE_API = "https://searchconsole.googleapis.com/v1"
+ANALYTICS_ADMIN_API = "https://analyticsadmin.googleapis.com/v1beta"
+ANALYTICS_DATA_API = "https://analyticsdata.googleapis.com/v1beta"
+
+# Per service: its name in hints, the Cloud Console name of the API(s) to
+# switch on, and the tool that lists what the login can read.
+GOOGLE_SERVICES = {
+    "search_console": ("Search Console", "\u201eGoogle Search Console API\u201c",
+                       "search_console_sites",
+                       "the site URL must match exactly, e.g. sc-domain:example.at or https://example.at/"),
+    "analytics": ("Google Analytics", "\u201eGoogle Analytics Data API\u201c and \u201eGoogle Analytics Admin API\u201c",
+                  "analytics_properties",
+                  "pass the numeric property ID, e.g. 123456789"),
+}
 
 # Der Name, unter dem diese Anwendung auftritt: Seitentitel, Kopfzeile,
 # Authenticator-App und der Anzeigename des Connectors in claude.ai.
@@ -529,6 +559,99 @@ class Client:
                         "upgrade the access level. The project is the number before "
                         "the dash in the client ID.")
         return GoogleAdsError(summary, detail=payload, status=exc.code)
+
+    # -- Search Console and Analytics (read-only) ----------------------------
+
+    def google_call(self, method: str, url: str, body: dict | None = None,
+                    *, service: str = "search_console") -> dict:
+        """One call to a plain Google API (Search Console, Analytics): bearer token only.
+
+        Deliberately separate from call(): no developer-token, no
+        login-customer-id, and an error envelope of a different shape.
+        """
+        data = json.dumps(body).encode("utf-8") if body is not None else None
+        request = urllib.request.Request(url, data=data, method=method)
+        request.add_header("Authorization", f"Bearer {self.access_token()}")
+        request.add_header("Content-Type", "application/json")
+        try:
+            with urllib.request.urlopen(request, timeout=self.timeout) as response:
+                raw = response.read().decode("utf-8")
+                return json.loads(raw) if raw else {}
+        except urllib.error.HTTPError as exc:
+            raise self._translate_google(exc, service) from exc
+        except urllib.error.URLError as exc:
+            raise GoogleAdsError(f"Cannot reach {url}: {exc.reason}") from exc
+
+    def _translate_google(self, exc: urllib.error.HTTPError,
+                          service: str = "search_console") -> GoogleAdsError:
+        """Google's standard error envelope, plus the three causes that matter.
+
+        Search Console and Analytics fail for reasons that have nothing to
+        do with the request: the refresh token predates the scope, the API
+        is not switched on in the Cloud project, or the Google account
+        behind the token has no access to the property. Each gets a hint
+        that says what to do — the raw message says none of that.
+        """
+        name, apis, list_tool, id_hint = GOOGLE_SERVICES[service]
+        raw = exc.read().decode("utf-8", "replace")
+        try:
+            error = (json.loads(raw) or {}).get("error") or {}
+        except json.JSONDecodeError:
+            return GoogleAdsError(f"HTTP {exc.code} from the {name} API: {raw[:800]}",
+                                  status=exc.code)
+
+        message = error.get("message") or f"HTTP {exc.code}"
+        reasons = {str(d.get("reason", "")) for d in error.get("details") or [] if isinstance(d, dict)}
+        reasons |= {str(e.get("reason", "")) for e in error.get("errors") or [] if isinstance(e, dict)}
+        lower = message.lower()
+
+        if "ACCESS_TOKEN_SCOPE_INSUFFICIENT" in reasons or "insufficient authentication scopes" in lower:
+            message += (f"\n  Hint: the stored Google login predates {name} access. "
+                        "Connect Google once more in the console (or run google-ads-auth.py) "
+                        f"and allow the {name} permission on Google's consent screen.")
+        elif "SERVICE_DISABLED" in reasons or "has not been used in project" in lower or "is disabled" in lower:
+            message += (f"\n  Hint: switch on the {apis} in the Google Cloud project behind "
+                        "these OAuth credentials (APIs & Services -> Library). "
+                        "The project is the number before the dash in the client ID.")
+        elif exc.code == 403:
+            message += (f"\n  Hint: the Google account behind this login has no access to this "
+                        f"property. {list_tool} lists the ones it can read; {id_hint}.")
+        return GoogleAdsError(message, detail=error, status=exc.code)
+
+    def search_console_sites(self) -> list[dict]:
+        return self.google_call("GET", f"{WEBMASTERS_API}/sites").get("siteEntry") or []
+
+    def search_console_query(self, site_url: str, body: dict) -> dict:
+        site = urllib.parse.quote(site_url, safe="")
+        return self.google_call("POST", f"{WEBMASTERS_API}/sites/{site}/searchAnalytics/query", body)
+
+    def search_console_sitemaps(self, site_url: str) -> list[dict]:
+        site = urllib.parse.quote(site_url, safe="")
+        return self.google_call("GET", f"{WEBMASTERS_API}/sites/{site}/sitemaps").get("sitemap") or []
+
+    def search_console_inspect(self, site_url: str, url: str, language: str = "de-AT") -> dict:
+        return self.google_call("POST", f"{SEARCH_CONSOLE_API}/urlInspection/index:inspect",
+                                {"inspectionUrl": url, "siteUrl": site_url, "languageCode": language})
+
+    def analytics_account_summaries(self) -> list[dict]:
+        summaries, token = [], ""
+        while True:
+            url = f"{ANALYTICS_ADMIN_API}/accountSummaries?pageSize=200"
+            if token:
+                url += "&pageToken=" + urllib.parse.quote(token)
+            page = self.google_call("GET", url, service="analytics")
+            summaries.extend(page.get("accountSummaries") or [])
+            token = page.get("nextPageToken") or ""
+            if not token:
+                return summaries
+
+    def analytics_report(self, property_id: str, body: dict) -> dict:
+        return self.google_call("POST", f"{ANALYTICS_DATA_API}/properties/{property_id}:runReport",
+                                body, service="analytics")
+
+    def analytics_metadata(self, property_id: str) -> dict:
+        return self.google_call("GET", f"{ANALYTICS_DATA_API}/properties/{property_id}/metadata",
+                                service="analytics")
 
     # -- reading -----------------------------------------------------------
 

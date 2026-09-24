@@ -24,6 +24,18 @@ Status, Budgets, Gebote, und der rohe Mutate-Endpunkt für alles Übrige
 
 **Belegen** — ein Werkzeug: das Änderungsprotokoll.
 
+**Search Console und Analytics, nur lesend** — sieben Werkzeuge seit
+Server 2.5.0: `search_console_sites`, `search_console_performance`
+(Suchanfragen, Seiten, Länder, Geräte mit Klicks, Impressionen, CTR und
+Position), `search_console_inspect_url` (indexiert ja/nein und warum),
+`search_console_sitemaps`, dazu `analytics_properties`,
+`analytics_report` (GA4-Berichte mit frei wählbaren Dimensionen und
+Kennzahlen) und `analytics_metadata`. Dieselbe Google-Anmeldung, mit den
+Berechtigungen `webmasters.readonly` und `analytics.readonly` — beide
+können nichts verändern. Einrichtung: drei APIs im Cloud-Projekt
+einschalten und Google einmal neu verbinden, siehe
+`references/einrichtung.md`, Schritt 6.
+
 ## Schreiben ist ein Verfahren, kein Aufruf
 
 ```

@@ -295,6 +295,39 @@ Fragt nacheinander: Schreiben ein, welche Konten, Budgetdeckel,
 Steigerungsfaktor. Die Antworten stehen anschließend in der
 Konfiguration und gelten für jeden Aufruf.
 
+## Schritt 6: Search Console und Analytics (nur lesen)
+
+Seit Server 2.5.0 liest derselbe Server auch Google Search Console und
+Google Analytics 4. Geschrieben wird dort nichts — die beiden
+Berechtigungen `webmasters.readonly` und `analytics.readonly` lassen es
+gar nicht zu.
+
+1. **Drei APIs einschalten** — im Cloud-Projekt hinter dem OAuth-Client
+   (die Nummer vor dem Bindestrich in der Client-ID): *APIs & Dienste →
+   Bibliothek* → „Google Search Console API“, „Google Analytics Data API“,
+   „Google Analytics Admin API“, jeweils *Aktivieren*.
+2. **Zustimmungsbildschirm** — führt das Projekt die Berechtigungen einzeln
+   auf (*Google Auth Platform → Datenzugriff*), dort `webmasters.readonly`
+   und `analytics.readonly` ergänzen. Im Testmodus reicht es, dass das
+   Google-Konto als Testnutzer eingetragen ist.
+3. **Google neu verbinden** — in der Konsole *Google verbinden* (oder
+   `google-ads-auth.py`). Google fragt jetzt drei Berechtigungen ab; alle
+   bestätigen. Ein Login von vor 2.5.0 kennt die beiden neuen nicht — die
+   Werkzeuge sagen das dann ausdrücklich, statt still leer zu bleiben.
+4. **Zugriff des Google-Kontos** — das Konto, mit dem verbunden wird,
+   braucht in der Search Console mindestens eingeschränkten Zugriff auf die
+   Property und in Analytics mindestens die Rolle *Betrachter*.
+5. **Prüfen** — die Statusseite der Konsole zeigt je eine Zeile „Search
+   Console“ und „Google Analytics“ mit der Zahl der lesbaren Properties
+   oder dem, was fehlt.
+
+**Was die Zahlen bedeuten.** Search Console liefert zwei, drei Tage spät;
+das Werkzeug endet deshalb ab Werk vorgestern. Seltene Suchanfragen
+lässt Google aus Datenschutzgründen weg — die Summe der Zeilen liegt
+unter der Summe in der Oberfläche. Analytics zählt nur Besucher, die im
+Cookie-Hinweis der Statistik zugestimmt haben; mit dem Einwilligungsmodus
+„basic“ wird niemand sonst gezählt oder hochgerechnet.
+
 ## Windows
 
 Zwei Dinge sind dort anders.
