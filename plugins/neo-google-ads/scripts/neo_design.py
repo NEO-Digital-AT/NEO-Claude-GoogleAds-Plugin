@@ -60,6 +60,10 @@ _PFADE = {
     "speed": "M12 20a8 8 0 1 1 8-8 M12 12l4.5-4.5 M4.2 12H2 M22 12h-2.2 M12 4.2V2",
     "key": "M15.5 3a5.5 5.5 0 1 0-4.1 9.2L3 20.6V22h4v-2h2v-2h2l2.4-2.4A5.5 5.5 0 0 0 15.5 3z"
            " M16.8 7.2v.01",
+    # Datenquellen auf der oeffentlichen Seite
+    "ads_click": "M9 9l11 4-5 1.8L13.2 20 9 9z M5.6 5.6l1.6 1.6 M9 3v2.2 M3 9h2.2"
+                 " M4.7 13.3l1.6-1.6 M13.3 4.7l-1.6 1.6",
+    "monitoring": "M3 3v18h18 M7 15l4-4 3 3 5-6",
     # Wege in der Seitenleiste
     "dashboard": "M4 4h6v7H4z M14 4h6v4h-6z M14 12h6v8h-6z M4 15h6v5H4z",
     "conversion_path": "M2 12h3.5 M8.5 12h7 M18.5 12H22"

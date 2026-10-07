@@ -22,7 +22,8 @@ DREI STELLEN WEICHEN AB, jede aus einem Grund:
                 einen Dritten melden. Die Symbole liegen deshalb als
                 SVG im Quelltext, im selben 24er-Raster.
     Passkey     Der Entwurf nannte „Kennwort, zweiten Faktor und
-                Passkey". Passkeys gibt es in dieser Anwendung nicht.
+                Passkey", als es noch keine Passkeys gab; die Seite liess
+                sie damals weg. Seit das Portal sie kann, stehen sie da.
                 Eine Sicherheitsaussage, die nicht stimmt, gehört auf
                 keine Seite, erst recht nicht auf eine geprüfte.
     Scope       Der Entwurf kürzt die Berechtigung zu „…/auth/adwords".
@@ -36,6 +37,11 @@ Zeilen setzen sie wieder zu einem anklickbaren Verweis zusammen. Ohne sie
 ist die Adresse trotzdem zu lesen — das Stilblatt setzt sie zusammen.
 """
 from __future__ import annotations
+
+import functools
+import importlib.util
+import pathlib
+import sys
 
 import google_ads_client as gac
 import neo_design
@@ -128,7 +134,7 @@ html{scroll-behavior:smooth;overflow-x:clip}
 .hero{padding:88px 0 68px;display:grid;
   grid-template-columns:minmax(0,1.05fr) minmax(0,.95fr);gap:56px;align-items:center}
 .hero h1{font-size:var(--size-display-xl);font-weight:var(--weight-display);
-  letter-spacing:var(--tracking-display);line-height:1.06;margin:18px 0 0;max-width:15ch}
+  letter-spacing:var(--tracking-display);line-height:1.06;margin:18px 0 0;max-width:17ch}
 .hero .lead{font-size:1.14rem;margin-top:22px}
 .hero .knoepfe{margin-top:30px}
 .hero .merkmale{margin-top:26px;gap:20px;color:var(--muted);font-size:.86rem}
@@ -150,6 +156,39 @@ section.block .inhalt{margin-top:36px}
 .schrittkopf .sym{color:var(--muted)}
 .tile .sym{color:var(--muted)}
 .kennzahlen{padding-bottom:8px}
+.grid-4{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:var(--space-4,16px)}
+.grid-4.gleich{grid-auto-rows:1fr}
+/* Sechs Kacheln mit Fliesstext: drei nebeneinander, zwei Reihen. Das
+   auto-fit-Raster der Grundbausteine machte am breiten Bildschirm vier
+   Spalten daraus — vier sind fuer Fliesstext zu eng, und 4 + 2 laesst
+   eine halbe Reihe leer. */
+.grid-3x{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:var(--space-4,16px)}
+.grid-3x.gleich{grid-auto-rows:1fr}
+.grid-3x.gleich > *{height:100%}
+.grid-3x > .card + .card,.grid-4 > .card + .card{margin-top:0}
+.grid-4.gleich > *{height:100%}
+.card-kopf h3{margin:0}
+/* --faint (#778276) erreicht auf der helleren Kartenflaeche (#151C14) nur
+   4,34:1 — zu wenig fuer die kleinen Beschriftungen. Auf Karten deshalb
+   eine Spur heller: 4,9:1, gemessen. */
+.card th,.card .eyebrow{color:#808B7F}
+.quelle{display:grid;gap:14px;align-content:start}
+.quelle-kopf{display:flex;align-items:center;justify-content:space-between;gap:12px}
+.quelle-kopf .sym{color:var(--neon)}
+.quelle h3{margin:0}
+.quelle-teil{display:grid;gap:6px}
+.quelle-teil ul{margin:0;padding:0;list-style:none;display:grid;gap:6px}
+.quelle-teil li{position:relative;padding-left:18px;color:var(--fg-soft);font-size:.92rem;
+  line-height:1.45}
+.quelle-teil li::before{content:"";position:absolute;left:2px;top:.62em;width:7px;height:7px;
+  border-radius:50%;background:var(--line-strong)}
+.quelle-teil.aendert li::before{background:var(--neon)}
+.quelle-teil.nie li::before{background:none;border:1.5px solid var(--muted);width:6px;height:6px}
+ul.rechte{margin:0;padding:0;list-style:none;display:grid;gap:10px;min-width:0}
+ul.rechte li{min-width:0}
+ul.rechte .mono{display:block;overflow-wrap:anywhere}
+#transparenz td{overflow-wrap:anywhere}
+.hero h1 .ganz{white-space:nowrap}
 footer.fuss{border-top:1px solid var(--line);background:var(--ink-950);margin-top:40px}
 footer.fuss .innen{max-width:var(--measure-site);margin:0 auto;padding:40px 28px;
   display:flex;gap:28px;flex-wrap:wrap;align-items:center}
@@ -157,12 +196,27 @@ footer.fuss svg{height:20px;width:auto;color:var(--neon);opacity:.85}
 footer.fuss .zeile{color:var(--faint);font-size:.84rem}
 footer.fuss .links{margin-left:auto;gap:22px;font-size:.86rem}
 
+@media (max-width:1100px){
+  .grid-4,.grid-3x{grid-template-columns:repeat(2,minmax(0,1fr))}
+}
 @media (max-width:900px){
   .hero{grid-template-columns:1fr;gap:36px;padding:56px 0 48px}
   .kopf nav.nav{display:none}
+  .kopf .innen > .button{margin-left:auto}
   section.block{padding:56px 0}
 }
 @media (max-width:640px){
+  .grid-4,.grid-3x{grid-template-columns:1fr}
+  /* „Online-Marketing" bricht nicht um; die Schrift wird so klein, dass
+     das Wort auch auf 320 px in die Spalte passt (9,3 px Breite je px
+     Schriftgroesse, gemessen). */
+  .hero h1{font-size:min(var(--size-display-xl), 9.4vw)}
+  /* Beschriftung ueber dem Wert statt daneben, wie in der Verwaltung:
+     „BERECHTIGUNGEN" und eine lange Adresse passen nicht nebeneinander. */
+  #transparenz table,#transparenz tbody,#transparenz tr,#transparenz th,
+  #transparenz td{display:block;width:auto}
+  #transparenz th{border-bottom:none;padding-bottom:2px}
+  #transparenz td{padding-top:0}
   .spalte,.kopf .innen,footer.fuss .innen{padding-left:18px;padding-right:18px}
   .card{padding:var(--space-5)}
   .kopf .wo{display:none}
@@ -229,15 +283,19 @@ def _block(kennung: str, eyebrow: str, titel: str, inhalt: str, lead: str = "") 
 # Beitragsbilder auf neo-digital.at/blog — dunkler Grund, das Neongruen als
 # einziger Akzent, das Violett nur als Schein in der Ecke, flache Formen
 # ohne Verlaufsspielerei. Es zeigt den Ablauf, um den es auf der Seite
-# geht: ein Konto wird gelesen, ein Fund markiert, die Antwort kommt als
-# Text, und geschrieben wird erst nach dem Trockenlauf und einem Ja.
+# geht: drei Quellen — bezahlte Klicks, organische Suche, Verhalten auf
+# der Website — laufen in einem Gespraech zusammen, und geschrieben wird
+# erst nach dem Trockenlauf und einem Ja.
+#
+# Die Beschriftungen stehen in #A3ADA3 (7,5:1 auf der Kartenflaeche); das
+# fruehere #778276 lag mit 4,34:1 knapp unter AA.
 #
 # Als SVG im Quelltext, aus demselben Grund wie die Symbole: die Seite
 # laedt nichts nach. Ein Bild, das mitgeliefert wird, kann auch nicht
 # fehlen.
 # --------------------------------------------------------------------------
 HERO_SVG = """<svg class="bild" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 520"
-     role="img" aria-label="Ein Konto wird gelesen, ausgewertet und nach Freigabe geändert">
+     role="img" aria-label="Zahlen aus Google Ads, Search Console und Analytics laufen in einem Gespräch zusammen; geändert wird erst nach Trockenlauf und Freigabe">
 <defs>
   <radialGradient id="hb-violett" cx="18%" cy="8%" r="78%">
     <stop offset="0%" stop-color="#43159A" stop-opacity=".62"/>
@@ -251,6 +309,10 @@ HERO_SVG = """<svg class="bild" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 
   <linearGradient id="hb-balken" x1="0" y1="1" x2="0" y2="0">
     <stop offset="0%" stop-color="#3F5A08"/>
     <stop offset="100%" stop-color="#a8f20d"/>
+  </linearGradient>
+  <linearGradient id="hb-flaeche" x1="0" y1="0" x2="0" y2="1">
+    <stop offset="0%" stop-color="#a8f20d" stop-opacity=".34"/>
+    <stop offset="100%" stop-color="#a8f20d" stop-opacity="0"/>
   </linearGradient>
   <linearGradient id="hb-kante" x1="0" y1="0" x2="1" y2="0">
     <stop offset="0%" stop-color="#a8f20d" stop-opacity="0"/>
@@ -273,52 +335,83 @@ HERO_SVG = """<svg class="bild" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 
 <!-- Die Diagonale der Wortmarke, als ruhige Fuehrungslinie -->
 <path d="M-40 470 L300 170 L300 250 L40 480 Z" fill="#a8f20d" fill-opacity=".05"/>
 
-<!-- Konto-Fenster: was gelesen wird -->
-<g transform="translate(64 96)">
-  <rect width="352" height="252" rx="18" fill="#12180F" stroke="#232C22"/>
-  <rect x="1" y="1" width="350" height="1" rx=".5" fill="#EAF0E9" fill-opacity=".05"/>
-  <circle cx="26" cy="28" r="4.5" fill="#33402F"/>
-  <circle cx="42" cy="28" r="4.5" fill="#33402F"/>
-  <circle cx="58" cy="28" r="4.5" fill="#33402F"/>
-  <rect x="86" y="23" width="118" height="10" rx="5" fill="#1C241B"/>
-
-  <!-- Balken: Ausgaben je Kampagne, einer sticht heraus -->
-  <g transform="translate(28 74)">
-    <rect x="0"   y="86" width="26" height="60"  rx="5" fill="url(#hb-balken)" fill-opacity=".55"/>
-    <rect x="42"  y="54" width="26" height="92"  rx="5" fill="url(#hb-balken)" fill-opacity=".55"/>
-    <rect x="84"  y="104" width="26" height="42" rx="5" fill="url(#hb-balken)" fill-opacity=".55"/>
-    <rect x="126" y="18" width="26" height="128" rx="5" fill="url(#hb-balken)"/>
-    <rect x="126" y="18" width="26" height="128" rx="5" fill="none" stroke="#bcff33" stroke-opacity=".7"/>
-    <rect x="168" y="70" width="26" height="76"  rx="5" fill="url(#hb-balken)" fill-opacity=".55"/>
-    <rect x="210" y="96" width="26" height="50"  rx="5" fill="url(#hb-balken)" fill-opacity=".55"/>
-    <rect x="252" y="62" width="26" height="84"  rx="5" fill="url(#hb-balken)" fill-opacity=".55"/>
-    <line x1="-6" y1="152" x2="290" y2="152" stroke="#232C22"/>
-  </g>
-
-  <!-- Der Fund, markiert -->
-  <g transform="translate(140 60)">
-    <rect x="0" y="0" width="128" height="30" rx="8" fill="#0E130E" stroke="#a8f20d" stroke-opacity=".45"/>
-    <circle cx="17" cy="15" r="4" fill="#a8f20d"/>
-    <rect x="30" y="10" width="84" height="9" rx="4.5" fill="#a8f20d" fill-opacity=".38"/>
+<!-- Quelle 1: Google Ads — Ausgaben je Kampagne, eine sticht heraus -->
+<g transform="translate(56 78)">
+  <rect width="356" height="92" rx="16" fill="#12180F" stroke="#232C22"/>
+  <rect x="1" y="1" width="354" height="1" rx=".5" fill="#EAF0E9" fill-opacity=".05"/>
+  <text x="20" y="30" font-family="ui-monospace,Menlo,monospace" font-size="12"
+        fill="#A3ADA3" letter-spacing=".08em">GOOGLE ADS</text>
+  <rect x="20" y="44" width="92" height="8" rx="4" fill="#C7D0C6" fill-opacity=".2"/>
+  <rect x="20" y="60" width="64" height="8" rx="4" fill="#C7D0C6" fill-opacity=".14"/>
+  <g transform="translate(150 18)">
+    <rect x="0"   y="34" width="18" height="34" rx="4" fill="url(#hb-balken)" fill-opacity=".55"/>
+    <rect x="30"  y="22" width="18" height="46" rx="4" fill="url(#hb-balken)" fill-opacity=".55"/>
+    <rect x="60"  y="44" width="18" height="24" rx="4" fill="url(#hb-balken)" fill-opacity=".55"/>
+    <rect x="90"  y="2"  width="18" height="66" rx="4" fill="url(#hb-balken)"/>
+    <rect x="90"  y="2"  width="18" height="66" rx="4" fill="none" stroke="#bcff33" stroke-opacity=".7"/>
+    <rect x="120" y="28" width="18" height="40" rx="4" fill="url(#hb-balken)" fill-opacity=".55"/>
+    <rect x="150" y="40" width="18" height="28" rx="4" fill="url(#hb-balken)" fill-opacity=".55"/>
   </g>
 </g>
+
+<!-- Quelle 2: Search Console — die Position steigt -->
+<g transform="translate(56 186)">
+  <rect width="356" height="92" rx="16" fill="#12180F" stroke="#232C22"/>
+  <rect x="1" y="1" width="354" height="1" rx=".5" fill="#EAF0E9" fill-opacity=".05"/>
+  <text x="20" y="30" font-family="ui-monospace,Menlo,monospace" font-size="12"
+        fill="#A3ADA3" letter-spacing=".08em">SEARCH CONSOLE</text>
+  <rect x="20" y="44" width="84" height="8" rx="4" fill="#C7D0C6" fill-opacity=".2"/>
+  <rect x="20" y="60" width="104" height="8" rx="4" fill="#C7D0C6" fill-opacity=".14"/>
+  <g transform="translate(150 16)">
+    <line x1="0" y1="66" x2="176" y2="66" stroke="#232C22"/>
+    <polyline points="0,58 30,54 60,46 90,48 120,30 150,22 172,10" fill="none"
+              stroke="#a8f20d" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+    <circle cx="120" cy="30" r="3.4" fill="#a8f20d"/>
+    <circle cx="172" cy="10" r="4.6" fill="#0E130E" stroke="#bcff33" stroke-width="2"/>
+  </g>
+</g>
+
+<!-- Quelle 3: Analytics — Besuche ueber die Zeit -->
+<g transform="translate(56 294)">
+  <rect width="356" height="92" rx="16" fill="#12180F" stroke="#232C22"/>
+  <rect x="1" y="1" width="354" height="1" rx=".5" fill="#EAF0E9" fill-opacity=".05"/>
+  <text x="20" y="30" font-family="ui-monospace,Menlo,monospace" font-size="12"
+        fill="#A3ADA3" letter-spacing=".08em">ANALYTICS</text>
+  <rect x="20" y="44" width="100" height="8" rx="4" fill="#C7D0C6" fill-opacity=".2"/>
+  <rect x="20" y="60" width="72" height="8" rx="4" fill="#C7D0C6" fill-opacity=".14"/>
+  <g transform="translate(150 16)">
+    <path d="M0 50 C 22 44, 34 30, 56 34 S 92 52, 114 36 S 150 14, 176 20 L176 66 L0 66 Z"
+          fill="url(#hb-flaeche)"/>
+    <path d="M0 50 C 22 44, 34 30, 56 34 S 92 52, 114 36 S 150 14, 176 20" fill="none"
+          stroke="#a8f20d" stroke-opacity=".8" stroke-width="2"/>
+    <line x1="0" y1="66" x2="176" y2="66" stroke="#232C22"/>
+  </g>
+</g>
+
+<!-- Drei Leitungen laufen im Gespraech zusammen -->
+<g fill="none" stroke="#a8f20d" stroke-opacity=".5" stroke-width="1.6" stroke-dasharray="5 6">
+  <path d="M412 124 C 446 124, 446 188, 474 188"/>
+  <path d="M412 232 C 446 232, 446 192, 474 192"/>
+  <path d="M412 340 C 450 340, 446 196, 474 196"/>
+</g>
+<circle cx="474" cy="192" r="3.4" fill="#a8f20d"/>
 
 <!-- Gespraech: die KI antwortet und fragt nach Freigabe -->
-<g transform="translate(436 150)">
-  <rect width="300" height="88" rx="16" fill="#12180F" stroke="#232C22"/>
-  <rect x="1" y="1" width="298" height="1" rx=".5" fill="#EAF0E9" fill-opacity=".05"/>
-  <rect x="22" y="24" width="210" height="9" rx="4.5" fill="#C7D0C6" fill-opacity=".34"/>
-  <rect x="22" y="44" width="256" height="9" rx="4.5" fill="#C7D0C6" fill-opacity=".22"/>
-  <rect x="22" y="64" width="134" height="9" rx="4.5" fill="#C7D0C6" fill-opacity=".22"/>
-  <path d="M34 88 L34 104 L52 88 Z" fill="#12180F" stroke="#232C22"/>
+<g transform="translate(474 140)">
+  <rect width="282" height="96" rx="16" fill="#12180F" stroke="#232C22"/>
+  <rect x="1" y="1" width="280" height="1" rx=".5" fill="#EAF0E9" fill-opacity=".05"/>
+  <rect x="22" y="24" width="196" height="9" rx="4.5" fill="#C7D0C6" fill-opacity=".34"/>
+  <rect x="22" y="44" width="238" height="9" rx="4.5" fill="#C7D0C6" fill-opacity=".22"/>
+  <rect x="22" y="64" width="150" height="9" rx="4.5" fill="#C7D0C6" fill-opacity=".22"/>
+  <path d="M34 96 L34 112 L52 96 Z" fill="#12180F" stroke="#232C22"/>
 </g>
 
-<g transform="translate(436 268)">
-  <rect width="300" height="112" rx="16" fill="#151C14" stroke="#33402F"/>
-  <rect x="1" y="1" width="298" height="1" rx=".5" fill="#EAF0E9" fill-opacity=".06"/>
+<g transform="translate(474 268)">
+  <rect width="282" height="112" rx="16" fill="#151C14" stroke="#33402F"/>
+  <rect x="1" y="1" width="280" height="1" rx=".5" fill="#EAF0E9" fill-opacity=".06"/>
   <text x="22" y="34" font-family="ui-monospace,Menlo,monospace" font-size="13"
-        fill="#778276" letter-spacing=".08em">TROCKENLAUF</text>
-  <rect x="22" y="48" width="180" height="9" rx="4.5" fill="#C7D0C6" fill-opacity=".26"/>
+        fill="#A3ADA3" letter-spacing=".08em">TROCKENLAUF</text>
+  <rect x="22" y="48" width="170" height="9" rx="4.5" fill="#C7D0C6" fill-opacity=".26"/>
 
   <!-- Freigabeknopf -->
   <rect x="22" y="70" width="128" height="30" rx="9" fill="#a8f20d"/>
@@ -328,30 +421,51 @@ HERO_SVG = """<svg class="bild" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 
   <rect x="162" y="70" width="80" height="30" rx="9" fill="none" stroke="#33402F"/>
 </g>
 
-<!-- Verbindungsbogen vom Konto zum Gespraech -->
-<path d="M420 214 C 448 214, 448 194, 470 194" fill="none" stroke="#a8f20d"
-      stroke-opacity=".5" stroke-width="1.6" stroke-dasharray="5 6"/>
-<circle cx="470" cy="194" r="3.2" fill="#a8f20d"/>
-
 <!-- Weicher Markenschein unter dem Freigabeknopf -->
-<ellipse cx="522" cy="356" rx="96" ry="26" fill="#a8f20d" fill-opacity=".14" filter="url(#hb-weich)"/>
+<ellipse cx="560" cy="356" rx="96" ry="26" fill="#a8f20d" fill-opacity=".14" filter="url(#hb-weich)"/>
 
-<rect x="64" y="424" width="672" height="1.5" fill="url(#hb-kante)"/>
+<rect x="56" y="428" width="700" height="1.5" fill="url(#hb-kante)"/>
 </svg>"""
+
+
+# --------------------------------------------------------------------------
+# Wie viele Werkzeuge der Server hat — gezaehlt, nicht abgeschrieben
+# --------------------------------------------------------------------------
+# Auf der alten Seite stand „13 Werkzeuge", als es laengst 25 waren. Die
+# Zahlen kommen deshalb aus dem Server selbst: aus der Liste, die er
+# Claude ausliefert. Der HTTP-Server hat das Modul schon geladen und
+# bekommt es aus sys.modules; sonst wird es einmal nachgeladen.
+@functools.lru_cache(maxsize=1)
+def werkzeuge() -> dict:
+    """Werkzeuge je Dienst: {"google_ads": 13, "search_console": 6, ...}."""
+    modul = sys.modules.get("google_ads_mcp")
+    if modul is None:
+        pfad = pathlib.Path(__file__).with_name("google-ads-mcp.py")
+        spec = importlib.util.spec_from_file_location("google_ads_mcp", pfad)
+        modul = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(modul)
+    zaehler = {"google_ads": 0, "search_console": 0, "analytics": 0}
+    for name in modul.HANDLERS:
+        for dienst in zaehler:
+            if name.startswith(dienst + "_"):
+                zaehler[dienst] += 1
+    zaehler["gesamt"] = len(modul.HANDLERS)
+    return zaehler
 
 
 # --------------------------------------------------------------------------
 # Die Abschnitte
 # --------------------------------------------------------------------------
 def _kopfleiste(anmelden_url: str, logo: str) -> str:
-    punkte = (("#koennen", "Was es kann"), ("#ablauf", "Ablauf"),
-              ("#sicherheit", "Sicherheit"), ("#transparenz", "Transparenz"))
+    punkte = (("#quellen", "Datenquellen"), ("#koennen", "Was es kann"),
+              ("#ablauf", "Ablauf"), ("#sicherheit", "Sicherheit"),
+              ("#transparenz", "Transparenz"))
     nav = "".join(f'<a href="{p}">{esc(t)}</a>' for p, t in punkte)
     return (f'<header class="kopf"><div class="innen">'
             f'<a class="marke" href="{esc(NEO)}" target="_blank" rel="noopener"'
             f' aria-label="{esc(FIRMA)}">{logo}</a>'
             f'<span class="eyebrow wo">{esc(beiwort())}</span>'
-            f'<nav class="nav">{nav}</nav>'
+            f'<nav class="nav" aria-label="Abschnitte">{nav}</nav>'
             f'<a class="button klein" href="{esc(anmelden_url)}">Anmelden</a>'
             f'</div></header>')
 
@@ -360,21 +474,23 @@ def _hero(anmelden_url: str) -> str:
     return (
         '<section class="hero">'
         '<div>'
-        '<span class="eyebrow neon">Google Ads × Künstliche Intelligenz</span>'
-        '<h1>Google Ads steuern — <span style="color:var(--neon)">im Gespräch</span>.</h1>'
-        f'<p class="lead">{esc(gac.PORTAL_NAME)} verbindet Google Ads mit Claude. '
-        'Die KI liest ganze Konten, findet Streuverluste, erklärt Zahlen im Klartext '
-        'und setzt Änderungen um — Keywords, Budgets, Gebote, Kampagnenstruktur. '
-        'Jede einzelne erst nach ausdrücklicher Freigabe.</p>'
+        '<span class="eyebrow neon">Google Ads · Search Console · Analytics × KI</span>'
+        '<h1><span class="ganz">Online-Marketing</span> steuern — '
+        '<span class="ganz" style="color:var(--neon)">im Gespräch</span>.</h1>'
+        f'<p class="lead">{esc(gac.PORTAL_NAME)} verbindet Google Ads, die Google Search '
+        'Console und Google Analytics mit Claude. Die KI liest bezahlte Klicks, die '
+        'organische Suche und das Verhalten auf der Website zusammen, findet '
+        'Streuverluste, erklärt Zahlen im Klartext und setzt Änderungen um — jede '
+        'einzelne erst nach ausdrücklicher Freigabe.</p>'
         f'<div class="row knoepfe">'
         f'<a class="button" href="{esc(anmelden_url)}">{symbol("login", 20)}'
         f'Zur Verwaltung anmelden</a>'
-        f'<a class="button quiet" href="#koennen">Was es kann</a></div>'
+        f'<a class="button quiet" href="#quellen">Datenquellen ansehen</a></div>'
         f'<div class="row merkmale">'
         f'<span class="row eng">{symbol("science", 18)}'
         f'Trockenlauf vor jedem Schreiben</span>'
         f'<span class="row eng">{symbol("location_on", 18)}'
-        f'Daten bleiben auf dem Server</span></div>'
+        f'Server in Deutschland</span></div>'
         '</div>'
         '<div class="bildrahmen"><div class="schein"></div>'
         f'<div class="tafel">{HERO_SVG}</div></div>'
@@ -382,66 +498,130 @@ def _hero(anmelden_url: str) -> str:
 
 
 def _kennzahlen() -> str:
-    return ('<div class="grid-3 gleich kennzahlen">'
-            + _kennzahl("13", "Werkzeuge", "handyman",
-                        "Analyse, Keywords, Budgets, Berichte", neon=True)
-            + _kennzahl("Sekunden", "statt Tabellen-Abende", "bolt",
-                        "ganze Konten auf einmal gelesen")
+    zahl = werkzeuge()
+    return ('<div class="grid-4 gleich kennzahlen">'
+            + _kennzahl(str(zahl["gesamt"]), "Werkzeuge", "handyman",
+                        "für Ads, Search Console und Analytics", neon=True)
+            + _kennzahl("3", "Google-Dienste", "link",
+                        "über eine einzige Anmeldung")
             + _kennzahl("Jede Änderung", "einzeln freigegeben", "verified",
-                        "Trockenlauf gegen Googles Regelprüfung")
-            + _kennzahl("100 %", "EU-Hosting", "shield_lock",
-                        "ein Server, keine Weitergabe")
+                        "erst Trockenlauf, dann ein Ja")
+            + _kennzahl("Deutschland", "Serverstandort", "shield_lock",
+                        "Zugang und Protokoll liegen dort")
             + '</div>')
+
+
+def _liste(titel: str, punkte: tuple[str, ...], art: str = "") -> str:
+    eintraege = "".join(f"<li>{esc(p)}</li>" for p in punkte)
+    return (f'<div class="quelle-teil {art}"><span class="eyebrow">{esc(titel)}</span>'
+            f'<ul>{eintraege}</ul></div>')
+
+
+def _quelle(icon: str, titel: str, zahl: int, liest: tuple, aendert: tuple,
+            nie: tuple) -> str:
+    return (f'<div class="card quelle">'
+            f'<div class="quelle-kopf">{symbol(icon, 26)}'
+            f'<span class="state neutral">{zahl} Werkzeuge</span></div>'
+            f'<h3>{esc(titel)}</h3>'
+            + _liste("Liest", liest)
+            + _liste("Ändert — nach Freigabe", aendert, "aendert")
+            + _liste("Ändert nie", nie, "nie")
+            + '</div>')
+
+
+def _quellen() -> str:
+    zahl = werkzeuge()
+    karten = (
+        _quelle("ads_click", "Google Ads", zahl["google_ads"],
+                ("Kampagnen, Anzeigengruppen, Anzeigen und Budgets",
+                 "Keywords mit Qualitätsfaktor und die tatsächlichen Suchbegriffe",
+                 "Landingpages, Geräte, Regionen, Tageszeiten, Conversions",
+                 "Googles Empfehlungen und den Änderungsverlauf",
+                 "Keyword-Planer mit Suchvolumen und Gebotsspannen"),
+                ("Keywords und ausschließende Keywords",
+                 "Status, Tagesbudgets und Gebote",
+                 "Kampagnen und Anzeigen anlegen"),
+                ("Budgets über den gesetzten Deckel hinaus",
+                 "Mehr Änderungen auf einmal, als die Grenze je Aufruf erlaubt")),
+        _quelle("travel_explore", "Google Search Console", zahl["search_console"],
+                ("Suchanfragen und Seiten mit Klicks, Impressionen, Klickrate "
+                 "und Position",
+                 "Ob eine Seite im Google-Index ist, und wenn nicht, warum",
+                 "Eingereichte Sitemaps mit Fehlern und Warnungen"),
+                ("Sitemaps einreichen und entfernen",),
+                ("Nutzer und Berechtigungen der Property",)),
+        _quelle("monitoring", "Google Analytics 4", zahl["analytics"],
+                ("Berichte mit frei wählbaren Dimensionen und Kennzahlen",
+                 "Einstellungen samt Aufbewahrungsdauer der Daten",
+                 "Schlüsselereignisse und benutzerdefinierte Dimensionen"),
+                ("Ereignisse als Schlüsselereignis markieren",
+                 "Ereignisparameter als Dimension registrieren"),
+                ("Datenschutz-Einstellungen: Aufbewahrung, Google Signale, "
+                 "Datenfreigabe",
+                 "Nutzerverwaltung",
+                 "Dimensionen, die nach personenbezogenen Daten aussehen")),
+    )
+    inhalt = (f'<div class="grid-3 gleich">{"".join(karten)}</div>'
+              '<p class="note" style="margin-top:18px">Analytics zählt nur Besucher, '
+              'die auf der jeweiligen Website der Statistik zugestimmt haben. Jede '
+              'Antwort aus Analytics sagt das dazu, damit eine kleine Zahl nicht als '
+              'wenig Besuch gelesen wird.</p>')
+    return _block(
+        "quellen", "Datenquellen", "Drei Quellen, ein Gespräch.", inhalt,
+        lead="Jede Quelle beantwortet eine andere Frage: Was kostet ein Klick? Wie "
+             "findet man die Website ohne Anzeige? Was passiert danach auf der "
+             "Seite? Erst zusammen ergeben sie das ganze Bild.")
 
 
 def _koennen() -> str:
     kacheln = (
         ("query_stats", "Konto verstehen",
-         "Kampagnen, Anzeigengruppen, Keywords, Suchbegriffe, Budgets und "
-         "Kennzahlen werden gelesen und in Zusammenhang gebracht. Fragen wie "
-         "„Wo verbrenne ich Geld?“ bekommen eine belegte Antwort."),
-        ("travel_explore", "Suchbegriffe ausmisten",
-         "Welche Suchanfragen wirklich Geld kosten, welche konvertieren, welche "
-         "als ausschließendes Keyword gehören — gefunden und als fertige Liste "
+         "Kampagnen, Keywords, Suchbegriffe, Budgets und Kennzahlen werden gelesen "
+         "und in Zusammenhang gebracht. Fragen wie „Wo verbrenne ich Geld?“ "
+         "bekommen eine belegte Antwort."),
+        ("travel_explore", "Bezahlt und organisch nebeneinander",
+         "Für welche Suchbegriffe wird bezahlt, obwohl die Website dafür ohnehin "
+         "weit oben steht — und wo fehlt sie in der normalen Suche, sodass nur die "
+         "Anzeige hilft? Anzeigen-Suchbegriffe und Search Console in einer Antwort."),
+        ("conversion_path", "Vom Klick zur Anfrage",
+         "Welche Kampagne bringt Besucher, die bleiben und anfragen? Klicks und "
+         "Kosten aus Google Ads, Sitzungen und Schlüsselereignisse aus Analytics, "
+         "zusammengeführt."),
+        ("checklist", "Suchbegriffe ausmisten",
+         "Welche Suchanfragen Geld kosten, welche zu Anfragen führen und welche als "
+         "ausschließendes Keyword gehören — gefunden und als fertige Liste "
          "vorgeschlagen."),
-        ("payments", "Budgets und Gebote",
-         "Verteilung über Kampagnen prüfen, Ausreißer erkennen, Tagesbudgets und "
-         "Gebote anpassen — innerhalb der gesetzten Ober- und Sprunggrenzen."),
-        ("account_tree", "Struktur aufräumen",
-         "Kampagnen und Anzeigengruppen pausieren, aktivieren, umbenennen, "
-         "Keywords pflegen — auch in größeren Stapeln, begrenzt auf die erlaubten "
-         "Konten."),
+        ("visibility", "Indexierung prüfen",
+         "Ist eine Seite bei Google aufgenommen, und wenn nicht, warum? Die "
+         "URL-Prüfung liefert den Status, den letzten Besuch des Crawlers und die "
+         "Adresse, die Google als maßgeblich ansieht."),
         ("description", "Berichte im Klartext",
-         "Monatsbericht, Vorher-Nachher, Vergleich zweier Zeiträume — als Text, "
-         "den ein Kunde ohne Ads-Wissen versteht, nicht als Zahlenfriedhof."),
-        ("science", "Erst proben, dann handeln",
-         "Jeder schreibende Aufruf läuft zuerst als Trockenlauf gegen Googles "
-         "eigene Regelprüfung. Scharf wird er nur mit ausdrücklicher Freigabe im "
-         "Gespräch."),
+         "Monatsbericht, Vorher-Nachher, Vergleich zweier Zeiträume — über alle "
+         "drei Quellen, als Text, den ein Kunde ohne Fachwissen versteht."),
     )
-    inhalt = ('<div class="grid-2 gleich">'
+    inhalt = ('<div class="grid-3x gleich">'
               + "".join(_kachel(*k) for k in kacheln) + "</div>")
     return _block(
-        "koennen", "Was es kann", "Ein Analyst, der das ganze Konto im Kopf hat.",
+        "koennen", "Was es kann", "Ein Analyst, der alle Zahlen im Kopf hat.",
         inhalt,
-        lead="Die KI arbeitet direkt auf den Live-Daten des Kontos — nicht auf "
-             "einem Export von letzter Woche. Sie beantwortet Fragen in ganzen "
-             "Sätzen, begründet jede Empfehlung mit Zahlen und kann sie auf "
-             "Wunsch gleich umsetzen.")
+        lead="Die KI arbeitet direkt auf den Live-Daten — nicht auf einem Export von "
+             "letzter Woche. Sie beantwortet Fragen in ganzen Sätzen, begründet jede "
+             "Empfehlung mit Zahlen und kann sie auf Wunsch gleich umsetzen.")
 
 
 def _ablauf() -> str:
     schritte = (
-        ("1", "link", "Konto verbinden",
-         "Einmal mit dem Google-Konto anmelden, das die Ads-Konten ohnehin sieht. "
-         "Die Anwendung kann keine Berechtigung erteilen, die nicht bereits in "
-         "Google Ads besteht."),
+        ("1", "link", "Google verbinden",
+         "Einmal mit dem Google-Konto anmelden, das Ads, Search Console und "
+         "Analytics ohnehin sieht. Die Anwendung bekommt keinen Zugriff, den dieses "
+         "Konto nicht schon hat."),
         ("2", "forum", "Fragen stellen",
          "In Claude nachfragen: Analyse, Vorschlag, Bericht. Die Antwort kommt mit "
-         "den Zahlen, auf denen sie beruht."),
+         "den Zahlen, auf denen sie beruht, und nennt die Quelle."),
         ("3", "check_circle", "Freigeben",
-         "Nichts ändert sich ohne ein ausdrückliches Ja. Jeder Versuch steht mit "
-         "Zeitpunkt, Konto, Begründung und Ergebnis im Änderungsprotokoll."),
+         "Nichts ändert sich ohne ein ausdrückliches Ja. Vorher läuft jede Änderung "
+         "als Trockenlauf, und jeder Versuch steht mit Zeitpunkt, Ziel, Begründung "
+         "und Ergebnis im Änderungsprotokoll."),
     )
     inhalt = ('<div class="grid-3 gleich">'
               + "".join(_schritt(*s) for s in schritte) + "</div>")
@@ -451,21 +631,30 @@ def _ablauf() -> str:
 
 def _sicherheit() -> str:
     kacheln = (
+        ("lock", "Hauptschalter",
+         "Schreiben ist ab Werk aus. Erst der Betreiber schaltet es ein, und der "
+         "Schalter gilt für alle drei Dienste."),
+        ("science", "Erst proben, dann handeln",
+         "Bei Google Ads prüft Google selbst jede Änderung vorab, ohne sie "
+         "auszuführen. Search Console und Analytics kennen das nicht — dort zeigt "
+         "die Vorschau den aktuellen Stand und was sich ändern würde."),
         ("account_tree", "Erlaubte Konten",
-         "Nur ausdrücklich angehakte Konten dürfen geschrieben werden. Kein Haken, "
-         "kein Schreibzugriff."),
+         "In Google Ads lässt sich das Schreiben auf einzelne, angehakte Konten "
+         "beschränken. Alle anderen bleiben dann unberührt."),
         ("payments", "Budgetdeckel",
-         "Höchstes Tagesbudget je Budget und größter Sprung in einem Schritt — ein "
-         "Faktor 2 heißt: höchstens verdoppeln."),
-        ("speed", "Operationen je Aufruf",
-         "Begrenzt den Schaden eines einzelnen Fehlgriffs auf eine überschaubare "
-         "Zahl von Änderungen."),
-        # Der Entwurf nennt hier zusaetzlich Passkeys. Die gibt es nicht.
+         "Höchstes Tagesbudget und größter Sprung in einem Schritt — ein Faktor 2 "
+         "heißt: höchstens verdoppeln. Dazu eine Obergrenze für Änderungen je "
+         "Aufruf."),
+        ("shield_lock", "Datenschutz geht vor",
+         "Einstellungen, die bestimmen, wie viel über Besucher erhoben wird, und "
+         "die Nutzerverwaltung fasst die Anwendung nicht an. Parameter, die nach "
+         "personenbezogenen Daten aussehen, lehnt sie als Dimension ab."),
         ("key", "Zwei Türen, zwei Schlüssel",
-         "Menschen über Kennwort und zweiten Faktor; claude.ai über ein eigenes "
-         "Zugangswort, das jederzeit gewechselt werden kann."),
+         "Menschen melden sich mit Kennwort und zweitem Faktor oder mit Passkey an. "
+         "Die Claude-Apps verbinden sich über OAuth und lassen sich einzeln wieder "
+         "entfernen; lokale Werkzeuge nutzen ein eigenes Zugangswort."),
     )
-    inhalt = ('<div class="grid-2 gleich">'
+    inhalt = ('<div class="grid-3x gleich">'
               + "".join(_kachel(*k) for k in kacheln) + "</div>")
     return _block(
         "sicherheit", "Schutzgrenzen",
@@ -475,19 +664,39 @@ def _sicherheit() -> str:
              "sehen bekommt.")
 
 
+# Wofuer jede Berechtigung gebraucht wird, in der Reihenfolge von
+# OAUTH_SCOPE. Eine Berechtigung ohne Zeile hier waere auf der Seite nicht
+# erklaert — der Selbsttest prueft, dass jede eine hat.
+ZWECK = {
+    gac.ADS_SCOPE: "Google Ads lesen und — nach Freigabe — ändern.",
+    gac.SEARCH_CONSOLE_SCOPE: "Search Console lesen; ändern nur Sitemaps.",
+    gac.ANALYTICS_SCOPE: "Berichte und Einstellungen aus Analytics lesen.",
+    gac.ANALYTICS_EDIT_SCOPE: "Analytics ändern, nur Schlüsselereignisse und "
+                              "benutzerdefinierte Dimensionen.",
+}
+
+
 def _transparenz() -> str:
+    rechte = "".join(
+        f'<li><span class="mono">{_url_umbruch(scope)}</span>'
+        f'<span class="notiz">{esc(ZWECK.get(scope, ""))}</span></li>'
+        for scope in gac.OAUTH_SCOPE.split())
     google = (
-        _zeile("Berechtigung",
-               f'<span class="mono">{_url_umbruch(gac.OAUTH_SCOPE)}</span>')
-        + _zeile("Wofür", "Google Ads, Search Console und Analytics lesen und — nach "
-                          "Freigabe — ändern.",
-                 "In Search Console nur Sitemaps, in Analytics nur Schlüsselereignisse und "
-                 "benutzerdefinierte Dimensionen. Datenschutz-Einstellungen und Nutzerrechte "
-                 "ändert die Anwendung nicht.")
-        + _zeile("Wo sie liegen", "Nur auf dem Server, auf dem die Anwendung läuft.",
-                 "Keine Weitergabe an Dritte, keine Auswertung über Konten hinweg.")
-        + _zeile("Aufbewahrung", "Solange die Verbindung besteht; der Refresh Token "
-                                 "ist jederzeit löschbar."))
+        _zeile("Berechtigungen", f'<ul class="rechte">{rechte}</ul>')
+        + _zeile("Gespeichert", "Auf dem Server: der Zugang zu Google, die "
+                                "Einstellungen und das Änderungsprotokoll.",
+                 "Berichte und Kennzahlen werden abgerufen, wenn eine Frage sie "
+                 "braucht, und nicht gespeichert.")
+        + _zeile("Weitergabe", "An Claude (Anthropic), und nur, was im Gespräch "
+                               "abgefragt wird — damit die KI antworten kann.",
+                 "Kein Verkauf, keine Werbung, keine Weitergabe an andere, keine "
+                 "Auswertung über Konten hinweg.")
+        + _zeile("Standort", "Server in Deutschland (IONOS Cloud, Berlin).")
+        + _zeile("Aufbewahrung", "Solange die Verbindung besteht. Der Zugang ist "
+                                 "jederzeit löschbar — in der Verwaltung oder unter "
+                                 '<a href="https://myaccount.google.com/permissions" '
+                                 'target="_blank" rel="noopener">'
+                                 'myaccount.google.com/<wbr>permissions</a>.'))
     betreiber = (
         _zeile("Firma", esc(FIRMA), INHABER)
         + _zeile("Anschrift", esc(ANSCHRIFT))
@@ -500,29 +709,34 @@ def _transparenz() -> str:
                            '<span class="state neutral">nur Mitarbeiter</span>'))
     inhalt = (
         '<div class="grid-2">'
-        f'<div class="card"><div class="card-kopf"><h2>Google-Daten</h2></div>'
+        f'<div class="card"><div class="card-kopf"><h3>Google-Daten</h3></div>'
         f'<table>{google}</table></div>'
-        f'<div class="card"><div class="card-kopf"><h2>Betreiber</h2></div>'
+        f'<div class="card"><div class="card-kopf"><h3>Betreiber</h3></div>'
         f'<table>{betreiber}</table></div>'
         '</div>'
-        '<div class="card flach" style="margin-top:16px">'
+        '<div class="card flach" style="margin-top:16px" lang="en">'
         '<h3 style="margin-bottom:8px">In English</h3>'
         '<p class="note" style="margin-top:0;max-width:none">'
-        f'<b>{esc(gac.PORTAL_NAME)}</b> connects Google Ads to Claude. It reads '
-        'campaigns, ad groups, keywords, search terms, budgets and performance '
-        'figures from the accounts the signed-in user already has access to, '
-        'analyses them, and writes back — keywords, negative keywords, status, '
-        'budgets and bids — only after an explicit, case-by-case approval. Every '
-        'write runs as a dry run against Google&#39;s own validation first. Data '
-        'stays on the server this runs on and is never shared with third parties. '
-        f'The tool is operated by {esc(FIRMA)} (Graz, Austria) for its own accounts '
-        'and those of the clients it looks after; access is restricted to staff of '
-        'the operator.</p></div>')
+        f'<b>{esc(gac.PORTAL_NAME)}</b> connects Google Ads, Google Search Console '
+        'and Google Analytics to Claude. It reads campaigns, keywords, search terms, '
+        'budgets and performance figures, organic search performance and index '
+        'status, and Analytics reports and settings — only from the accounts and '
+        'properties the signed-in Google user already has access to. It writes back '
+        'only after an explicit, case-by-case approval: keywords, negative keywords, '
+        'status, budgets and bids in Google Ads; sitemaps in Search Console; key '
+        'events and custom dimensions in Analytics. Every write runs as a dry run '
+        'first. Privacy settings and user management are never changed. Data is '
+        'passed to Claude (Anthropic) only as far as a question requires; it is not '
+        'sold, not used for advertising and not shared with anyone else. The server '
+        'in Germany stores the Google access token, settings and a change log, not '
+        f'reports. The tool is operated by {esc(FIRMA)} (Graz, Austria) for its own '
+        'accounts and those of the clients it looks after; access is restricted to '
+        'staff of the operator.</p></div>')
     return _block(
         "transparenz", "Transparenz",
-        "Welche Daten, wo sie liegen, wer dahintersteht.", inhalt,
-        lead="Google verlangt diese Angaben für die Freigabe der Anwendung — und "
-             "sie gehören ohnehin auf jede Seite, die fremde Werbekonten anfasst.")
+        "Welche Daten, wohin sie gehen, wer dahintersteht.", inhalt,
+        lead="Google verlangt diese Angaben für die Freigabe der Anwendung — und sie "
+             "gehören ohnehin auf jede Seite, die fremde Marketing-Konten anfasst.")
 
 
 def _fuss(logo: str) -> str:
@@ -568,8 +782,9 @@ POSTFACH_JS = """
 })();
 """
 
-BESCHREIBUNG = ("Google Ads im Gespräch steuern: Konten lesen, auswerten und "
-                f"nach ausdrücklicher Freigabe ändern. Betrieben von {FIRMA}.")
+BESCHREIBUNG = ("Google Ads, Search Console und Analytics im Gespräch steuern: "
+                "Zahlen lesen, auswerten und nach ausdrücklicher Freigabe ändern. "
+                f"Betrieben von {FIRMA}.")
 
 
 def seite(*, logo: str, favicon: str, anmelden_url: str = "/login") -> bytes:
@@ -593,6 +808,7 @@ def seite(*, logo: str, favicon: str, anmelden_url: str = "/login") -> bytes:
             '<main class="spalte">\n'
             f"{_hero(anmelden_url)}\n"
             f"{_kennzahlen()}\n"
+            f"{_quellen()}\n"
             f"{_koennen()}\n"
             f"{_ablauf()}\n"
             f"{_sicherheit()}\n"

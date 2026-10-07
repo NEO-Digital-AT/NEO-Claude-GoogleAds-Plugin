@@ -1424,18 +1424,40 @@ def test_portal_door() -> None:
          f"{fremd.count('Probename Leitstand')}x gesetzt, "
          f"{fremd.count('AdsManagment')}x fest verdrahtet")
     case("it explains what the application is for",
-         "verbindet Google Ads mit Claude" in sichtbar
-         and "connects Google Ads to Claude" in sichtbar)
-    case("it names the scope it asks for",
-         # <wbr> bricht die URL um und steht in keinem Text — vor dem
-         # Vergleich also weg, sonst prueft man die Bruchstellen.
-         gac.OAUTH_SCOPE in startseite.replace("<wbr>", ""), gac.OAUTH_SCOPE)
+         "verbindet Google Ads, die Google Search Console und Google Analytics mit Claude"
+         in sichtbar
+         and "connects Google Ads, Google Search Console and Google Analytics to Claude"
+         in sichtbar)
+    # <wbr> bricht die URLs um und steht in keinem Text — vor dem Vergleich
+    # also weg, sonst prueft man die Bruchstellen.
+    ohne_umbruch = startseite.replace("<wbr>", "")
+    case("it names every scope it asks for",
+         all(scope in ohne_umbruch for scope in gac.OAUTH_SCOPE.split()), gac.OAUTH_SCOPE)
+    import oeffentliche_seite as oeff
+    case("and says what each scope is for",
+         all(oeff.ZWECK.get(scope) for scope in gac.OAUTH_SCOPE.split()),
+         ", ".join(sc for sc in gac.OAUTH_SCOPE.split() if not oeff.ZWECK.get(sc)))
+    # Die alte Seite nannte 13 Werkzeuge, als es 25 waren. Die Zahl kommt
+    # jetzt aus dem Server; geprueft wird, dass sie dort ankommt.
+    gezaehlt = oeff.werkzeuge()
+    handlers = load_server().HANDLERS
+    case("THE TOOL COUNT ON THE PAGE IS THE SERVER'S, not a number in the prose",
+         gezaehlt["gesamt"] == len(handlers)
+         and f'>{len(handlers)}<' in startseite
+         and gezaehlt["google_ads"] + gezaehlt["search_console"] + gezaehlt["analytics"]
+         == len(handlers), str(gezaehlt))
+    # Wer in Claude fragt, schickt die abgefragten Zahlen an Anthropic. Die
+    # alte Seite sagte „keine Weitergabe an Dritte" — das stimmte nicht.
+    case("it says where the data goes, Anthropic included",
+         "Claude (Anthropic)" in sichtbar and "Weitergabe an Dritte" not in sichtbar
+         and "never shared with third parties" not in sichtbar)
+    case("and claims nothing about Microsoft Clarity, which the server does not read",
+         "Clarity" not in sichtbar)
     case("it names the operator", gac.PORTAL_OPERATOR in startseite)
     # Die E-Mail-Adresse steht auf der Seite, aber nicht als eine: im
     # Quelltext liegen die beiden Haelften getrennt, das Zeichen dazwischen
     # kommt aus dem Stilblatt. Damit laufen die Erntemaschinen ins Leere,
     # die Seiten mit einem Muster nach Adressen absuchen.
-    import oeffentliche_seite as oeff
     adresse = gac.PORTAL_CONTACT or "hallo@neo-digital.at"
     kopf, _, rumpf = adresse.partition("@")
     case("NO E-MAIL ADDRESS IS SPELLED OUT IN THE PAGE SOURCE",
