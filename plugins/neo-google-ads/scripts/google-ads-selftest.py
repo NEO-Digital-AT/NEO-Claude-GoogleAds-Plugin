@@ -567,6 +567,16 @@ def test_protocol() -> None:
     case("tools/list carries the caching fields the 2026 spec requires",
          tools.get("ttlMs") and tools.get("cacheScope") and tools.get("resultType"))
 
+    # ChatGPT fragt beim Verbinden nach Ressourcen-Vorlagen. Ein "Method not
+    # found" brach dort die Erkennung ab (12.10.2026).
+    try:
+        vorlagen = server.handle("resources/templates/list", {})
+        case("resources/templates/list answers with an empty list",
+             vorlagen.get("resourceTemplates") == [], str(vorlagen))
+    except LookupError:
+        case("resources/templates/list answers with an empty list", False,
+             "Method not found")
+
     case("notifications get no answer", server.handle("notifications/initialized", {}) is None)
 
     try:
@@ -1999,6 +2009,9 @@ def test_oauth() -> None:
         case("oauth: 401 without a token", status == 401, str(status))
         case("oauth: 401 points at the metadata",
              "resource_metadata=" in koepfe.get("WWW-Authenticate", ""),
+             koepfe.get("WWW-Authenticate", ""))
+        case("oauth: 401 names the scopes to request",
+             'scope="ads:read ads:write"' in koepfe.get("WWW-Authenticate", ""),
              koepfe.get("WWW-Authenticate", ""))
 
         # -- Das feste Wort gilt weiter ------------------------------------

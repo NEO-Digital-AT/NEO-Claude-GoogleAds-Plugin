@@ -193,7 +193,11 @@ def challenge_header(base: str, mcp_path: str, *, error: str = "") -> str:
     bekommt — genau der Zustand vor dieser Datei.
     """
     teile = ['Bearer realm="neo-google-ads"',
-             f'resource_metadata="{base}/.well-known/oauth-protected-resource"']
+             f'resource_metadata="{base}/.well-known/oauth-protected-resource"',
+             # Welche Rechte der Client anfragen soll. OpenAIs Anleitung fuer
+             # ChatGPT nennt `scope` im 401 ausdruecklich; Claude kommt auch
+             # ohne aus, weil es die Auskunft unter resource_metadata liest.
+             f'scope="{DEFAULT_SCOPE}"']
     if error:
         teile.append(f'error="{error}"')
     return ", ".join(teile)

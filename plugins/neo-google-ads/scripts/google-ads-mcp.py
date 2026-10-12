@@ -55,7 +55,7 @@ from google_ads_client import (  # noqa: E402
 )
 
 SERVER_NAME = "neo-google-ads"
-SERVER_VERSION = "2.6.0"
+SERVER_VERSION = "2.6.1"
 
 # Protocol revisions this server can answer, newest first. The 2026-07-28
 # revision replaced initialize with server/discover; the older ones are
@@ -2051,6 +2051,15 @@ def handle(method: str, params: dict) -> dict | None:
     if method in ("resources/list", "prompts/list"):
         key = method.split("/")[0]
         return {"resultType": "complete", key: [], "ttlMs": 300000, "cacheScope": "private"}
+
+    # ChatGPT asks for resource templates while discovering a connector,
+    # whether or not the server advertises resources: its apps look there
+    # for widget templates. "Method not found" ended the discovery with
+    # "Authentication succeeded, action discovery failed" (12.10.2026).
+    # An empty list is the truthful answer: this server has none.
+    if method == "resources/templates/list":
+        return {"resultType": "complete", "resourceTemplates": [],
+                "ttlMs": 300000, "cacheScope": "private"}
 
     raise LookupError(method)
 
