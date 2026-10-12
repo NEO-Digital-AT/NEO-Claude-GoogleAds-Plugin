@@ -557,8 +557,17 @@ def test_protocol() -> None:
          unknown["protocolVersion"] in server.PROTOCOL_VERSIONS)
 
     discover = server.handle("server/discover", {})
-    case("server/discover advertises every supported version",
-         discover["protocolVersions"] == list(server.PROTOCOL_VERSIONS))
+    # Feld fuer Feld nach DiscoverResult (Schema 2026-07-28). ChatGPT fragt
+    # das zuerst und brach bei "protocolVersions" ohne Cache-Angaben ab.
+    case("server/discover advertises every supported version as supportedVersions",
+         discover.get("supportedVersions") == list(server.PROTOCOL_VERSIONS),
+         str(sorted(discover)))
+    case("server/discover carries the cache hints the schema requires",
+         isinstance(discover.get("ttlMs"), int) and discover.get("ttlMs") >= 0
+         and discover.get("cacheScope") in ("public", "private"))
+    case("server/discover names the server in _meta",
+         (discover.get("_meta") or {}).get("io.modelcontextprotocol/serverInfo", {})
+         .get("name") == server.SERVER_NAME)
 
     tools = server.handle("tools/list", {})
     names = [t["name"] for t in tools["tools"]]

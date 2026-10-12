@@ -55,7 +55,7 @@ from google_ads_client import (  # noqa: E402
 )
 
 SERVER_NAME = "neo-google-ads"
-SERVER_VERSION = "2.6.1"
+SERVER_VERSION = "2.6.2"
 
 # Protocol revisions this server can answer, newest first. The 2026-07-28
 # revision replaced initialize with server/discover; the older ones are
@@ -2014,11 +2014,18 @@ def handle(method: str, params: dict) -> dict | None:
         return {"protocolVersion": version, "capabilities": capabilities(),
                 "serverInfo": server_info()}
 
+    # The shape is DiscoverResult from the 2026-07-28 schema, field for
+    # field. It said "protocolVersions" before and carried no cache hints;
+    # ChatGPT asks this first, found no "supportedVersions", and stopped
+    # without a single further request — "Authentication succeeded, action
+    # discovery failed" (12.10.2026). Identity sits in _meta, as the schema
+    # puts it.
     if method == "server/discover":
         return {"resultType": "complete",
-                "protocolVersions": list(PROTOCOL_VERSIONS),
+                "supportedVersions": list(PROTOCOL_VERSIONS),
                 "capabilities": capabilities(),
-                "serverInfo": server_info()}
+                "_meta": {"io.modelcontextprotocol/serverInfo": server_info()},
+                "ttlMs": 300000, "cacheScope": "public"}
 
     if method in ("notifications/initialized", "notifications/cancelled"):
         return None
